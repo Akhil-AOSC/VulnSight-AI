@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { pad, subscribeToasts } from '../api.js';
+import { Markdown } from './Markdown.jsx';
 
 export function SevBadge({ severity }) {
   return <span className={`badge sev-${severity || 'unknown'}`}>{severity || 'unknown'}</span>;
@@ -100,6 +101,74 @@ export function TrendChart({ points, series }) {
   );
 }
 
+const AI_TITLES = {
+  explanation: 'AI explanation',
+  remediation: 'Suggested fix',
+  summary: 'AI summary',
+  answer: 'AI answer',
+};
+
+export function AiAnswer({ result, loading, loadingLabel = 'Writing an answer...' }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    if (!result || !result.text) return;
+    try {
+      await navigator.clipboard.writeText(result.text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="ai-box ai-answer" role="status">
+        <div className="ai-loading">{loadingLabel}</div>
+      </div>
+    );
+  }
+  if (!result) return null;
+
+  const kind = (result.meta && result.meta.kind) || 'answer';
+  const title = AI_TITLES[kind] || 'AI answer';
+  const provider = (result.meta && result.meta.provider) || 'AI';
+  const impact = result.upgradeImpact;
+
+  return (
+    <div className="ai-box ai-answer">
+      <div className="ai-answer-head">
+        <div className="ai-head-title">
+          <h3 className="m-0">{title}</h3>
+          <span className="ai-badge">AI Powered</span>
+        </div>
+        <div className="row">
+          <span className="badge ai-label">{provider}</span>
+          <button type="button" className="link" onClick={handleCopy}>
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+      </div>
+      <Markdown text={result.text} />
+      {impact && (
+        <div className="ai-callout">
+          <strong>
+            Upgrade impact: {impact.kind} {impact.from} → {impact.to}
+          </strong>
+          <p>{impact.note}</p>
+        </div>
+      )}
+      {result.warnings && result.warnings.length > 0 && (
+        <div className="warning">{result.warnings.join(' ')}</div>
+      )}
+      <p className="small muted ai-disclaimer">
+        AI can be wrong. The scanner finding above is the source of truth.
+      </p>
+    </div>
+  );
+}
+
 export function AiBriefingCard({ ai }) {
   if (!ai) return null;
   const risk = ai.riskLevel || 'Medium';
@@ -107,8 +176,8 @@ export function AiBriefingCard({ ai }) {
     <section className="card ai-card">
       <div className="card-head">
         <div className="ai-head-title">
-          <h2 className="m-0">AI Security Intelligence</h2>
-          <span className="ai-badge">{ai.provider || 'Groq AI Powered'}</span>
+          <h2 className="m-0">AI Security Summary</h2>
+          <span className="ai-badge">AI Powered</span>
         </div>
         <span className={`ai-risk-tag ai-risk-${risk}`}>Risk: {risk}</span>
       </div>

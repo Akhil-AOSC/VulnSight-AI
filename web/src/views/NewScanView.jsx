@@ -33,7 +33,7 @@ export function NewScanView() {
     <>
       <PageHead
         title="New scan"
-        subtitle="Scan a project folder or Git repository for known vulnerabilities with AI Security Intelligence and MongoDB persistence."
+        subtitle="Scan a project folder or Git repository for known vulnerabilities."
       />
 
       {canRunScan ? (

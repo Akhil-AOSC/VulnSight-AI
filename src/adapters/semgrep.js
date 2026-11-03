@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const { execTool } = require('./runner');
 const { createFinding } = require('../findings');
+const { resolveSemgrep } = require('./tools');
+const { scanBuiltinSast } = require('./builtin-sast');
 
 const SEVERITY = { ERROR: 'high', WARNING: 'medium', INFO: 'low' };
 
@@ -53,21 +55,31 @@ function parseSemgrep(stdout, root, version) {
 
 // SAST via the Semgrep CLI. `config` is passed through as --config (default: the public registry
 // ruleset); pass a local rules path for fully offline scans. Metrics are always disabled.
-function createSemgrepAdapter({ config = 'p/default', command = 'semgrep', exec = execTool, extraArgs = [] } = {}) {
+function createSemgrepAdapter({ config = 'p/default', command = 'semgrep', exec = execTool, extraArgs = [], fallback = exec === execTool && command === 'semgrep' } = {}) {
   return {
     name: 'semgrep',
     category: 'sast',
     async version() {
-      const { stdout } = await exec(command, ['--version']);
-      return stdout.trim().split('\n').pop();
+      try {
+        const bin = fallback ? (resolveSemgrep(command) || command) : command;
+        const { stdout } = await exec(bin, ['--version']);
+        return stdout.trim().split('\n').pop();
+      } catch (err) {
+        if (fallback && /not installed/i.test(err.message)) return 'builtin-rules';
+        throw err;
+      }
     },
     async supports(target) {
       return !!target.path && fs.existsSync(target.path) && fs.statSync(target.path).isDirectory();
     },
     async run(target, { signal } = {}) {
       const version = await this.version();
+      if (version === 'builtin-rules') {
+        return { findings: scanBuiltinSast(target.path, { version }), raw: { engine: 'builtin-rules', config } };
+      }
+      const bin = fallback ? (resolveSemgrep(command) || command) : command;
       const args = ['scan', '--json', '--quiet', '--metrics=off', '--disable-version-check', '--config', config, ...extraArgs, '.'];
-      const { stdout } = await exec(command, args, { cwd: target.path, signal });
+      const { stdout } = await exec(bin, args, { cwd: target.path, signal });
       const { findings, errors } = parseSemgrep(stdout, target.path, version);
       return { findings, raw: { errors, config } };
     },

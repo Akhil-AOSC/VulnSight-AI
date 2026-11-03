@@ -5,6 +5,7 @@ import {
   SevBadge,
   StatusBadge,
   AiBriefingCard,
+  AiAnswer,
   DataTable,
 } from '../components/Common.jsx';
 
@@ -15,6 +16,7 @@ function FindingDetail({ finding: f, repo, onReload }) {
   const [history, setHistory] = useState(null);
   const [aiResult, setAiResult] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
+  const [aiKind, setAiKind] = useState(null);
 
   const canWriteFindings = hasPermission(session.me, session.orgId, 'findings:write');
   const canUseAi = hasPermission(session.me, session.orgId, 'ai:use');
@@ -47,8 +49,9 @@ function FindingDetail({ finding: f, repo, onReload }) {
     }
   }
 
-  async function handleAiAction(path) {
+  async function handleAiAction(path, kind) {
     setAiLoading(true);
+    setAiKind(kind);
     setAiResult(null);
     try {
       const res = await api.post(api.org(path));
@@ -134,7 +137,23 @@ function FindingDetail({ finding: f, repo, onReload }) {
           )}
         </dl>
 
-        {f.evidence && (
+        {f.location && Array.isArray(f.location.usages) && f.location.usages.length > 0 && (
+          <>
+            <h3>Used in your code</h3>
+            <ul className="usage-list">
+              {f.location.usages.map((u, i) => (
+                <li key={`${u.file}:${u.line}:${i}`}>
+                  <span className="mono small">
+                    {u.file}:{u.line}
+                  </span>
+                  {u.snippet ? <pre className="evidence">{u.snippet}</pre> : null}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+
+        {f.evidence && !(f.location && f.location.usages && f.location.usages.length) && (
           <>
             <h3>Evidence</h3>
             <pre className="evidence">{f.evidence}</pre>
@@ -154,7 +173,29 @@ function FindingDetail({ finding: f, repo, onReload }) {
       </div>
 
       <div>
-        <h3>Triage</h3>
+        <div className="row triage-head">
+          <h3 className="m-0">Triage</h3>
+          {canUseAi && (
+            <div className="row">
+              <button
+                type="button"
+                aria-pressed={aiKind === 'explanation'}
+                disabled={aiLoading}
+                onClick={() => handleAiAction(`/findings/${f.rowId}/explain`, 'explanation')}
+              >
+                Explain with AI
+              </button>
+              <button
+                type="button"
+                aria-pressed={aiKind === 'remediation'}
+                disabled={aiLoading}
+                onClick={() => handleAiAction(`/findings/${f.rowId}/fix`, 'remediation')}
+              >
+                Suggest a fix
+              </button>
+            </div>
+          )}
+        </div>
         {canWriteFindings ? (
           <>
             <div className="row">
@@ -209,54 +250,13 @@ function FindingDetail({ finding: f, repo, onReload }) {
         )}
       </div>
 
-      {canUseAi && (
-        <div className="ai-box-wrap">
-          <div className="row">
-            <button
-              type="button"
-              disabled={aiLoading}
-              onClick={() => handleAiAction(`/findings/${f.rowId}/explain`)}
-            >
-              Explain with AI
-            </button>
-            <button
-              type="button"
-              disabled={aiLoading}
-              onClick={() => handleAiAction(`/findings/${f.rowId}/fix`)}
-            >
-              Suggest a fix
-            </button>
-          </div>
-        </div>
-      )}
-
-      {(aiLoading || aiResult) && (
-        <div className="ai-box">
-          {aiLoading ? (
-            <span className="muted">Thinking...</span>
-          ) : (
-            <>
-              <span className="badge ai-label">
-                AI-generated - {aiResult.meta && aiResult.meta.provider}
-              </span>
-              <p>{aiResult.text}</p>
-              {aiResult.upgradeImpact && (
-                <p className="small">
-                  Upgrade impact (computed, not AI): {aiResult.upgradeImpact.kind} change{' '}
-                  {aiResult.upgradeImpact.from} to {aiResult.upgradeImpact.to}.{' '}
-                  {aiResult.upgradeImpact.note}
-                </p>
-              )}
-              {aiResult.warnings && aiResult.warnings.length > 0 && (
-                <p className="small">{aiResult.warnings.join(' ')}</p>
-              )}
-              <p className="small muted">
-                AI commentary can be wrong. The scanner finding above is the source of truth.
-              </p>
-            </>
-          )}
-        </div>
-      )}
+      <AiAnswer
+        result={aiResult}
+        loading={aiLoading}
+        loadingLabel={
+          aiKind === 'remediation' ? 'Writing a suggested fix...' : 'Explaining this finding...'
+        }
+      />
     </div>
   );
 }
@@ -381,8 +381,8 @@ export function ScanView({ scanId }) {
         subtitle={`${scan.branch}${scan.commit ? ` @ ${scan.commit.slice(0, 8)}` : ''} - ${scan.trigger} - ${fmtDate(scan.createdAt)}`}
       >
         {scan.source === 'mongodb' && (
-          <span className="db-indicator db-connected" title="Stored in MongoDB Atlas">
-            MongoDB Atlas
+          <span className="db-indicator db-connected" title="Saved in cloud history">
+            Cloud Saved
           </span>
         )}
         <a className="btn" href={`#/repos/${repo.id}`}>
@@ -430,14 +430,6 @@ export function ScanView({ scanId }) {
                 <div className="card stat">
                   <div className="num">{sum.posture.grade}</div>
                   <div className="label">Posture {sum.posture.score}/100</div>
-                </div>
-              )}
-              {sum.new != null && (
-                <div className="card stat">
-                  <div className="num">
-                    +{sum.new} / -{sum.fixed}
-                  </div>
-                  <div className="label">New / fixed since last scan</div>
                 </div>
               )}
             </div>
@@ -527,7 +519,7 @@ export function ScanView({ scanId }) {
                 rows={scan.scanners.map((s, i) => ({
                   id: `${s.scanner}-${i}`,
                   cells: [
-                    s.scanner,
+                    ({ osv: 'Dependencies (OSV)', semgrep: 'Code (Semgrep)', gitleaks: 'Secrets (Gitleaks)', trivy: 'Trivy', checkov: 'Checkov' }[s.scanner] || s.scanner),
                     <StatusBadge status={s.status} />,
                     s.version || '-',
                     pad(s.findingCount),
@@ -640,6 +632,13 @@ export function ScanView({ scanId }) {
                     {findingsData.items.map((f) => {
                       const rowKey = f.rowId || f.id;
                       const isOpen = expandedRows.has(rowKey);
+                      const typeLabel = {
+                        sca: 'Dependencies',
+                        sast: 'Code',
+                        secret: 'Secrets',
+                        container: 'Containers',
+                        iac: 'Infrastructure',
+                      }[f.category] || f.category;
                       const where = f.location.package
                         ? `${f.location.package}@${f.location.version}`
                         : `${f.location.file || ''}${f.location.line ? `:${f.location.line}` : ''}`;
@@ -659,7 +658,7 @@ export function ScanView({ scanId }) {
                                 {f.title}
                               </button>
                             </td>
-                            <td>{f.category}</td>
+                            <td>{typeLabel}</td>
                             <td className="mono">{where}</td>
                             <td>
                               {f.remediation && f.remediation.fixedIn

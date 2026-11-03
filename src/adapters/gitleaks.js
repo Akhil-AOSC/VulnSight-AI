@@ -5,6 +5,8 @@ const os = require('os');
 const path = require('path');
 const { execTool } = require('./runner');
 const { createFinding } = require('../findings');
+const { ensureGitleaks } = require('./tools');
+const { scanBuiltinSecrets } = require('./builtin-secrets');
 
 const MASK = '[REDACTED]';
 
@@ -40,19 +42,36 @@ function parseGitleaks(stdout, root, version) {
 }
 
 // Secret scanning via the Gitleaks CLI over the working tree (no Git history).
-function createGitleaksAdapter({ command = 'gitleaks', exec = execTool, extraArgs = [] } = {}) {
+function createGitleaksAdapter({ command = 'gitleaks', exec = execTool, extraArgs = [], fallback = exec === execTool && command === 'gitleaks' } = {}) {
+  async function binary() {
+    if (!fallback) return command;
+    try {
+      return await ensureGitleaks(command);
+    } catch {
+      return command;
+    }
+  }
+
   return {
     name: 'gitleaks',
     category: 'secret',
     async version() {
-      const { stdout } = await exec(command, ['version']);
-      return stdout.trim().split('\n').pop().replace(/^v/, '');
+      try {
+        const { stdout } = await exec(await binary(), ['version']);
+        return stdout.trim().split('\n').pop().replace(/^v/, '');
+      } catch (err) {
+        if (fallback && /not installed/i.test(err.message)) return 'builtin-rules';
+        throw err;
+      }
     },
     async supports(target) {
       return !!target.path && fs.existsSync(target.path) && fs.statSync(target.path).isDirectory();
     },
     async run(target, { signal } = {}) {
       const version = await this.version();
+      if (version === 'builtin-rules') {
+        return { findings: scanBuiltinSecrets(target.path, { version }), raw: { engine: 'builtin-rules' } };
+      }
       // Gitleaks (verified on 8.21.2) does not treat "--report-path -" as stdout: it creates a file
       // named "-" in the working directory, and the scan then looks clean. The report goes to a
       // private temp directory outside the scanned tree instead, and is deleted afterwards.
@@ -65,7 +84,7 @@ function createGitleaksAdapter({ command = 'gitleaks', exec = execTool, extraArg
           '--redact', '--exit-code', '0', '--no-banner', '--log-level', 'error',
           ...extraArgs,
         ];
-        await exec(command, args, { cwd: target.path, signal });
+        await exec(await binary(), args, { cwd: target.path, signal });
         // A missing report means gitleaks did not run properly: fail loudly, never report "clean".
         if (!fs.existsSync(reportPath)) throw new Error('gitleaks did not produce a report');
         return { findings: parseGitleaks(fs.readFileSync(reportPath, 'utf8'), target.path, version), raw: null };

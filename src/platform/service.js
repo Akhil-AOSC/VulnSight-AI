@@ -23,6 +23,7 @@ const { providerFromEnv } = require('../ai/providers');
 const { generateAiAnalysis } = require('../ai');
 const { fromScaIssue, createFinding } = require('../findings');
 const { upgradePlan } = require('../report');
+const { usagesForFinding } = require('../code-context');
 const {
   isMongoConfigured,
   getMongoStatus,
@@ -1195,18 +1196,26 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
     return { finding: parse(row.data), repoId: row.repo_id };
   }
 
+  function withCodeContext(finding, repo) {
+    const usages = usagesForFinding(finding, repo && repo.clone_url);
+    if (!usages.length) return finding;
+    return { ...finding, location: { ...(finding.location || {}), usages } };
+  }
+
   const aiApi = {
     async explain(ctx, rowId) {
       const { provider, consent } = aiContext(ctx);
       const { finding, repoId } = findingByRowId(ctx, rowId);
-      const out = await ai.explainFinding(finding, { provider, consent });
+      const repo = getRepo(ctx.orgId, repoId);
+      const out = await ai.explainFinding(withCodeContext(finding, repo), { provider, consent });
       saveAi(ctx, { repoId, findingId: finding.id, kind: 'explanation', provider: provider.name, answer: out.text });
       return out;
     },
     async fix(ctx, rowId) {
       const { provider, consent } = aiContext(ctx);
       const { finding, repoId } = findingByRowId(ctx, rowId);
-      const out = await ai.suggestFix(finding, { provider, consent });
+      const repo = getRepo(ctx.orgId, repoId);
+      const out = await ai.suggestFix(withCodeContext(finding, repo), { provider, consent });
       saveAi(ctx, { repoId, findingId: finding.id, kind: 'remediation', provider: provider.name, answer: out.text });
       return out;
     },

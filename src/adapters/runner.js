@@ -1,6 +1,7 @@
 'use strict';
 
 const { spawn } = require('child_process');
+const { which } = require('./which');
 
 // Scanner adapter contract
 //
@@ -66,7 +67,8 @@ const MAX_OUTPUT_BYTES = 50 * 1024 * 1024;
 
 function execTool(command, args, { cwd, env, signal, maxBytes = MAX_OUTPUT_BYTES, okCodes = [0] } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd, env, shell: false, signal, windowsHide: true });
+    const resolved = which(command) || command;
+    const child = spawn(resolved, args, { cwd, env, shell: false, signal, windowsHide: true });
     const out = [];
     let size = 0;
     let stderr = '';

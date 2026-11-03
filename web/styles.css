@@ -230,6 +230,12 @@ button.link {
   box-shadow: none;
 }
 button.link:hover { text-decoration: underline; background: none; }
+button[aria-pressed="true"] {
+  border-color: var(--brand);
+  color: var(--brand);
+  background: rgba(59, 91, 219, .08);
+  font-weight: 600;
+}
 input, select, textarea {
   font: inherit;
   font-size: 13px;
@@ -320,6 +326,9 @@ pre.evidence {
   font-family: var(--font-mono);
   font-size: 12px;
 }
+.usage-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .45rem; }
+.usage-list pre.evidence { margin: .25rem 0 0; }
+.triage-head { justify-content: space-between; align-items: center; margin-bottom: .5rem; }
 .ai-box {
   border: 1px solid var(--border);
   border-left: 3px solid var(--brand);
@@ -328,16 +337,42 @@ pre.evidence {
   background: var(--surface);
   grid-column: 1 / -1;
 }
-.ai-box p { white-space: pre-wrap; margin: .4rem 0; }
+.ai-answer { display: flex; flex-direction: column; gap: .75rem; }
+.ai-answer-head { display: flex; justify-content: space-between; align-items: center; gap: .75rem; flex-wrap: wrap; }
+.ai-callout { background: var(--surface-2); border-left: 3px solid var(--brand); padding: 10px 14px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.ai-callout strong { display: block; margin-bottom: 4px; text-transform: capitalize; }
+.ai-callout p { margin: 0; color: var(--muted); font-size: .9rem; }
+.ai-disclaimer { margin: 0; }
+.ai-loading { display: flex; align-items: center; gap: .65rem; color: var(--muted); min-height: 2.4rem; }
+.ai-loading::before { content: ''; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--brand); border-radius: 50%; animation: ai-spin .7s linear infinite; }
+@keyframes ai-spin { to { transform: rotate(360deg); } }
+.md { display: flex; flex-direction: column; gap: .65rem; overflow-wrap: anywhere; }
+.md p { margin: 0; line-height: 1.6; }
+.md h3, .md h4 { margin: .35rem 0 0; }
+.md h3 { font-size: 1rem; }
+.md h4 { font-size: .95rem; color: var(--text); }
+.md ul, .md ol { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: .4rem; }
+.md li { line-height: 1.55; }
+.md li .md { margin-top: .4rem; }
+.md hr { border: 0; border-top: 1px solid var(--border); margin: .25rem 0; }
+.md blockquote { margin: 0; padding: .65rem .85rem; background: var(--surface-2); border-left: 3px solid var(--brand); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; color: var(--muted); }
+.md code { font-family: var(--font-mono); font-size: .86em; background: var(--surface-2); border: 1px solid var(--border); padding: .05rem .35rem; border-radius: 4px; }
+.md-code { position: relative; margin: 0; background: #151a23; color: #e6e9ef; border-radius: var(--radius-sm); padding: 1.35rem .85rem .75rem; overflow-x: auto; font-family: var(--font-mono); font-size: .82rem; line-height: 1.5; }
+.md-code code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; }
+.md-lang { position: absolute; top: 6px; right: 8px; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: #96a0b3; }
+.diff-add { color: #69db7c; }
+.diff-del { color: #ff8fb1; }
 .chat { display: flex; flex-direction: column; gap: .75rem; max-height: 55vh; overflow-y: auto; padding: .25rem; }
-.msg { padding: .6rem .85rem; border-radius: var(--radius-sm); max-width: 85%; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; }
-.msg.user { align-self: flex-end; background: var(--brand); color: var(--brand-text); }
+.msg { padding: .6rem .85rem; border-radius: var(--radius-sm); max-width: 85%; overflow-wrap: anywhere; font-size: 13.5px; }
+.msg.user { align-self: flex-end; background: var(--brand); color: var(--brand-text); white-space: pre-wrap; }
 .msg.assistant {
   align-self: flex-start;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-left: 3px solid var(--brand);
+  max-width: 100%;
 }
+.msg .badge { margin-bottom: .4rem; }
 
 /* Charts & Bars */
 .bar { height: 8px; border-radius: 3px; background: var(--surface-2); overflow: hidden; display: flex; }

@@ -88,6 +88,15 @@ test('askQuestion cites only real finding ids and caps context', async () => {
   assert.ok(!sent.includes('res.send'), 'Q&A never includes code evidence');
 });
 
+test('SCA explain and fix prompts ask for application code, not only a package bump', async () => {
+  const provider = createMockProvider();
+  await explainFinding(sca, { provider, consent: on });
+  assert.match(provider.calls[0].messages[0].content, /CODE/);
+  await suggestFix(sca, { provider, consent: on });
+  assert.match(provider.calls[1].messages[0].content, /APPLICATION CODE/);
+  assert.match(provider.calls[0].system, /application-code examples/);
+});
+
 test('suggestFix and summarizePosture work with consent', async () => {
   const provider = createMockProvider('ok');
   assert.equal((await suggestFix(sca, { provider, consent: on })).meta.kind, 'remediation');

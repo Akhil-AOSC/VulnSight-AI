@@ -38,12 +38,12 @@ export function OverviewView() {
       const res = await api.post(api.org('/mongo/sync'), {});
       toast(
         res && res.imported
-          ? `Synced ${res.imported} scan(s) from MongoDB`
-          : 'MongoDB history is up to date'
+          ? `Loaded ${res.imported} past scan(s)`
+          : 'Scan history is up to date'
       );
       await loadOverview();
     } catch (err) {
-      toast(err.message || 'MongoDB sync failed', 'error');
+      toast(err.message || 'Could not refresh history', 'error');
     } finally {
       setSyncBusy(false);
     }
@@ -85,8 +85,8 @@ export function OverviewView() {
               : pad(s.summary && (s.summary.total != null ? s.summary.total : s.summary.issues)),
             <span>
               {s.source === 'mongodb' ? (
-                <span className="mongo-badge" title="Stored in MongoDB Atlas">
-                  MongoDB
+                <span className="mongo-badge" title="Saved in cloud history">
+                  Cloud
                 </span>
               ) : (
                 'Local'
@@ -107,25 +107,25 @@ export function OverviewView() {
     <>
       <PageHead
         title="Security overview"
-        subtitle="Latest scan of each repository · Data from OSV.dev & MongoDB Atlas"
+        subtitle="Latest scan of each repository"
       >
         {data.mongo && data.mongo.connected && (
           <span
             className="db-indicator db-connected"
-            title="History actively synced with MongoDB Atlas collection."
+            title="Your scan history is automatically saved to the cloud."
           >
-            MongoDB Atlas
+            Cloud Saved
           </span>
         )}
         {data.mongo && !data.mongo.connected && data.mongo.configured && (
-          <span className="db-indicator db-fallback" title="MongoDB Atlas fallback active">
-            Local (Atlas Blocked)
+          <span className="db-indicator db-fallback" title="Scans are saved on this computer">
+            Saved Locally
           </span>
         )}
-        {data.aiEnabled && <span className="ai-badge">Groq AI Powered</span>}
+        {data.aiEnabled && <span className="ai-badge">AI Powered</span>}
         {data.mongo && data.mongo.configured && (
           <button type="button" onClick={handleSyncMongo} disabled={syncBusy}>
-            {syncBusy ? 'Syncing...' : 'Sync MongoDB History'}
+            {syncBusy ? 'Refreshing...' : 'Refresh History'}
           </button>
         )}
       </PageHead>
@@ -227,7 +227,7 @@ export function OverviewView() {
 
           <div className="grid cols-2">
             <section className="card">
-              <h2>Recent scans (MongoDB &amp; Local History)</h2>
+              <h2>Recent scans</h2>
               {renderScanTable(data.recentScans)}
             </section>
             <section className="card">

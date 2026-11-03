@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { api, session, hasPermission, toast } from '../api.js';
 import { PageHead } from '../components/Common.jsx';
+import { Markdown } from '../components/Markdown.jsx';
 
 export function AssistantView({ initialRepoId }) {
   const [repos, setRepos] = useState([]);
@@ -65,7 +66,7 @@ export function AssistantView({ initialRepoId }) {
             msgs.push({
               role: 'assistant',
               text: r.answer,
-              tag: `AI Security Briefing (${r.provider || 'Groq'})`,
+              tag: 'AI Security Summary',
             });
           }
         }
@@ -203,7 +204,7 @@ export function AssistantView({ initialRepoId }) {
             {messages.map((m, idx) => (
               <div key={idx} className={`msg ${m.role}`}>
                 {m.tag && <div className="badge ai-label">{m.tag}</div>}
-                {m.text}
+                {m.role === 'assistant' ? <Markdown text={m.text} /> : m.text}
               </div>
             ))}
           </div>

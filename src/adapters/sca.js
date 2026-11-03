@@ -7,6 +7,7 @@ const { scanProjects } = require('../scanner');
 const { createClient } = require('../osv');
 const { fromScaIssue } = require('../findings');
 const { buildJsonReport } = require('../report');
+const { attachUsages } = require('../code-context');
 
 const VERSION = 'osv.dev-api-v1';
 
@@ -25,6 +26,7 @@ function createScaAdapter({ client = createClient(), scan = scanProjects, option
       const rel = (file) => path.relative(target.path, file).split(path.sep).join('/');
       const findings = results.flatMap((r) =>
         r.issues.map((issue) => fromScaIssue(issue, { file: rel(r.file), scannerVersion: VERSION })));
+      attachUsages(findings, target.path);
       // Full dependency inventory + upgrade plans and vulnerabilities per project.
       const jsonReport = buildJsonReport(results.map((r) => ({ ...r, file: rel(r.file) })), warnings);
       const inventory = results.map((r, idx) => ({
