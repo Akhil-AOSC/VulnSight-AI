@@ -457,8 +457,22 @@
       $('scan-path').value = config.defaultTarget;
       let tags = [`v${config.version}`];
       if (config.aiEnabled) tags.push('Groq AI');
-      if (config.mongoEnabled) tags.push('MongoDB');
       $('version').textContent = tags.join(' · ');
+
+      const indicator = $('db-indicator');
+      if (indicator && config.mongo) {
+        indicator.hidden = false;
+        if (config.mongo.connected) {
+          indicator.textContent = 'MongoDB Atlas';
+          indicator.className = 'db-indicator db-connected';
+          indicator.title = 'History actively synced with MongoDB Atlas collection.';
+        } else if (config.mongo.configured) {
+          indicator.textContent = 'Local (Atlas Blocked)';
+          indicator.className = 'db-indicator db-fallback';
+          indicator.title = 'MongoDB Atlas connection blocked by IP Access List. Add your IP or 0.0.0.0/0 at cloud.mongodb.com -> Network Access to enable live sync.';
+        }
+      }
+
       await loadHistory();
     } catch (err) {
       setStatus(`Could not reach the VulnSight-AI server: ${err.message}`, true);

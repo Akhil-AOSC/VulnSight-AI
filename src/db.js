@@ -5,6 +5,7 @@ const { MongoClient } = require('mongodb');
 let clientPromise = null;
 let isConnected = false;
 let connectionLogged = false;
+let lastMongoError = null;
 
 function getMongoUri() {
   return process.env.MONGODB_URI || '';
@@ -12,6 +13,14 @@ function getMongoUri() {
 
 function isMongoConfigured() {
   return Boolean(getMongoUri().trim());
+}
+
+function getMongoStatus() {
+  return {
+    configured: isMongoConfigured(),
+    connected: isConnected,
+    error: lastMongoError,
+  };
 }
 
 async function getClient() {
@@ -25,6 +34,7 @@ async function getClient() {
     });
     clientPromise = client.connect().then(() => {
       isConnected = true;
+      lastMongoError = null;
       if (!connectionLogged) {
         console.log('[MongoDB] Connected successfully to Atlas cluster.');
         connectionLogged = true;
@@ -33,6 +43,7 @@ async function getClient() {
     }).catch((err) => {
       isConnected = false;
       clientPromise = null; // allow retry on next request
+      lastMongoError = err.message;
       if (!connectionLogged) {
         console.warn(`[MongoDB Notice] Could not connect to MongoDB Atlas (${err.message}). Using local history storage. Ensure your IP is whitelisted in MongoDB Atlas Network Access.`);
         connectionLogged = true;
@@ -101,9 +112,9 @@ async function getScanFromMongo(id) {
 
 module.exports = {
   isMongoConfigured,
+  getMongoStatus,
   saveScanToMongo,
   listScansFromMongo,
   getScanFromMongo,
   getClient,
 };
-

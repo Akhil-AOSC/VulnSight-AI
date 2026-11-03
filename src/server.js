@@ -19,6 +19,7 @@ const { isGitUrl, cloneRepository } = require('./git');
 const { generateAiAnalysis } = require('./ai');
 const {
   isMongoConfigured,
+  getMongoStatus,
   saveScanToMongo,
   listScansFromMongo,
   getScanFromMongo,
@@ -229,7 +230,7 @@ function createApp({
           version: pkg.version,
           defaultTarget: path.resolve(defaultTarget),
           aiEnabled: Boolean(process.env.GROQ_API_KEY),
-          mongoEnabled: isMongoConfigured(),
+          mongo: getMongoStatus(),
         });
         return;
       }

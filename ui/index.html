@@ -15,7 +15,10 @@
         <span>VulnSight-AI</span>
       </div>
       <button type="button" class="btn btn-primary btn-block" id="new-scan">New scan</button>
-      <h2 class="sidebar-heading">Scan history</h2>
+      <div class="sidebar-heading-row">
+        <h2 class="sidebar-heading">Scan history</h2>
+        <span class="db-indicator" id="db-indicator" hidden></span>
+      </div>
       <ul class="history" id="history" aria-live="polite"></ul>
       <p class="sidebar-foot">Data from <a href="https://osv.dev" target="_blank" rel="noopener">OSV.dev</a> · <span id="version"></span></p>
     </aside>

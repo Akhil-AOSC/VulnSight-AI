@@ -366,3 +366,30 @@ table.issues { width: 100%; border-collapse: collapse; font-size: 13px; }
   color: var(--accent);
   margin-left: 4px;
 }
+
+.sidebar-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+.sidebar-heading-row .sidebar-heading {
+  margin-top: 0;
+}
+.db-indicator {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.db-connected {
+  background: rgba(12, 163, 12, 0.15);
+  color: var(--success);
+  border: 1px solid var(--success);
+}
+.db-fallback {
+  background: rgba(250, 178, 25, 0.15);
+  color: #fab219;
+  border: 1px solid #fab219;
+  cursor: help;
+}
