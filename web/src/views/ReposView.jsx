@@ -21,6 +21,49 @@ export function ReposListView() {
   const [connId, setConnId] = useState('');
   const [teamId, setTeamId] = useState('');
   const [busy, setBusy] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
+  const [remoteRepos, setRemoteRepos] = useState([]);
+  const [remoteLoading, setRemoteLoading] = useState(false);
+  const [remoteFilter, setRemoteFilter] = useState('');
+  const [addingRemote, setAddingRemote] = useState({});
+
+  async function handleBrowseProvider() {
+    const targetConn = connId || (conns[0] && conns[0].id);
+    if (!targetConn) {
+      toast('Select a Git connection first', 'error');
+      return;
+    }
+    setConnId(targetConn);
+    setBrowsing(true);
+    setRemoteLoading(true);
+    try {
+      const list = await api.get(api.org(`/connections/${targetConn}/repos`));
+      setRemoteRepos(list);
+    } catch (err) {
+      toast(`Failed to fetch repositories: ${err.message}`, 'error');
+      setBrowsing(false);
+    } finally {
+      setRemoteLoading(false);
+    }
+  }
+
+  async function handleAddRemote(r) {
+    setAddingRemote((prev) => ({ ...prev, [r.cloneUrl]: true }));
+    try {
+      await api.post(api.org('/repos'), {
+        url: r.cloneUrl,
+        branch: r.defaultBranch || 'main',
+        connectionId: connId || (conns[0] && conns[0].id),
+        teamId: teamId || null,
+      });
+      toast(`Repository ${r.fullName} added!`);
+      await loadAll();
+    } catch (err) {
+      toast(err.message || 'Failed to add repository', 'error');
+    } finally {
+      setAddingRemote((prev) => ({ ...prev, [r.cloneUrl]: false }));
+    }
+  }
 
   const canWrite = hasPermission(session.me, session.orgId, 'repos:write');
   const canScan = hasPermission(session.me, session.orgId, 'scans:run');
@@ -85,7 +128,14 @@ export function ReposListView() {
 
       {canWrite && (
         <section className="card">
-          <h2>Add a repository</h2>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+            <h2 style={{ margin: 0 }}>Add a repository</h2>
+            {conns.length > 0 && (
+              <button type="button" className="btn small" onClick={handleBrowseProvider}>
+                Browse Provider Repositories
+              </button>
+            )}
+          </div>
           <form className="inline" onSubmit={handleAddRepo}>
             <label>
               Repository URL or Local Folder
@@ -135,6 +185,64 @@ export function ReposListView() {
               Add repository
             </button>
           </form>
+
+          {browsing && (
+            <div style={{ marginTop: '1rem', borderTop: '1px solid var(--border)', paddingTop: '1rem' }}>
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ margin: 0 }}>Accessible Repositories from Provider</h3>
+                <button type="button" className="small" onClick={() => setBrowsing(false)}>
+                  Close
+                </button>
+              </div>
+              {remoteLoading ? (
+                <p className="muted">Fetching repositories...</p>
+              ) : (
+                <>
+                  <input
+                    type="text"
+                    placeholder="Filter repositories..."
+                    value={remoteFilter}
+                    onChange={(e) => setRemoteFilter(e.target.value)}
+                    style={{ margin: '0.75rem 0', width: '100%', maxWidth: '300px' }}
+                  />
+                  <DataTable
+                    headers={['Repository', 'Visibility', 'Default Branch', '']}
+                    rows={remoteRepos
+                      .filter((r) => r.fullName.toLowerCase().includes(remoteFilter.toLowerCase()))
+                      .map((r) => {
+                        const existingUrls = new Set(repos.map((x) => x.cloneUrl?.toLowerCase()));
+                        const isAdded = existingUrls.has(r.cloneUrl?.toLowerCase());
+                        return {
+                          id: r.fullName,
+                          cells: [
+                            <div key="name">
+                              <strong>{r.fullName}</strong>
+                              {r.description && <div className="muted small">{r.description}</div>}
+                            </div>,
+                            r.private ? <span className="badge st-open" key="vis">Private</span> : <span className="badge st-ok" key="vis">Public</span>,
+                            <span className="mono small" key="br">{r.defaultBranch || 'main'}</span>,
+                            isAdded ? (
+                              <span className="badge st-ok" key="act">Already added</span>
+                            ) : (
+                              <button
+                                type="button"
+                                key="act"
+                                className="primary small"
+                                disabled={addingRemote[r.cloneUrl]}
+                                onClick={() => handleAddRemote(r)}
+                              >
+                                + Add
+                              </button>
+                            ),
+                          ],
+                        };
+                      })}
+                    empty="No matching repositories found."
+                  />
+                </>
+              )}
+            </div>
+          )}
           <p className="muted small">
             Enter a GitHub/GitLab/Bitbucket https URL or a local project folder path. Private
             repositories need a connection (Settings &gt; Git providers).

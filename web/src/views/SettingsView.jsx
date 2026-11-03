@@ -437,6 +437,8 @@ function ProvidersTab() {
   const [provider, setProvider] = useState('github');
   const [token, setToken] = useState('');
   const [busy, setBusy] = useState(false);
+  const [discovery, setDiscovery] = useState(null);
+  const [addingRepo, setAddingRepo] = useState({});
 
   const manage = hasPermission(session.me, session.orgId, 'providers:manage');
 
@@ -452,14 +454,55 @@ function ProvidersTab() {
     load();
   }, [session.orgId]);
 
+  function renderStatusBadge(c) {
+    if (c.isExpired) return <span className="badge sev-critical">Expired</span>;
+    if (c.daysLeft != null) {
+      if (c.daysLeft <= 0) return <span className="badge sev-critical">Expired today</span>;
+      if (c.daysLeft <= 7) return <span className="badge sev-high">Expires in {c.daysLeft}d</span>;
+      return <span className="badge sev-low">Expires in {c.daysLeft}d</span>;
+    }
+    if (c.expiresAt) return <span className="badge sev-low">{fmtDate(c.expiresAt)}</span>;
+    return <span className="badge st-suppressed">No expiration</span>;
+  }
+
+  async function openDiscovery(c) {
+    setDiscovery({ conn: c, repos: [], loading: true, filter: '' });
+    try {
+      const [remoteRepos, currentRepos] = await Promise.all([
+        api.get(api.org(`/connections/${c.id}/repos`)),
+        api.get(api.org('/repos')),
+      ]);
+      const currentUrls = new Set(currentRepos.map((r) => r.cloneUrl.toLowerCase()));
+      setDiscovery({ conn: c, repos: remoteRepos, currentUrls, loading: false, filter: '' });
+    } catch (err) {
+      toast(`Failed to fetch repositories: ${err.message}`, 'error');
+      setDiscovery(null);
+    }
+  }
+
+  async function handleCheck(c) {
+    try {
+      const res = await api.post(api.org(`/connections/${c.id}/check`), {});
+      if (res.valid) {
+        toast(`Token is valid! ${res.expiresAt ? 'Expires: ' + fmtDate(res.expiresAt) : 'No expiration'}`);
+        await load();
+      } else {
+        toast(`Token check failed: ${res.error}`, 'error');
+      }
+    } catch (err) {
+      toast(err.message || 'Token check failed', 'error');
+    }
+  }
+
   async function handleConnect(e) {
     e.preventDefault();
     setBusy(true);
     try {
       const r = await api.post(api.org('/connections'), { provider, token });
       setToken('');
-      toast(`Connected as ${r.account}`);
+      toast(`Connected as ${r.account}${r.expiresAt ? ' (Expires: ' + fmtDate(r.expiresAt) + ')' : ''}`);
       await load();
+      await openDiscovery(r);
     } catch (err) {
       toast(err.message, 'error');
     } finally {
@@ -471,9 +514,32 @@ function ProvidersTab() {
     if (!confirm('Disconnect this provider? Repositories using it can no longer be scanned.')) return;
     try {
       await api.del(api.org(`/connections/${id}`));
+      if (discovery && discovery.conn.id === id) setDiscovery(null);
       await load();
     } catch (err) {
       toast(err.message, 'error');
+    }
+  }
+
+  async function handleAddDiscoveredRepo(r, connId) {
+    setAddingRepo((prev) => ({ ...prev, [r.cloneUrl]: true }));
+    try {
+      await api.post(api.org('/repos'), {
+        url: r.cloneUrl,
+        branch: r.defaultBranch || 'main',
+        connectionId: connId,
+      });
+      toast(`Repository ${r.fullName} added!`);
+      if (discovery) {
+        setDiscovery((prev) => ({
+          ...prev,
+          currentUrls: new Set([...prev.currentUrls, r.cloneUrl.toLowerCase()]),
+        }));
+      }
+    } catch (err) {
+      toast(err.message || 'Failed to add repository', 'error');
+    } finally {
+      setAddingRepo((prev) => ({ ...prev, [r.cloneUrl]: false }));
     }
   }
 
@@ -482,23 +548,91 @@ function ProvidersTab() {
       <section className="card">
         <h2>Connected Git providers</h2>
         <DataTable
-          headers={['Provider', 'Account', 'Added', '']}
+          headers={['Provider', 'Account', 'Token Status', 'Added', '']}
           rows={list.map((c) => ({
             id: c.id,
             cells: [
               c.provider,
               c.account || c.label,
+              renderStatusBadge(c),
               fmtDate(c.createdAt),
-              manage ? (
-                <button className="danger" type="button" onClick={() => handleDisconnect(c.id)}>
-                  Disconnect
+              <div className="row" key="actions">
+                <button type="button" className="btn small" onClick={() => openDiscovery(c)}>
+                  Fetch Repos
                 </button>
-              ) : null,
+                <button type="button" className="btn small" onClick={() => handleCheck(c)}>
+                  Check
+                </button>
+                {manage && (
+                  <button className="danger small" type="button" onClick={() => handleDisconnect(c.id)}>
+                    Disconnect
+                  </button>
+                )}
+              </div>,
             ],
           }))}
           empty="No providers connected."
         />
       </section>
+
+      {discovery && (
+        <section className="card" style={{ marginTop: '1rem' }}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <h2 style={{ margin: 0 }}>
+              Accessible Repositories ({discovery.conn.account || discovery.conn.label})
+            </h2>
+            <button type="button" className="small" onClick={() => setDiscovery(null)}>
+              Close
+            </button>
+          </div>
+          {discovery.loading ? (
+            <p className="muted">Fetching repositories from {discovery.conn.provider}...</p>
+          ) : (
+            <>
+              <input
+                type="text"
+                placeholder="Filter repositories..."
+                value={discovery.filter}
+                onChange={(e) => setDiscovery({ ...discovery, filter: e.target.value })}
+                style={{ margin: '0.75rem 0', width: '100%', maxWidth: '320px' }}
+              />
+              <DataTable
+                headers={['Repository', 'Visibility', 'Default Branch', '']}
+                rows={discovery.repos
+                  .filter((r) => r.fullName.toLowerCase().includes(discovery.filter.toLowerCase()))
+                  .map((r) => {
+                    const added = discovery.currentUrls && discovery.currentUrls.has(r.cloneUrl.toLowerCase());
+                    return {
+                      id: r.fullName,
+                      cells: [
+                        <div key="name">
+                          <strong>{r.fullName}</strong>
+                          {r.description && <div className="muted small">{r.description}</div>}
+                        </div>,
+                        r.private ? <span className="badge st-open" key="vis">Private</span> : <span className="badge st-ok" key="vis">Public</span>,
+                        <span className="mono small" key="br">{r.defaultBranch || 'main'}</span>,
+                        added ? (
+                          <span className="badge st-ok" key="act">Already added</span>
+                        ) : (
+                          <button
+                            type="button"
+                            key="act"
+                            className="primary small"
+                            disabled={addingRepo[r.cloneUrl]}
+                            onClick={() => handleAddDiscoveredRepo(r, discovery.conn.id)}
+                          >
+                            + Add to VulnSight
+                          </button>
+                        ),
+                      ],
+                    };
+                  })}
+                empty="No matching repositories found."
+              />
+            </>
+          )}
+        </section>
+      )}
 
       {manage && (
         <section className="card">
@@ -529,65 +663,12 @@ function ProvidersTab() {
             </button>
           </form>
           <p className="muted small">
-            Use a token with read-only repository access. It is validated against the provider,
+            Use a token with repository access. It is validated against the provider (including expiration date),
             encrypted at rest and never shown again. Scans use it only to clone the repository.
           </p>
         </section>
       )}
     </>
-  );
-}
-
-function NotificationsTab() {
-  const [list, setList] = useState([]);
-
-  async function load() {
-    try {
-      setList(await api.get(api.org('/notifications')));
-    } catch (err) {
-      toast(err.message, 'error');
-    }
-  }
-
-  useEffect(() => {
-    load();
-  }, [session.orgId]);
-
-  async function handleMarkRead() {
-    try {
-      await api.post(api.org('/notifications/read'), {});
-      await load();
-    } catch (err) {
-      toast(err.message, 'error');
-    }
-  }
-
-  return (
-    <section className="card">
-      <div className="row">
-        <h2 className="grow">Notifications</h2>
-        {list.some((n) => !n.read) && (
-          <button type="button" onClick={handleMarkRead}>
-            Mark all as read
-          </button>
-        )}
-      </div>
-      <DataTable
-        headers={['', 'Notification', 'When']}
-        rows={list.map((n) => ({
-          id: n.id,
-          cells: [
-            n.read ? '' : <span className="badge st-open">new</span>,
-            <div>
-              <strong>{n.title}</strong>
-              {n.body && <div className="muted small">{n.body}</div>}
-            </div>,
-            ago(n.createdAt),
-          ],
-        }))}
-        empty="No notifications."
-      />
-    </section>
   );
 }
 

@@ -24527,6 +24527,47 @@ function ReposListView() {
   const [connId, setConnId] = (0, import_react5.useState)("");
   const [teamId, setTeamId] = (0, import_react5.useState)("");
   const [busy, setBusy] = (0, import_react5.useState)(false);
+  const [browsing, setBrowsing] = (0, import_react5.useState)(false);
+  const [remoteRepos, setRemoteRepos] = (0, import_react5.useState)([]);
+  const [remoteLoading, setRemoteLoading] = (0, import_react5.useState)(false);
+  const [remoteFilter, setRemoteFilter] = (0, import_react5.useState)("");
+  const [addingRemote, setAddingRemote] = (0, import_react5.useState)({});
+  async function handleBrowseProvider() {
+    const targetConn = connId || conns[0] && conns[0].id;
+    if (!targetConn) {
+      toast("Select a Git connection first", "error");
+      return;
+    }
+    setConnId(targetConn);
+    setBrowsing(true);
+    setRemoteLoading(true);
+    try {
+      const list = await api.get(api.org(`/connections/${targetConn}/repos`));
+      setRemoteRepos(list);
+    } catch (err) {
+      toast(`Failed to fetch repositories: ${err.message}`, "error");
+      setBrowsing(false);
+    } finally {
+      setRemoteLoading(false);
+    }
+  }
+  async function handleAddRemote(r) {
+    setAddingRemote((prev) => ({ ...prev, [r.cloneUrl]: true }));
+    try {
+      await api.post(api.org("/repos"), {
+        url: r.cloneUrl,
+        branch: r.defaultBranch || "main",
+        connectionId: connId || conns[0] && conns[0].id,
+        teamId: teamId || null
+      });
+      toast(`Repository ${r.fullName} added!`);
+      await loadAll();
+    } catch (err) {
+      toast(err.message || "Failed to add repository", "error");
+    } finally {
+      setAddingRemote((prev) => ({ ...prev, [r.cloneUrl]: false }));
+    }
+  }
   const canWrite = hasPermission(session.me, session.orgId, "repos:write");
   const canScan = hasPermission(session.me, session.orgId, "scans:run");
   async function loadAll() {
@@ -24581,7 +24622,10 @@ function ReposListView() {
   return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_jsx_runtime5.Fragment, { children: [
     /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(PageHead, { title: "Repositories", subtitle: "Connect a repository and scan it" }),
     canWrite && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: "card", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("h2", { children: "Add a repository" }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "row", style: { justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("h2", { style: { margin: 0 }, children: "Add a repository" }),
+        conns.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { type: "button", className: "btn small", onClick: handleBrowseProvider, children: "Browse Provider Repositories" })
+      ] }),
       /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("form", { className: "inline", onSubmit: handleAddRepo, children: [
         /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { children: [
           "Repository URL or Local Folder",
@@ -24630,6 +24674,57 @@ function ReposListView() {
           ] })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { className: "primary", type: "submit", disabled: busy, children: "Add repository" })
+      ] }),
+      browsing && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { marginTop: "1rem", borderTop: "1px solid var(--border)", paddingTop: "1rem" }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "row", style: { justifyContent: "space-between", alignItems: "center" }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("h3", { style: { margin: 0 }, children: "Accessible Repositories from Provider" }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { type: "button", className: "small", onClick: () => setBrowsing(false), children: "Close" })
+        ] }),
+        remoteLoading ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { className: "muted", children: "Fetching repositories..." }) : /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_jsx_runtime5.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+            "input",
+            {
+              type: "text",
+              placeholder: "Filter repositories...",
+              value: remoteFilter,
+              onChange: (e) => setRemoteFilter(e.target.value),
+              style: { margin: "0.75rem 0", width: "100%", maxWidth: "300px" }
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+            DataTable,
+            {
+              headers: ["Repository", "Visibility", "Default Branch", ""],
+              rows: remoteRepos.filter((r) => r.fullName.toLowerCase().includes(remoteFilter.toLowerCase())).map((r) => {
+                const existingUrls = new Set(repos.map((x) => x.cloneUrl?.toLowerCase()));
+                const isAdded = existingUrls.has(r.cloneUrl?.toLowerCase());
+                return {
+                  id: r.fullName,
+                  cells: [
+                    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { children: [
+                      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { children: r.fullName }),
+                      r.description && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "muted small", children: r.description })
+                    ] }, "name"),
+                    r.private ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "badge st-open", children: "Private" }, "vis") : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "badge st-ok", children: "Public" }, "vis"),
+                    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "mono small", children: r.defaultBranch || "main" }, "br"),
+                    isAdded ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "badge st-ok", children: "Already added" }, "act") : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+                      "button",
+                      {
+                        type: "button",
+                        className: "primary small",
+                        disabled: addingRemote[r.cloneUrl],
+                        onClick: () => handleAddRemote(r),
+                        children: "+ Add"
+                      },
+                      "act"
+                    )
+                  ]
+                };
+              }),
+              empty: "No matching repositories found."
+            }
+          )
+        ] })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { className: "muted small", children: "Enter a GitHub/GitLab/Bitbucket https URL or a local project folder path. Private repositories need a connection (Settings > Git providers)." })
     ] }),
@@ -26179,6 +26274,8 @@ function ProvidersTab() {
   const [provider, setProvider] = (0, import_react9.useState)("github");
   const [token, setToken] = (0, import_react9.useState)("");
   const [busy, setBusy] = (0, import_react9.useState)(false);
+  const [discovery, setDiscovery] = (0, import_react9.useState)(null);
+  const [addingRepo, setAddingRepo] = (0, import_react9.useState)({});
   const manage = hasPermission(session.me, session.orgId, "providers:manage");
   async function load() {
     try {
@@ -26190,14 +26287,60 @@ function ProvidersTab() {
   (0, import_react9.useEffect)(() => {
     load();
   }, [session.orgId]);
+  function renderStatusBadge(c) {
+    if (c.isExpired) return /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "badge sev-critical", children: "Expired" });
+    if (c.daysLeft != null) {
+      if (c.daysLeft <= 0) return /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "badge sev-critical", children: "Expired today" });
+      if (c.daysLeft <= 7) return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("span", { className: "badge sev-high", children: [
+        "Expires in ",
+        c.daysLeft,
+        "d"
+      ] });
+      return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("span", { className: "badge sev-low", children: [
+        "Expires in ",
+        c.daysLeft,
+        "d"
+      ] });
+    }
+    if (c.expiresAt) return /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "badge sev-low", children: fmtDate(c.expiresAt) });
+    return /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "badge st-suppressed", children: "No expiration" });
+  }
+  async function openDiscovery(c) {
+    setDiscovery({ conn: c, repos: [], loading: true, filter: "" });
+    try {
+      const [remoteRepos, currentRepos] = await Promise.all([
+        api.get(api.org(`/connections/${c.id}/repos`)),
+        api.get(api.org("/repos"))
+      ]);
+      const currentUrls = new Set(currentRepos.map((r) => r.cloneUrl.toLowerCase()));
+      setDiscovery({ conn: c, repos: remoteRepos, currentUrls, loading: false, filter: "" });
+    } catch (err) {
+      toast(`Failed to fetch repositories: ${err.message}`, "error");
+      setDiscovery(null);
+    }
+  }
+  async function handleCheck(c) {
+    try {
+      const res = await api.post(api.org(`/connections/${c.id}/check`), {});
+      if (res.valid) {
+        toast(`Token is valid! ${res.expiresAt ? "Expires: " + fmtDate(res.expiresAt) : "No expiration"}`);
+        await load();
+      } else {
+        toast(`Token check failed: ${res.error}`, "error");
+      }
+    } catch (err) {
+      toast(err.message || "Token check failed", "error");
+    }
+  }
   async function handleConnect(e) {
     e.preventDefault();
     setBusy(true);
     try {
       const r = await api.post(api.org("/connections"), { provider, token });
       setToken("");
-      toast(`Connected as ${r.account}`);
+      toast(`Connected as ${r.account}${r.expiresAt ? " (Expires: " + fmtDate(r.expiresAt) + ")" : ""}`);
       await load();
+      await openDiscovery(r);
     } catch (err) {
       toast(err.message, "error");
     } finally {
@@ -26208,9 +26351,31 @@ function ProvidersTab() {
     if (!confirm("Disconnect this provider? Repositories using it can no longer be scanned.")) return;
     try {
       await api.del(api.org(`/connections/${id}`));
+      if (discovery && discovery.conn.id === id) setDiscovery(null);
       await load();
     } catch (err) {
       toast(err.message, "error");
+    }
+  }
+  async function handleAddDiscoveredRepo(r, connId) {
+    setAddingRepo((prev) => ({ ...prev, [r.cloneUrl]: true }));
+    try {
+      await api.post(api.org("/repos"), {
+        url: r.cloneUrl,
+        branch: r.defaultBranch || "main",
+        connectionId: connId
+      });
+      toast(`Repository ${r.fullName} added!`);
+      if (discovery) {
+        setDiscovery((prev) => ({
+          ...prev,
+          currentUrls: /* @__PURE__ */ new Set([...prev.currentUrls, r.cloneUrl.toLowerCase()])
+        }));
+      }
+    } catch (err) {
+      toast(err.message || "Failed to add repository", "error");
+    } finally {
+      setAddingRepo((prev) => ({ ...prev, [r.cloneUrl]: false }));
     }
   }
   return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(import_jsx_runtime9.Fragment, { children: [
@@ -26219,19 +26384,82 @@ function ProvidersTab() {
       /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
         DataTable,
         {
-          headers: ["Provider", "Account", "Added", ""],
+          headers: ["Provider", "Account", "Token Status", "Added", ""],
           rows: list.map((c) => ({
             id: c.id,
             cells: [
               c.provider,
               c.account || c.label,
+              renderStatusBadge(c),
               fmtDate(c.createdAt),
-              manage ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("button", { className: "danger", type: "button", onClick: () => handleDisconnect(c.id), children: "Disconnect" }) : null
+              /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "row", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("button", { type: "button", className: "btn small", onClick: () => openDiscovery(c), children: "Fetch Repos" }),
+                /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("button", { type: "button", className: "btn small", onClick: () => handleCheck(c), children: "Check" }),
+                manage && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("button", { className: "danger small", type: "button", onClick: () => handleDisconnect(c.id), children: "Disconnect" })
+              ] }, "actions")
             ]
           })),
           empty: "No providers connected."
         }
       )
+    ] }),
+    discovery && /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("section", { className: "card", style: { marginTop: "1rem" }, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "row", style: { justifyContent: "space-between", alignItems: "center" }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("h2", { style: { margin: 0 }, children: [
+          "Accessible Repositories (",
+          discovery.conn.account || discovery.conn.label,
+          ")"
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("button", { type: "button", className: "small", onClick: () => setDiscovery(null), children: "Close" })
+      ] }),
+      discovery.loading ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("p", { className: "muted", children: [
+        "Fetching repositories from ",
+        discovery.conn.provider,
+        "..."
+      ] }) : /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(import_jsx_runtime9.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+          "input",
+          {
+            type: "text",
+            placeholder: "Filter repositories...",
+            value: discovery.filter,
+            onChange: (e) => setDiscovery({ ...discovery, filter: e.target.value }),
+            style: { margin: "0.75rem 0", width: "100%", maxWidth: "320px" }
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+          DataTable,
+          {
+            headers: ["Repository", "Visibility", "Default Branch", ""],
+            rows: discovery.repos.filter((r) => r.fullName.toLowerCase().includes(discovery.filter.toLowerCase())).map((r) => {
+              const added = discovery.currentUrls && discovery.currentUrls.has(r.cloneUrl.toLowerCase());
+              return {
+                id: r.fullName,
+                cells: [
+                  /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("strong", { children: r.fullName }),
+                    r.description && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "muted small", children: r.description })
+                  ] }, "name"),
+                  r.private ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "badge st-open", children: "Private" }, "vis") : /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "badge st-ok", children: "Public" }, "vis"),
+                  /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "mono small", children: r.defaultBranch || "main" }, "br"),
+                  added ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "badge st-ok", children: "Already added" }, "act") : /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+                    "button",
+                    {
+                      type: "button",
+                      className: "primary small",
+                      disabled: addingRepo[r.cloneUrl],
+                      onClick: () => handleAddDiscoveredRepo(r, discovery.conn.id),
+                      children: "+ Add to VulnSight"
+                    },
+                    "act"
+                  )
+                ]
+              };
+            }),
+            empty: "No matching repositories found."
+          }
+        )
+      ] })
     ] }),
     manage && /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("section", { className: "card", children: [
       /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h2", { children: "Connect a provider" }),
@@ -26261,53 +26489,8 @@ function ProvidersTab() {
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("button", { className: "primary", type: "submit", disabled: busy, children: "Connect" })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("p", { className: "muted small", children: "Use a token with read-only repository access. It is validated against the provider, encrypted at rest and never shown again. Scans use it only to clone the repository." })
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("p", { className: "muted small", children: "Use a token with repository access. It is validated against the provider (including expiration date), encrypted at rest and never shown again. Scans use it only to clone the repository." })
     ] })
-  ] });
-}
-function NotificationsTab() {
-  const [list, setList] = (0, import_react9.useState)([]);
-  async function load() {
-    try {
-      setList(await api.get(api.org("/notifications")));
-    } catch (err) {
-      toast(err.message, "error");
-    }
-  }
-  (0, import_react9.useEffect)(() => {
-    load();
-  }, [session.orgId]);
-  async function handleMarkRead() {
-    try {
-      await api.post(api.org("/notifications/read"), {});
-      await load();
-    } catch (err) {
-      toast(err.message, "error");
-    }
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("section", { className: "card", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "row", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h2", { className: "grow", children: "Notifications" }),
-      list.some((n) => !n.read) && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("button", { type: "button", onClick: handleMarkRead, children: "Mark all as read" })
-    ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
-      DataTable,
-      {
-        headers: ["", "Notification", "When"],
-        rows: list.map((n) => ({
-          id: n.id,
-          cells: [
-            n.read ? "" : /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "badge st-open", children: "new" }),
-            /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("strong", { children: n.title }),
-              n.body && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "muted small", children: n.body })
-            ] }),
-            ago(n.createdAt)
-          ]
-        })),
-        empty: "No notifications."
-      }
-    )
   ] });
 }
 function AuditTab() {
