@@ -334,17 +334,42 @@ function createPlatform({
       const impl = PROVIDERS[provider];
       if (!impl) throw new ValidationError('Unsupported provider. Use github, gitlab or bitbucket');
       if (typeof token !== 'string' || token.length < 8 || token.length > 500) throw new ValidationError('Enter a valid access token');
-      const { account } = await impl.validate(token, fetchImpl);
+      const { account, expiresAt = null, scopes = null } = await impl.validate(token, fetchImpl);
       const id = uuid();
-      db.prepare('INSERT INTO provider_connections (id, org_id, provider, label, token_enc, account, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, ctx.orgId, provider, String(label || account || provider).slice(0, 100), secretBox.encrypt(token), account, ctx.userId, nowIso());
-      audit(ctx, 'provider.connect', id, { provider, account });
-      return { id, provider, account };
+      db.prepare('INSERT INTO provider_connections (id, org_id, provider, label, token_enc, account, expires_at, scopes, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, ctx.orgId, provider, String(label || account || provider).slice(0, 100), secretBox.encrypt(token), account, expiresAt, scopes, ctx.userId, nowIso());
+      audit(ctx, 'provider.connect', id, { provider, account, expiresAt });
+      return { id, provider, account, expiresAt, scopes };
     },
     list(ctx) {
       authorize(ctx, 'repos:read');
       // Tokens are never returned.
-      return db.prepare('SELECT id, provider, label, account, created_at AS createdAt FROM provider_connections WHERE org_id = ? ORDER BY created_at').all(ctx.orgId);
+      const rows = db.prepare('SELECT id, provider, label, account, expires_at AS expiresAt, scopes, created_at AS createdAt FROM provider_connections WHERE org_id = ? ORDER BY created_at').all(ctx.orgId);
+      const now = new Date();
+      return rows.map((r) => {
+        const exp = r.expiresAt ? new Date(r.expiresAt) : null;
+        const isExpired = exp ? exp <= now : false;
+        const daysLeft = exp && !isExpired ? Math.ceil((exp - now) / 86400000) : null;
+        return { ...r, isExpired, daysLeft };
+      });
+    },
+    async check(ctx, connectionId) {
+      authorize(ctx, 'providers:manage');
+      const { connection, token } = connectionToken(ctx.orgId, connectionId);
+      const impl = PROVIDERS[connection.provider];
+      if (!impl) throw new ValidationError('Unsupported provider');
+      try {
+        const { account, expiresAt = null, scopes = null } = await impl.validate(token, fetchImpl);
+        db.prepare('UPDATE provider_connections SET account = ?, expires_at = ?, scopes = ? WHERE id = ? AND org_id = ?')
+          .run(account, expiresAt, scopes, connectionId, ctx.orgId);
+        const now = new Date();
+        const exp = expiresAt ? new Date(expiresAt) : null;
+        const isExpired = exp ? exp <= now : false;
+        const daysLeft = exp && !isExpired ? Math.ceil((exp - now) / 86400000) : null;
+        return { valid: true, account, expiresAt, isExpired, daysLeft, scopes };
+      } catch (err) {
+        return { valid: false, error: err.message, status: err.status || 400 };
+      }
     },
     async listRemoteRepos(ctx, connectionId) {
       authorize(ctx, 'repos:write');

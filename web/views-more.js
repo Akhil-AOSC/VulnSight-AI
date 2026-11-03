@@ -202,17 +202,156 @@ async function teams(body) {
 async function providers(body) {
   const list = await api.get(api.org('/connections'));
   const manage = can('providers:manage');
+
+  function renderStatusBadge(c) {
+    if (c.isExpired) return h('span', { class: 'badge sev-critical' }, 'Expired');
+    if (c.daysLeft != null) {
+      if (c.daysLeft <= 0) return h('span', { class: 'badge sev-critical' }, 'Expired today');
+      if (c.daysLeft <= 7) return h('span', { class: 'badge sev-high' }, `Expires in ${c.daysLeft}d`);
+      return h('span', { class: 'badge sev-low' }, `Expires in ${c.daysLeft}d`);
+    }
+    if (c.expiresAt) return h('span', { class: 'badge sev-low' }, fmtDate(c.expiresAt));
+    return h('span', { class: 'badge st-suppressed' }, 'No expiration');
+  }
+
+  const discoverySection = h('section', { class: 'card', style: 'display: none; margin-top: 1rem;' });
+
+  async function showRepoDiscovery(conn) {
+    clear(discoverySection);
+    discoverySection.style.display = 'block';
+    discoverySection.append(h('div', { class: 'row', style: 'justify-content: space-between; align-items: center;' },
+      h('h2', { style: 'margin: 0;' }, `Accessible Repositories (${conn.account || conn.label})`),
+      h('button', { type: 'button', class: 'small', onclick: () => { discoverySection.style.display = 'none'; } }, 'Close')
+    ));
+
+    const loadingP = h('p', { class: 'muted' }, 'Fetching repositories from ' + conn.provider + '...');
+    discoverySection.append(loadingP);
+
+    try {
+      const [remoteRepos, existingRepos] = await Promise.all([
+        api.get(api.org(`/connections/${conn.id}/repos`)),
+        api.get(api.org('/repos')),
+      ]);
+      loadingP.remove();
+
+      if (!remoteRepos.length) {
+        discoverySection.append(h('p', { class: 'muted' }, 'No repositories found for this account or token.'));
+        return;
+      }
+
+      const existingUrls = new Set(existingRepos.map((r) => r.cloneUrl.toLowerCase()));
+      const searchInput = h('input', { placeholder: 'Filter repositories...', style: 'margin-bottom: 0.75rem; width: 100%; max-width: 320px;' });
+      const tableContainer = h('div');
+
+      function renderTable(filterText = '') {
+        clear(tableContainer);
+        const filtered = remoteRepos.filter((r) => r.fullName.toLowerCase().includes(filterText.toLowerCase()));
+        tableContainer.append(table(['Repository', 'Visibility', 'Default Branch', ''],
+          filtered.map((r) => {
+            const isAdded = existingUrls.has(r.cloneUrl.toLowerCase());
+            let actionBtn;
+            if (isAdded) {
+              actionBtn = h('span', { class: 'badge st-ok' }, 'Already added');
+            } else {
+              actionBtn = h('button', {
+                class: 'primary small',
+                type: 'button',
+                onclick: () => guard(async () => {
+                  actionBtn.disabled = true;
+                  await api.post(api.org('/repos'), { url: r.cloneUrl, branch: r.defaultBranch || 'main', connectionId: conn.id });
+                  existingUrls.add(r.cloneUrl.toLowerCase());
+                  toast(`Repository ${r.fullName} added!`);
+                  renderTable(searchInput.value.trim());
+                }, { busy: actionBtn }),
+              }, '+ Add to VulnSight');
+            }
+            return {
+              cells: [
+                h('div', null, h('strong', null, r.fullName), r.description ? h('div', { class: 'muted small' }, r.description) : null),
+                r.private ? h('span', { class: 'badge st-open' }, 'Private') : h('span', { class: 'badge st-ok' }, 'Public'),
+                h('span', { class: 'mono small' }, r.defaultBranch || 'main'),
+                actionBtn,
+              ],
+            };
+          }),
+          { empty: 'No repositories match your filter.' }
+        ));
+      }
+
+      searchInput.addEventListener('input', () => renderTable(searchInput.value.trim()));
+      discoverySection.append(searchInput, tableContainer);
+      renderTable('');
+      discoverySection.scrollIntoView({ behavior: 'smooth' });
+    } catch (err) {
+      loadingP.remove();
+      discoverySection.append(h('p', { class: 'badge sev-critical' }, `Failed to fetch repositories: ${err.message}`));
+    }
+  }
+
   body.append(h('section', { class: 'card' }, h('h2', null, 'Connected Git providers'),
-    table(['Provider', 'Account', 'Added', ''], list.map((c) => ({ cells: [c.provider, c.account || c.label, fmtDate(c.createdAt),
-      manage ? h('button', { class: 'danger', type: 'button', onclick: () => { if (confirm('Disconnect this provider? Repositories using it can no longer be scanned.')) guard(async () => { await api.del(api.org(`/connections/${c.id}`)); location.reload(); }); } }, 'Disconnect') : null] })), { empty: 'No providers connected.' })));
+    table(['Provider', 'Account', 'Token Status', 'Added', ''], list.map((c) => {
+      const fetchBtn = h('button', {
+        type: 'button',
+        class: 'small',
+        onclick: () => showRepoDiscovery(c),
+      }, 'Fetch Repos');
+
+      const checkBtn = h('button', {
+        type: 'button',
+        class: 'small',
+        onclick: () => guard(async () => {
+          checkBtn.disabled = true;
+          const res = await api.post(api.org(`/connections/${c.id}/check`), {});
+          checkBtn.disabled = false;
+          if (res.valid) {
+            toast(`Token valid! ${res.expiresAt ? 'Expires: ' + fmtDate(res.expiresAt) : 'No expiration'}`);
+            location.reload();
+          } else {
+            toast(`Token check failed: ${res.error}`, 'error');
+          }
+        }, { busy: checkBtn }),
+      }, 'Check');
+
+      const disconnectBtn = manage ? h('button', {
+        class: 'danger small',
+        type: 'button',
+        onclick: () => {
+          if (confirm('Disconnect this provider? Repositories using it can no longer be scanned.')) {
+            guard(async () => {
+              await api.del(api.org(`/connections/${c.id}`));
+              location.reload();
+            });
+          }
+        },
+      }, 'Disconnect') : null;
+
+      const actions = h('div', { class: 'row' }, fetchBtn, checkBtn, disconnectBtn);
+      return {
+        cells: [c.provider, c.account || c.label, renderStatusBadge(c), fmtDate(c.createdAt), actions],
+      };
+    }), { empty: 'No providers connected.' })));
+
+  body.append(discoverySection);
+
   if (manage) {
     const provider = h('select', null, [['github', 'GitHub'], ['gitlab', 'GitLab'], ['bitbucket', 'Bitbucket']].map(([v, l]) => h('option', { value: v }, l)));
     const token = h('input', { type: 'password', required: true, autocomplete: 'off', size: 36, placeholder: 'Personal access token' });
     const add = h('button', { class: 'primary', type: 'submit' }, 'Connect');
     body.append(h('section', { class: 'card' }, h('h2', null, 'Connect a provider'),
-      h('form', { class: 'inline', onsubmit: (e) => { e.preventDefault(); guard(async () => { const r = await api.post(api.org('/connections'), { provider: provider.value, token: token.value }); token.value = ''; toast(`Connected as ${r.account}`); location.reload(); }, { busy: add }); } },
-        field('Provider', provider), field('Access token', token), add),
-      h('p', { class: 'muted small' }, 'Use a token with read-only repository access. It is validated against the provider, encrypted at rest and never shown again. Scans use it only to clone the repository.')));
+      h('form', {
+        class: 'inline',
+        onsubmit: (e) => {
+          e.preventDefault();
+          guard(async () => {
+            const r = await api.post(api.org('/connections'), { provider: provider.value, token: token.value });
+            token.value = '';
+            toast(`Connected as ${r.account}${r.expiresAt ? ' (Expires: ' + fmtDate(r.expiresAt) + ')' : ''}`);
+            // Automatically fetch and show repositories for the new connection!
+            await showRepoDiscovery({ id: r.id, provider: r.provider, account: r.account });
+          }, { busy: add });
+        },
+      }, field('Provider', provider), field('Access token', token), add),
+      h('p', { class: 'muted small' }, 'Use a token with repository access. It is validated against the provider (including expiration date), encrypted at rest and never shown again. Scans use it only to clone the repository.')));
   }
 }
 

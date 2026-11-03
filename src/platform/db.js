@@ -89,6 +89,11 @@ const MIGRATIONS = [
     org_id TEXT NOT NULL, secret_hash TEXT NOT NULL, payload_enc TEXT NOT NULL,
     expires_at TEXT NOT NULL, used_at TEXT);
   `,
+  // 3: token expiration and scopes for git provider connections
+  `
+  ALTER TABLE provider_connections ADD COLUMN expires_at TEXT;
+  ALTER TABLE provider_connections ADD COLUMN scopes TEXT;
+  `,
 ];
 
 function openDatabase(file = ':memory:') {

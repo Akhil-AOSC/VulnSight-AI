@@ -72,10 +72,88 @@ export async function repos(root) {
   if (can('repos:write')) {
     const url = h('input', { type: 'url', required: true, placeholder: 'https://github.com/owner/name', size: 38, autocomplete: 'off' });
     const branch = h('input', { placeholder: 'main', size: 12, value: 'main' });
-    const conn = h('select', null, h('option', { value: '' }, 'Public repository (no connection)'), conns.map((c) => h('option', { value: c.id }, `${c.provider}: ${c.account || c.label}`)));
+    const conn = h('select', null, h('option', { value: '' }, 'Public repository (no connection)'), conns.map((c) => h('option', { value: c.id }, `${c.provider}: ${c.account || c.label}${c.isExpired ? ' (Expired)' : ''}`)));
     const team = h('select', null, h('option', { value: '' }, 'No team'), teams.map((t) => h('option', { value: t.id }, t.name)));
     const submit = h('button', { class: 'primary', type: 'submit' }, 'Add repository');
-    root.append(h('section', { class: 'card' }, h('h2', null, 'Add a repository'),
+
+    const discoveryBox = h('div', { style: 'display: none; margin-top: 1rem; border-top: 1px solid var(--border); padding-top: 1rem;' });
+    const browseBtn = conns.length ? h('button', {
+      type: 'button',
+      class: 'small',
+      onclick: async () => {
+        const connId = conn.value || (conns[0] && conns[0].id);
+        if (!connId) {
+          toast('Select a Git connection first', 'error');
+          return;
+        }
+        conn.value = connId;
+        clear(discoveryBox);
+        discoveryBox.style.display = 'block';
+        const loading = h('p', { class: 'muted' }, 'Fetching repositories from provider...');
+        discoveryBox.append(loading);
+        try {
+          const remoteRepos = await api.get(api.org(`/connections/${connId}/repos`));
+          loading.remove();
+          if (!remoteRepos.length) {
+            discoveryBox.append(h('p', { class: 'muted' }, 'No repositories found for this connection.'));
+            return;
+          }
+          const existingUrls = new Set(list.map((r) => r.cloneUrl.toLowerCase()));
+          const filterInput = h('input', { placeholder: 'Filter repositories...', style: 'margin-bottom: 0.75rem; width: 100%; max-width: 300px;' });
+          const tableWrap = h('div');
+          function updateRemoteTable(fText = '') {
+            clear(tableWrap);
+            const filtered = remoteRepos.filter((r) => r.fullName.toLowerCase().includes(fText.toLowerCase()));
+            tableWrap.append(table(['Repository', 'Visibility', 'Default Branch', ''],
+              filtered.map((r) => {
+                const added = existingUrls.has(r.cloneUrl.toLowerCase());
+                const addAction = added
+                  ? h('span', { class: 'badge st-ok' }, 'Already added')
+                  : h('button', {
+                    class: 'primary small',
+                    type: 'button',
+                    onclick: () => guard(async () => {
+                      addAction.disabled = true;
+                      await api.post(api.org('/repos'), { url: r.cloneUrl, branch: r.defaultBranch || 'main', connectionId: connId, teamId: team.value || null });
+                      existingUrls.add(r.cloneUrl.toLowerCase());
+                      toast(`Repository ${r.fullName} added!`);
+                      location.reload();
+                    }, { busy: addAction }),
+                  }, '+ Add');
+                return {
+                  cells: [
+                    h('div', null, h('strong', null, r.fullName), r.description ? h('div', { class: 'muted small' }, r.description) : null),
+                    r.private ? h('span', { class: 'badge st-open' }, 'Private') : h('span', { class: 'badge st-ok' }, 'Public'),
+                    h('span', { class: 'mono small' }, r.defaultBranch || 'main'),
+                    addAction,
+                  ],
+                };
+              }),
+              { empty: 'No matching repositories found.' }
+            ));
+          }
+          filterInput.addEventListener('input', () => updateRemoteTable(filterInput.value.trim()));
+          discoveryBox.append(
+            h('div', { class: 'row', style: 'justify-content: space-between; align-items: center; margin-bottom: 0.5rem;' },
+              h('h3', { style: 'margin: 0;' }, 'Accessible Repositories from Provider'),
+              h('button', { type: 'button', class: 'small', onclick: () => { discoveryBox.style.display = 'none'; } }, 'Close')
+            ),
+            filterInput,
+            tableWrap
+          );
+          updateRemoteTable('');
+        } catch (err) {
+          loading.remove();
+          discoveryBox.append(h('p', { class: 'badge sev-critical' }, `Error fetching repositories: ${err.message}`));
+        }
+      },
+    }, 'Browse Provider Repositories') : null;
+
+    root.append(h('section', { class: 'card' },
+      h('div', { class: 'row', style: 'justify-content: space-between; align-items: center; margin-bottom: 0.5rem;' },
+        h('h2', { style: 'margin: 0;' }, 'Add a repository'),
+        browseBtn
+      ),
       h('form', {
         class: 'inline',
         onsubmit: (e) => {
@@ -87,7 +165,8 @@ export async function repos(root) {
           }, { busy: submit });
         },
       }, field('Repository URL', url), field('Branch', branch), field('Git connection', conn), field('Team', team), submit),
-      h('p', { class: 'muted small' }, 'Only https URLs on github.com, gitlab.com and bitbucket.org are accepted. Private repositories need a connection (Settings > Git providers).')));
+      discoveryBox,
+      h('p', { class: 'muted small', style: 'margin-top: 0.75rem;' }, 'Only https URLs on github.com, gitlab.com and bitbucket.org are accepted. Private repositories need a connection (Settings > Git providers).')));
   }
 
   root.append(h('section', { class: 'card' }, h('h2', null, 'Connected repositories'),
