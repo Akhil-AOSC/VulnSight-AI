@@ -140,7 +140,7 @@ test('SAST prefers Opengrep and uses the local rule pack', async () => {
     createSemgrepAdapter({
       exec: sem.exec,
       fallback: true,
-      resolveEngine: () => ({ kind: 'opengrep', bin: 'opengrep' }),
+      ensure: async () => 'opengrep',
     }),
   ]);
   assert.equal(report.scanners[0].status, 'ok');

@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { execTool } = require('./runner');
 const { createFinding } = require('../findings');
-const { resolveSastEngine, resolveOpengrep, resolveSemgrep, resolveEslint } = require('./tools');
+const { ensureOpengrep, resolveSastEngine } = require('./tools');
 const { scanBuiltinSast } = require('./builtin-sast');
 const { scanEslint } = require('./eslint-sast');
 
@@ -62,18 +62,6 @@ function grepArgs(kind, config, extraArgs) {
   return args;
 }
 
-function installedEngines(cwd, resolveEngine) {
-  if (resolveEngine) {
-    const engine = resolveEngine({ cwd });
-    return engine && engine.kind !== 'builtin' && engine.bin ? [engine] : [];
-  }
-  return [
-    { kind: 'opengrep', bin: resolveOpengrep() },
-    { kind: 'semgrep', bin: resolveSemgrep() },
-    { kind: 'eslint', bin: resolveEslint(cwd) },
-  ].filter((e) => e.bin);
-}
-
 function labeledVersion(kind, verRaw, labeled) {
   return labeled ? `${kind} ${verRaw}` : verRaw;
 }
@@ -105,8 +93,8 @@ function builtinResult(target, config) {
   };
 }
 
-// SAST: Opengrep, then Semgrep, then ESLint when installed; otherwise built-in rules.
-// Default --config is the local rule pack (not the Semgrep registry).
+// Code scanning via Opengrep (downloaded like Gitleaks). Custom exec/command still
+// talks Semgrep JSON. Built-in rules are only used if Opengrep cannot run.
 function createSemgrepAdapter({
   config = DEFAULT_CONFIG,
   command = 'semgrep',
@@ -114,18 +102,32 @@ function createSemgrepAdapter({
   extraArgs = [],
   fallback = exec === execTool && command === 'semgrep',
   resolveEngine,
+  ensure = ensureOpengrep,
 } = {}) {
+  async function engineFor(cwd) {
+    if (!fallback) return { kind: 'semgrep', bin: command, labeled: false };
+    if (resolveEngine) {
+      const picked = resolveEngine({ cwd });
+      return picked && picked.bin ? picked : null;
+    }
+    try {
+      return { kind: 'opengrep', bin: await ensure('opengrep') };
+    } catch {
+      return null;
+    }
+  }
+
   return {
     name: 'semgrep',
     category: 'sast',
     async version() {
-      if (!fallback) return toolVersion(exec, command);
-      const [engine] = installedEngines(undefined, resolveEngine);
+      const engine = await engineFor();
       if (!engine) return 'builtin-rules';
       try {
-        return `${engine.kind} ${await toolVersion(exec, engine.bin)}`;
+        const ver = await toolVersion(exec, engine.bin);
+        return engine.labeled === false ? ver : labeledVersion(engine.kind, ver, true);
       } catch (err) {
-        if (/not installed/i.test(err.message)) return 'builtin-rules';
+        if (fallback && /not installed/i.test(err.message)) return 'builtin-rules';
         throw err;
       }
     },
@@ -133,20 +135,17 @@ function createSemgrepAdapter({
       return !!target.path && fs.existsSync(target.path) && fs.statSync(target.path).isDirectory();
     },
     async run(target, { signal } = {}) {
-      if (!fallback) {
-        return runGrep(exec, { kind: 'semgrep', bin: command }, target, { config, extraArgs, signal, labeled: false });
+      const engine = await engineFor(target.path);
+      if (!engine) return builtinResult(target, config);
+      try {
+        if (engine.kind === 'eslint') return await runEslintEngine(exec, engine, target, signal);
+        return await runGrep(exec, engine, target, {
+          config, extraArgs, signal, labeled: engine.labeled !== false,
+        });
+      } catch (err) {
+        if (!fallback) throw err;
+        return builtinResult(target, config);
       }
-
-      const queue = installedEngines(target.path, resolveEngine);
-      for (const engine of queue) {
-        try {
-          if (engine.kind === 'eslint') return await runEslintEngine(exec, engine, target, signal);
-          return await runGrep(exec, engine, target, { config, extraArgs, signal });
-        } catch (err) {
-          if (!fallback) throw err;
-        }
-      }
-      return builtinResult(target, config);
     },
   };
 }
