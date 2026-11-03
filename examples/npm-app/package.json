@@ -1,0 +1,15 @@
+{
+  "name": "demo-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Deliberately outdated dependencies for trying out VulnSight-AI. Do not deploy.",
+  "dependencies": {
+    "express": "4.17.1",
+    "lodash": "4.17.15",
+    "minimist": "1.2.0",
+    "mkdirp": "0.5.1"
+  },
+  "devDependencies": {
+    "handlebars": "4.0.11"
+  }
+}

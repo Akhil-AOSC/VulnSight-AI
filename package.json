@@ -1,33 +1,32 @@
 {
   "name": "vulnsight-ai",
   "version": "0.1.0",
-  "description": "VulnSight-AI: Proof-of-concept dependency vulnerability scanner for open-source npm projects using OSV.dev",
-  "main": "src/index.js",
-  "type": "module",
+  "description": "Open-source dependency vulnerability scanner for npm and Python projects, powered by OSV.dev",
+  "license": "MIT",
   "bin": {
-    "vulnsight": "./bin/scanner.js",
-    "vuln-scanner": "./bin/scanner.js"
+    "vulnsight": "bin/vulnsight.js"
   },
+  "main": "src/index.js",
+  "files": [
+    "bin",
+    "src",
+    "ui"
+  ],
   "scripts": {
-    "start": "node bin/scanner.js",
-    "test": "node --test tests/",
-    "scan": "node bin/scanner.js .",
-    "scan:vulnerable": "node bin/scanner.js ./test-fixtures/vulnerable-npm-project",
-    "scan:clean": "node bin/scanner.js ./test-fixtures/clean-npm-project"
+    "test": "node --test test/",
+    "ui": "node bin/vulnsight.js ui",
+    "scan:examples": "node bin/vulnsight.js test examples/npm-app && node bin/vulnsight.js test examples/python-app"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "keywords": [
-    "vulnerability-scanner",
+    "security",
+    "vulnerability",
+    "scanner",
     "sca",
     "osv",
-    "security",
     "npm",
-    "dependencies",
-    "cve"
-  ],
-  "author": "Antigravity Engineering",
-  "license": "MIT",
-  "dependencies": {
-    "picocolors": "^1.1.1",
-    "semver": "^7.8.5"
-  }
+    "pypi"
+  ]
 }

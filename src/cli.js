@@ -1,148 +1,129 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import pc from 'picocolors';
-import { runScan } from './scanner.js';
-import { formatConsoleReport } from './reporter/console.js';
-import { formatJsonReport } from './reporter/json.js';
-import { formatMarkdownReport } from './reporter/markdown.js';
+'use strict';
 
-const VERSION = '0.1.0';
+const path = require('path');
+const { detectProjects, loadProject } = require('./detect');
+const { scanProjects, applyThreshold } = require('./scanner');
+const { renderText, renderJson } = require('./report');
+const { startServer } = require('./server');
+const pkg = require('../package.json');
 
-function printHelp() {
-  console.log(`
-${pc.cyan(pc.bold('vuln-scanner'))} ${pc.gray(`v${VERSION}`)}
-A proof-of-concept dependency vulnerability scanner for npm using OSV.dev.
+// Exit codes follow the same convention as other scanners so CI can rely on them.
+const EXIT = { OK: 0, ISSUES: 1, ERROR: 2, NO_PROJECTS: 3 };
+const THRESHOLDS = ['low', 'medium', 'high', 'critical'];
 
-${pc.bold('USAGE:')}
-  vuln-scanner [target-path] [options]
+const HELP = `VulnSight-AI ${pkg.version} - open-source dependency vulnerability scanner (data: OSV.dev)
 
-${pc.bold('ARGUMENTS:')}
-  target-path               Directory containing package.json (default: current directory ".")
+Usage:
+  vulnsight test [path] [options]    Scan the project in [path] (default: current directory)
+  vulnsight ui [path] [--port=4321]  Open the web dashboard at http://localhost:4321
 
-${pc.bold('OPTIONS:')}
-  --fail-on <level>         Fail (exit code 1) if vulnerabilities meet/exceed this severity:
-                            ${pc.yellow('critical')}, ${pc.yellow('high')}, ${pc.yellow('medium')}, ${pc.yellow('low')}, ${pc.yellow('none')} (default: ${pc.green('low')})
-  --no-dev                  Exclude devDependencies from scan
-  --format <format>         Output report format: ${pc.yellow('console')}, ${pc.yellow('json')}, ${pc.yellow('markdown')} (default: ${pc.green('console')})
-  --output, -o <file>       Write report to the specified file path
-  --timeout <ms>            OSV HTTP request timeout in milliseconds (default: 15000)
-  --version, -v             Print version information and exit
-  --help, -h                Show this help message
+Options:
+  --file=<lockfile>             Scan one file instead of auto-detecting
+  --severity-threshold=<level>  Only report issues at or above low|medium|high|critical
+  --dev                         Include development dependencies
+  --json                        Print results as JSON
+  --no-color                    Disable colored output
+  -h, --help                    Show this help
+  -v, --version                 Show the version
 
-${pc.bold('EXAMPLES:')}
-  vuln-scanner .
-  vuln-scanner ./test-fixtures/vulnerable-npm-project
-  vuln-scanner . --fail-on high --format json --output report.json
-  vuln-scanner . --format markdown -o scan-summary.md
-`);
+Supported files:
+  npm      package-lock.json, npm-shrinkwrap.json
+  Python   requirements*.txt, poetry.lock, Pipfile.lock
+
+Exit codes:
+  0 no issues found   1 issues found   2 error   3 no supported files found`;
+
+class UsageError extends Error {}
+
+function parseArgs(argv) {
+  const opts = { command: null, target: null, json: false, dev: false, threshold: 'low', file: null, color: undefined, port: 4321 };
+  for (const arg of argv) {
+    if (arg === '--json') opts.json = true;
+    else if (arg === '--dev') opts.dev = true;
+    else if (arg === '--no-color') opts.color = false;
+    else if (arg === '-h' || arg === '--help') opts.command = 'help';
+    else if (arg === '-v' || arg === '--version') opts.command = 'version';
+    else if (arg.startsWith('--severity-threshold=')) opts.threshold = arg.split('=')[1].toLowerCase();
+    else if (arg.startsWith('--file=')) opts.file = arg.slice('--file='.length);
+    else if (arg.startsWith('--port=')) {
+      opts.port = Number(arg.slice('--port='.length));
+      if (!Number.isInteger(opts.port) || opts.port < 1 || opts.port > 65535) throw new UsageError(`Invalid --port "${arg}"`);
+    }
+    else if (arg.startsWith('-')) throw new UsageError(`Unknown option: ${arg}`);
+    else if (!opts.command) opts.command = arg;
+    else if (!opts.target) opts.target = arg;
+    else throw new UsageError(`Unexpected argument: ${arg}`);
+  }
+  if (!THRESHOLDS.includes(opts.threshold)) {
+    throw new UsageError(`Invalid --severity-threshold "${opts.threshold}". Use one of: ${THRESHOLDS.join(', ')}`);
+  }
+  return opts;
 }
 
-export async function cli(args = process.argv.slice(2)) {
-  let targetPath = '.';
-  let failThreshold = 'low';
-  let includeDev = true;
-  let format = 'console';
-  let outputFile = null;
-  let timeoutMs = 15000;
+async function runTest(opts, { scan = scanProjects, stdout = console.log, stderr = console.error } = {}) {
+  const dir = path.resolve(opts.target || '.');
+  const { projects, warnings } = opts.file
+    ? { projects: [loadProject(path.resolve(dir, opts.file), opts)], warnings: [] }
+    : detectProjects(dir, opts);
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
+  if (!projects.length) {
+    for (const w of warnings) stderr(`Warning: ${w}`);
+    stderr(`No supported dependency files found in ${dir}. Run "vulnsight --help" to see supported files.`);
+    return EXIT.NO_PROJECTS;
+  }
 
-    if (arg === '--help' || arg === '-h') {
-      printHelp();
-      return 0;
-    }
+  const results = applyThreshold(await scan(projects), opts.threshold);
 
-    if (arg === '--version' || arg === '-v') {
-      console.log(`vuln-scanner v${VERSION}`);
-      return 0;
-    }
+  const color = opts.color ?? (Boolean(process.stdout.isTTY) && !process.env.NO_COLOR);
+  stdout(opts.json ? renderJson(results, warnings) : renderText(results, warnings, { color }));
+  return results.some((r) => r.issues.length) ? EXIT.ISSUES : EXIT.OK;
+}
 
-    if (arg === '--no-dev') {
-      includeDev = false;
-      continue;
-    }
+// Runs until the process is stopped (Ctrl+C).
+async function runUi(opts) {
+  let server;
+  try {
+    server = await startServer({ port: opts.port, defaultTarget: path.resolve(opts.target || '.') });
+  } catch (err) {
+    const reason = err.code === 'EADDRINUSE' ? `port ${opts.port} is already in use. Try --port=<other>` : err.message;
+    console.error(`Error: could not start the dashboard: ${reason}`);
+    return EXIT.ERROR;
+  }
+  console.log(`VulnSight-AI dashboard running at http://localhost:${opts.port}  (press Ctrl+C to stop)`);
+  await new Promise((resolve) => server.on('close', resolve));
+  return EXIT.OK;
+}
 
-    if (arg === '--fail-on') {
-      failThreshold = (args[++i] || 'low').toLowerCase();
-      continue;
-    }
+async function main(argv) {
+  let opts;
+  try {
+    opts = parseArgs(argv);
+  } catch (err) {
+    console.error(err.message);
+    console.error('Run "vulnsight --help" for usage.');
+    return EXIT.ERROR;
+  }
 
-    if (arg.startsWith('--fail-on=')) {
-      failThreshold = arg.split('=')[1].toLowerCase();
-      continue;
-    }
-
-    if (arg === '--format') {
-      format = (args[++i] || 'console').toLowerCase();
-      continue;
-    }
-
-    if (arg.startsWith('--format=')) {
-      format = arg.split('=')[1].toLowerCase();
-      continue;
-    }
-
-    if (arg === '--output' || arg === '-o') {
-      outputFile = args[++i];
-      continue;
-    }
-
-    if (arg.startsWith('--output=')) {
-      outputFile = arg.split('=')[1];
-      continue;
-    }
-
-    if (arg === '--timeout') {
-      timeoutMs = parseInt(args[++i], 10) || 15000;
-      continue;
-    }
-
-    if (!arg.startsWith('-')) {
-      targetPath = arg;
-    }
+  if (!opts.command || opts.command === 'help') {
+    console.log(HELP);
+    return EXIT.OK;
+  }
+  if (opts.command === 'version') {
+    console.log(pkg.version);
+    return EXIT.OK;
+  }
+  if (opts.command === 'ui') return runUi(opts);
+  if (opts.command !== 'test') {
+    console.error(`Unknown command: ${opts.command}. Run "vulnsight --help" for usage.`);
+    return EXIT.ERROR;
   }
 
   try {
-    const result = await runScan(targetPath, {
-      includeDev,
-      failThreshold,
-      timeoutMs,
-    });
-
-    let outputString = '';
-    switch (format) {
-      case 'json':
-        outputString = formatJsonReport(result);
-        break;
-      case 'markdown':
-      case 'md':
-        outputString = formatMarkdownReport(result);
-        break;
-      case 'console':
-      default:
-        outputString = formatConsoleReport(result);
-        break;
-    }
-
-    if (outputFile) {
-      const resolvedOut = path.resolve(outputFile);
-      fs.mkdirSync(path.dirname(resolvedOut), { recursive: true });
-      fs.writeFileSync(resolvedOut, outputString, 'utf8');
-      console.log(pc.green(`✓ Scan report written to ${resolvedOut}`));
-    }
-
-    // Always print console report to stdout unless JSON was requested without output file
-    if (!outputFile || format === 'console') {
-      console.log(outputString);
-    }
-
-    return result.thresholdBreached ? 1 : 0;
+    return await runTest(opts);
   } catch (err) {
-    console.error(pc.red(pc.bold(`\nError executing scan: ${err.message}`)));
-    if (process.env.DEBUG) {
-      console.error(err.stack);
-    }
-    return 2;
+    console.error(`Error: ${err.message}`);
+    return EXIT.ERROR;
   }
 }
+
+module.exports = { main, parseArgs, runTest, EXIT };

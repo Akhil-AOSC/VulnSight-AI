@@ -1,0 +1,6 @@
+# Deliberately outdated dependencies for trying out VulnSight-AI. Do not deploy.
+django==3.2.0
+requests==2.19.0
+PyYAML==5.3
+urllib3==1.24.1
+flask>=2.0  # not pinned, so VulnSight-AI reports it as not scanned

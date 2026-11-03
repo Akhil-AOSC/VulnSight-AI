@@ -1,108 +1,124 @@
-import { parseManifest } from './manifest/parser.js';
-import { OSVClient } from './osv/client.js';
-import { matchVulnerability } from './matcher/matcher.js';
-import { extractSeverity, meetsThreshold, SEVERITY_LEVELS } from './scoring/severity.js';
+'use strict';
 
-/**
- * Executes a full vulnerability scan on the specified project directory.
- *
- * @param {string} projectDir - Target directory containing package.json
- * @param {object} options - Scan configuration options
- * @returns {Promise<object>} Complete scan result data
- */
-export async function runScan(projectDir, options = {}) {
-  const startTime = Date.now();
-  const includeDev = options.includeDev !== false;
-  const failThreshold = options.failThreshold || 'low';
-  const client = options.osvClient || new OSVClient({ timeoutMs: options.timeoutMs });
+const { createClient } = require('./osv');
+const { severityOf, rank } = require('./severity');
+const { compareVersions } = require('./versions');
+const { normalizeName } = require('./parsers/python');
 
-  // Step 1: Parse manifest & lockfile (direct + transitive resolution)
-  const manifest = parseManifest(projectDir, { includeDev });
+function samePackage(ecosystem, a, b) {
+  return ecosystem === 'PyPI' ? normalizeName(a) === normalizeName(b) : a === b;
+}
 
-  // Step 2: Query OSV API in batches
-  const vulnMap = await client.queryDependencies(manifest.dependencies);
-
-  // Step 3: Match vulnerabilities & compute severities
-  const findings = [];
-  const processedKeys = new Set(); // Prevent duplicate (package, vulnId) findings
-
-  for (const dep of manifest.dependencies) {
-    const depKey = `${dep.name}@${dep.version}`;
-    const rawVulns = vulnMap.get(depKey) || [];
-
-    for (const rawVuln of rawVulns) {
-      const findingKey = `${depKey}:${rawVuln.id}`;
-      if (processedKeys.has(findingKey)) continue;
-
-      // Verify range matching
-      const match = matchVulnerability(dep.name, dep.version, rawVuln);
-      if (!match.isVulnerable) continue;
-
-      processedKeys.add(findingKey);
-
-      // Extract severity and CVSS
-      const severity = extractSeverity(rawVuln);
-
-      // Extract aliases (CVEs)
-      const aliases = Array.isArray(rawVuln.aliases) ? rawVuln.aliases : [];
-
-      // Extract references
-      const references = Array.isArray(rawVuln.references)
-        ? rawVuln.references.map((r) => (typeof r === 'string' ? r : r.url)).filter(Boolean)
-        : [];
-
-      findings.push({
-        id: rawVuln.id,
-        aliases,
-        packageName: dep.name,
-        packageVersion: dep.version,
-        isDirect: dep.isDirect,
-        isDev: dep.isDev,
-        dependencyChain: dep.dependencyChain,
-        severity,
-        title: rawVuln.summary || rawVuln.details?.slice(0, 120) || 'No title provided',
-        fixedVersion: match.fixedVersion,
-        affectedRanges: match.affectedRanges,
-        references,
-      });
+// The lowest "fixed" version above the installed one, for this package only.
+function findFixedVersion(vuln, dep) {
+  const fixes = [];
+  for (const affected of vuln.affected || []) {
+    const pkg = affected.package || {};
+    if (pkg.ecosystem !== dep.ecosystem || !samePackage(dep.ecosystem, pkg.name, dep.name)) continue;
+    for (const range of affected.ranges || []) {
+      if (range.type === 'GIT') continue;
+      for (const event of range.events || []) {
+        if (event.fixed) fixes.push(event.fixed);
+      }
     }
   }
+  return fixes.filter((f) => compareVersions(f, dep.version) > 0).sort(compareVersions)[0] || null;
+}
 
-  // Step 4: Sort findings by severity rank descending, then by package name
-  findings.sort((a, b) => {
-    if (b.severity.rank !== a.severity.rank) {
-      return b.severity.rank - a.severity.rank;
+// OSV often returns the same issue under several IDs (GHSA-..., PYSEC-..., CVE-...).
+// Group them so each real issue is reported once.
+function groupAliases(vulns) {
+  const groups = [];
+  const byKey = new Map();
+  const keysOf = (v) => [v.id, ...(v.aliases || [])];
+
+  for (const vuln of vulns) {
+    const hits = [...new Set(keysOf(vuln).map((k) => byKey.get(k)).filter(Boolean))];
+    let group;
+    if (!hits.length) {
+      group = [];
+      groups.push(group);
+    } else {
+      group = hits[0];
+      for (const other of hits.slice(1)) {
+        group.push(...other);
+        groups.splice(groups.indexOf(other), 1);
+        for (const member of other) for (const k of keysOf(member)) byKey.set(k, group);
+      }
     }
-    return a.packageName.localeCompare(b.packageName);
+    group.push(vuln);
+    for (const k of keysOf(vuln)) byKey.set(k, group);
+  }
+  return groups;
+}
+
+function titleOf(vuln) {
+  if (vuln.summary) return vuln.summary.trim();
+  const firstLine = (vuln.details || '').trim().split('\n')[0];
+  return firstLine ? firstLine.slice(0, 120) : null;
+}
+
+function buildIssues(dep, vulns) {
+  const live = vulns.filter((v) => !v.withdrawn);
+  return groupAliases(live).map((group) => {
+    const primary = group.find((v) => v.id.startsWith('GHSA-')) || group[0];
+    const severities = group.map(severityOf);
+    const best = severities.reduce((a, b) => (rank(b.level) > rank(a.level) ? b : a));
+    const score = severities.map((s) => s.score).find((s) => s !== null);
+    const fixes = group.map((v) => findFixedVersion(v, dep)).filter(Boolean).sort(compareVersions);
+    const ids = new Set(group.flatMap((v) => [v.id, ...(v.aliases || [])]));
+    ids.delete(primary.id);
+
+    return {
+      id: primary.id,
+      aliases: [...ids].sort(),
+      title: titleOf(primary) || group.map(titleOf).find(Boolean) || primary.id,
+      severity: best.level,
+      cvssScore: score === undefined ? null : score,
+      package: dep.name,
+      version: dep.version,
+      ecosystem: dep.ecosystem,
+      fixedIn: fixes[0] || null,
+      url: `https://osv.dev/vulnerability/${primary.id}`,
+    };
+  });
+}
+
+// Scans every project with a single batched OSV lookup.
+async function scanProjects(projects, { client = createClient() } = {}) {
+  const keyOf = (d) => `${d.ecosystem}|${d.name}|${d.version}`;
+  const unique = new Map();
+  for (const project of projects) {
+    for (const dep of project.dependencies) unique.set(keyOf(dep), dep);
+  }
+  const deps = [...unique.values()];
+
+  const idLists = deps.length
+    ? await client.queryBatch(deps.map((d) => ({ package: { name: d.name, ecosystem: d.ecosystem }, version: d.version })))
+    : [];
+  const vulnMap = await client.getVulns(idLists.flat());
+
+  const issuesByKey = new Map();
+  deps.forEach((dep, i) => {
+    const vulns = idLists[i].map((id) => vulnMap.get(id)).filter(Boolean);
+    issuesByKey.set(keyOf(dep), buildIssues(dep, vulns));
   });
 
-  // Step 5: Calculate severity counts
-  const summary = {
-    critical: findings.filter((f) => f.severity.level === 'CRITICAL').length,
-    high: findings.filter((f) => f.severity.level === 'HIGH').length,
-    medium: findings.filter((f) => f.severity.level === 'MEDIUM').length,
-    low: findings.filter((f) => f.severity.level === 'LOW').length,
-    unknown: findings.filter((f) => f.severity.level === 'UNKNOWN').length,
-  };
-
-  // Step 6: Determine threshold breach
-  const thresholdBreached = findings.some((f) => meetsThreshold(f.severity.level, failThreshold));
-
-  const durationMs = Date.now() - startTime;
-
-  return {
-    targetDir: manifest.projectDir,
-    projectName: manifest.projectName,
-    projectVersion: manifest.projectVersion,
-    hasLockfile: manifest.hasLockfile,
-    lockfileVersion: manifest.lockfileVersion,
-    totalDependencies: manifest.totalDependencies,
-    directCount: manifest.directCount,
-    transitiveCount: manifest.transitiveCount,
-    failThreshold,
-    thresholdBreached,
-    summary,
-    findings,
-    durationMs,
-  };
+  return projects.map((project) => ({
+    ...project,
+    issues: project.dependencies.flatMap((dep) =>
+      issuesByKey.get(keyOf(dep)).map((issue) => ({ ...issue, direct: dep.direct, paths: dep.paths }))),
+  }));
 }
+
+// Drops issues below the threshold. Issues without a severity rating are
+// only kept at the lowest threshold.
+function applyThreshold(results, threshold = 'low') {
+  const minRank = rank(threshold);
+  return results.map((r) => ({
+    ...r,
+    issues: r.issues.filter((i) => (i.severity === 'unknown' ? minRank <= rank('low') : rank(i.severity) >= minRank)),
+  }));
+}
+
+module.exports = { scanProjects, applyThreshold, buildIssues, findFixedVersion, groupAliases };
