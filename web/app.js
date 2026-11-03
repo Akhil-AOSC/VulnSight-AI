@@ -26493,6 +26493,51 @@ function ProvidersTab() {
     ] })
   ] });
 }
+function NotificationsTab() {
+  const [list, setList] = (0, import_react9.useState)([]);
+  async function load() {
+    try {
+      setList(await api.get(api.org("/notifications")));
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+  (0, import_react9.useEffect)(() => {
+    load();
+  }, [session.orgId]);
+  async function handleMarkRead() {
+    try {
+      await api.post(api.org("/notifications/read"), {});
+      await load();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("section", { className: "card", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "row", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h2", { className: "grow", children: "Notifications" }),
+      list.some((n) => !n.read) && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("button", { type: "button", onClick: handleMarkRead, children: "Mark all as read" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+      DataTable,
+      {
+        headers: ["", "Notification", "When"],
+        rows: list.map((n) => ({
+          id: n.id,
+          cells: [
+            n.read ? "" : /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "badge st-open", children: "new" }),
+            /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("strong", { children: n.title }),
+              n.body && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "muted small", children: n.body })
+            ] }),
+            ago(n.createdAt)
+          ]
+        })),
+        empty: "No notifications."
+      }
+    )
+  ] });
+}
 function AuditTab() {
   const [list, setList] = (0, import_react9.useState)([]);
   const canAudit = hasPermission(session.me, session.orgId, "audit:read");

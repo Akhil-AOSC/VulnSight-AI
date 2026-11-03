@@ -672,6 +672,59 @@ function ProvidersTab() {
   );
 }
 
+function NotificationsTab() {
+  const [list, setList] = useState([]);
+
+  async function load() {
+    try {
+      setList(await api.get(api.org('/notifications')));
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, [session.orgId]);
+
+  async function handleMarkRead() {
+    try {
+      await api.post(api.org('/notifications/read'), {});
+      await load();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  return (
+    <section className="card">
+      <div className="row">
+        <h2 className="grow">Notifications</h2>
+        {list.some((n) => !n.read) && (
+          <button type="button" onClick={handleMarkRead}>
+            Mark all as read
+          </button>
+        )}
+      </div>
+      <DataTable
+        headers={['', 'Notification', 'When']}
+        rows={list.map((n) => ({
+          id: n.id,
+          cells: [
+            n.read ? '' : <span className="badge st-open">new</span>,
+            <div>
+              <strong>{n.title}</strong>
+              {n.body && <div className="muted small">{n.body}</div>}
+            </div>,
+            ago(n.createdAt),
+          ],
+        }))}
+        empty="No notifications."
+      />
+    </section>
+  );
+}
+
 function AuditTab() {
   const [list, setList] = useState([]);
   const canAudit = hasPermission(session.me, session.orgId, 'audit:read');
