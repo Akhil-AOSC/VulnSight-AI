@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light;
   --bg: #f6f7f9; --surface: #ffffff; --surface-2: #f0f2f5; --border: #dde1e7; --text: #1b2230; --muted: #5d6778;
   --brand: #3b5bdb; --brand-text: #ffffff; --focus: #3b5bdb;
   --critical: #a61e4d; --high: #d9480f; --medium: #b07d00; --low: #1971c2; --ok: #2b8a3e; --unknown: #6c7787;
@@ -7,20 +8,12 @@
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #0f131a; --surface: #171c26; --surface-2: #1e2531; --border: #2b3445; --text: #e6e9ef; --muted: #96a0b3;
   --brand: #748ffc; --brand-text: #0f131a; --focus: #91a7ff;
   --critical: #ff8fb1; --high: #ffa26b; --medium: #ffd84d; --low: #74b6f5; --ok: #69db7c; --unknown: #9aa4b5;
   --critical-bg: #3a1624; --high-bg: #3a2113; --medium-bg: #35290a; --low-bg: #132a41; --ok-bg: #12301b;
   --shadow: none;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #0f131a; --surface: #171c26; --surface-2: #1e2531; --border: #2b3445; --text: #e6e9ef; --muted: #96a0b3;
-    --brand: #748ffc; --brand-text: #0f131a; --focus: #91a7ff;
-    --critical: #ff8fb1; --high: #ffa26b; --medium: #ffd84d; --low: #74b6f5; --ok: #69db7c; --unknown: #9aa4b5;
-    --critical-bg: #3a1624; --high-bg: #3a2113; --medium-bg: #35290a; --low-bg: #132a41; --ok-bg: #12301b;
-    --shadow: none;
-  }
 }
 
 * { box-sizing: border-box; }
@@ -128,6 +121,12 @@ pre.evidence { background: var(--surface); border: 1px solid var(--border); bord
 .bar > span { display: block; height: 100%; }
 .bar .s-critical { background: var(--critical); } .bar .s-high { background: var(--high); }
 .bar .s-medium { background: var(--medium); } .bar .s-low { background: var(--low); } .bar .s-ok { background: var(--ok); }
+.sev-bar-svg { width: 100%; min-width: 90px; height: 10px; border-radius: 999px; background: var(--surface-2); overflow: hidden; display: block; }
+.s-fill-critical { fill: var(--critical); } .s-fill-high { fill: var(--high); }
+.s-fill-medium { fill: var(--medium); } .s-fill-low { fill: var(--low); }
+.m-0 { margin: 0; }
+.ai-badge-sm { margin-left: 4px; font-size: 10px; padding: 1px 6px; }
+.scan-sub { margin-top: -0.4rem; margin-bottom: 0.75rem; }
 svg.chart { width: 100%; height: 180px; display: block; }
 svg.chart .axis { stroke: var(--border); } svg.chart text { fill: var(--muted); font-size: 10px; }
 svg.chart .l-total { stroke: var(--brand); color: var(--brand); } svg.chart .l-critical { stroke: var(--critical); color: var(--critical); } svg.chart .l-high { stroke: var(--high); color: var(--high); }
@@ -154,3 +153,94 @@ svg.chart .l-total { stroke: var(--brand); color: var(--brand); } svg.chart .l-c
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 
 main:focus { outline: none; }
+
+/* AI Security Intelligence & MongoDB Atlas integration */
+.ai-card {
+  border: 1px solid rgba(116, 143, 252, 0.35);
+  background: linear-gradient(180deg, rgba(116, 143, 252, 0.08) 0%, var(--surface) 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 1rem;
+}
+.card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ai-head-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ai-badge {
+  background: var(--brand);
+  color: var(--brand-text);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  display: inline-block;
+}
+.ai-risk-tag {
+  font-weight: 700;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  text-transform: uppercase;
+}
+.ai-risk-Critical { background: var(--critical-bg); color: var(--critical); border: 1px solid var(--critical); }
+.ai-risk-High { background: var(--high-bg); color: var(--high); border: 1px solid var(--high); }
+.ai-risk-Medium { background: var(--medium-bg); color: var(--medium); border: 1px solid var(--medium); }
+.ai-risk-Low, .ai-risk-None { background: var(--ok-bg); color: var(--ok); border: 1px solid var(--ok); }
+.ai-summary { font-size: 14.5px; line-height: 1.6; margin: 0; color: var(--text); font-weight: 500; }
+.ai-impact-box {
+  background: var(--surface-2);
+  border-left: 3px solid var(--high);
+  padding: 10px 14px;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  font-size: 13.5px;
+}
+.ai-impact-box strong { display: block; margin-bottom: 4px; color: var(--text); }
+.ai-impact-box p { margin: 0; color: var(--muted); }
+.ai-rec-box strong { display: block; font-size: 13.5px; margin-bottom: 6px; color: var(--text); }
+.ai-recs { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 5px; font-size: 13.5px; color: var(--muted); }
+.ai-explanation {
+  background: var(--surface);
+  border: 1px dashed var(--brand);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
+}
+.mongo-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ok);
+  background: var(--ok-bg);
+  border: 1px solid var(--ok);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.db-indicator {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+}
+.db-connected {
+  background: var(--ok-bg);
+  color: var(--ok);
+  border: 1px solid var(--ok);
+}
+.db-fallback {
+  background: var(--medium-bg);
+  color: var(--medium);
+  border: 1px solid var(--medium);
+  cursor: help;
+}
+.projects-list, .plan-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.projects-list li, .plan-list li { padding: 8px 0; border-top: 1px solid var(--border); display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }
+.projects-list li:first-child, .plan-list li:first-child { border-top: 0; padding-top: 0; }
+.project-name { font-weight: 600; }
+.plan-target { color: var(--ok); }
+.warnings { display: flex; flex-direction: column; gap: 8px; margin-bottom: 1rem; }
+.warning { background: var(--medium-bg); color: var(--medium); padding: 10px 14px; border-radius: 8px; font-size: 13.5px; border: 1px solid var(--medium); }
+
