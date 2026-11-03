@@ -38,14 +38,14 @@ export function SeverityBar({ counts }) {
   if (!total) return <span className="muted">0 findings</span>;
   const label = SEV_LEVELS.map((s) => `${counts[s] || 0} ${s}`).join(', ');
   return (
-    <svg className="sev-bar-svg" viewBox="0 0 100 10" preserveAspectRatio="none" role="img" aria-label={label}>
+    <svg className="sev-bar-svg" viewBox="0 0 100 8" preserveAspectRatio="none" role="img" aria-label={label}>
       {(() => {
         let offset = 0;
         return SEV_LEVELS.map((s) => {
           const val = counts[s] || 0;
           if (!val) return null;
           const w = (100 * val) / total;
-          const rect = <rect key={s} x={offset} y="0" width={w} height="10" className={`s-fill-${s}`} />;
+          const rect = <rect key={s} x={offset} y="0" width={w} height="8" className={`s-fill-${s}`} />;
           offset += w;
           return rect;
         });

@@ -24008,13 +24008,13 @@ function SeverityBar({ counts }) {
   const total = SEV_LEVELS.reduce((a, s) => a + (counts[s] || 0), 0);
   if (!total) return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "muted", children: "0 findings" });
   const label = SEV_LEVELS.map((s) => `${counts[s] || 0} ${s}`).join(", ");
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("svg", { className: "sev-bar-svg", viewBox: "0 0 100 10", preserveAspectRatio: "none", role: "img", "aria-label": label, children: (() => {
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("svg", { className: "sev-bar-svg", viewBox: "0 0 100 8", preserveAspectRatio: "none", role: "img", "aria-label": label, children: (() => {
     let offset = 0;
     return SEV_LEVELS.map((s) => {
       const val = counts[s] || 0;
       if (!val) return null;
       const w = 100 * val / total;
-      const rect = /* @__PURE__ */ (0, import_jsx_runtime.jsx)("rect", { x: offset, y: "0", width: w, height: "10", className: `s-fill-${s}` }, s);
+      const rect = /* @__PURE__ */ (0, import_jsx_runtime.jsx)("rect", { x: offset, y: "0", width: w, height: "8", className: `s-fill-${s}` }, s);
       offset += w;
       return rect;
     });
