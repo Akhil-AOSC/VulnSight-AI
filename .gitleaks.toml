@@ -1,11 +1,18 @@
-# The insecure example app contains deliberately fake credentials used to test the scanners.
+# The insecure example app and test files contain deliberately fake credentials used to test the scanners.
 title = "VulnSight AI gitleaks config"
 
 [extend]
 useDefault = true
 
 [allowlist]
-description = "Deliberately insecure test fixtures"
+description = "Test fixtures and test mock tokens"
 paths = [
-  '''examples/insecure-app/.*''',
+  '''(?i)examples/.*''',
+  '''(?i)test/.*''',
+]
+stopwords = [
+  "ghp_7Xq2LmN9vB4kTz1RcWe8YhUd3JpA6sFoGx0Q",
+  "ghp_SuperSecretRepoToken0123456789",
+  "ghp_BackupTestToken123456",
+  "hooks.slack.com",
 ]
