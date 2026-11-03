@@ -95,8 +95,10 @@ function createSecretBox(key) {
     decrypt(envelope) {
       const [v, iv, tag, enc] = String(envelope).split('.');
       if (v !== 'v1') throw new Error('Unknown secret envelope version');
-      const d = crypto.createDecipheriv('aes-256-gcm', buf, Buffer.from(iv, 'base64'));
-      d.setAuthTag(Buffer.from(tag, 'base64'));
+      const tagBuf = Buffer.from(tag, 'base64');
+      if (tagBuf.length !== 16) throw new Error('Invalid authentication tag length');
+      const d = crypto.createDecipheriv('aes-256-gcm', buf, Buffer.from(iv, 'base64'), { authTagLength: 16 });
+      d.setAuthTag(tagBuf);
       return Buffer.concat([d.update(Buffer.from(enc, 'base64')), d.final()]).toString('utf8');
     },
   };

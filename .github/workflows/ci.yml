@@ -26,8 +26,6 @@ jobs:
         run: node bin/vulnsight.js scan . --scanners=sca --fail-on=high
       - name: Secrets (Gitleaks)
         uses: gitleaks/gitleaks-action@v2
-        with:
-          config-path: .gitleaks.toml
         env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
       - name: SAST (Semgrep)
         run: pipx run semgrep scan --config p/javascript --config p/nodejs --error --metrics=off src web
@@ -41,9 +39,9 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker build -f deploy/Dockerfile.api -t vulnsight-api .
       - run: docker build -f deploy/Dockerfile.worker -t vulnsight-worker .
+      - name: Install Trivy
+        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
       - name: Trivy image scan (API)
-        uses: aquasecurity/trivy-action@v0.28.0
-        with: { image-ref: vulnsight-api, severity: "CRITICAL,HIGH", exit-code: "1", ignore-unfixed: true }
+        run: trivy image --severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed vulnsight-api
       - name: Trivy image scan (worker)
-        uses: aquasecurity/trivy-action@v0.28.0
-        with: { image-ref: vulnsight-worker, severity: "CRITICAL", exit-code: "1", ignore-unfixed: true }
+        run: trivy image --severity CRITICAL --exit-code 1 --ignore-unfixed vulnsight-worker
