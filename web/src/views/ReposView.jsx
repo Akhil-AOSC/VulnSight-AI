@@ -4,7 +4,7 @@ import { PageHead, DataTable, StatusBadge } from '../components/Common.jsx';
 
 const SCANNERS = [
   ['sca', 'Dependencies (OSV)'],
-  ['semgrep', 'Code (Semgrep)'],
+  ['semgrep', 'Code (SAST)'],
   ['gitleaks', 'Secrets (Gitleaks)'],
   ['trivy', 'Dependencies + IaC (Trivy)'],
   ['checkov', 'Infrastructure (Checkov)'],

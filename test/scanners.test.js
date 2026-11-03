@@ -4,7 +4,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
 const fs = require('fs');
-const { parseSemgrep, createSemgrepAdapter } = require('../src/adapters/semgrep');
+const { parseSemgrep, createSemgrepAdapter, DEFAULT_CONFIG } = require('../src/adapters/semgrep');
+const { parseEslintJson } = require('../src/adapters/eslint-sast');
 const { parseGitleaks, createGitleaksAdapter } = require('../src/adapters/gitleaks');
 const { scanTarget } = require('../src/adapters');
 
@@ -131,6 +132,64 @@ test('a gitleaks run that produces no report fails loudly instead of looking cle
   const report = await scanTarget({ path: ROOT }, [createGitleaksAdapter({ exec })]);
   assert.equal(report.scanners[0].status, 'error');
   assert.match(report.scanners[0].error, /did not produce a report/);
+});
+
+test('SAST prefers Opengrep and uses the local rule pack', async () => {
+  const sem = fakeExec({ version: '1.2.3\n', scan: SEMGREP_OUTPUT });
+  const report = await scanTarget({ path: ROOT }, [
+    createSemgrepAdapter({
+      exec: sem.exec,
+      fallback: true,
+      resolveEngine: () => ({ kind: 'opengrep', bin: 'opengrep' }),
+    }),
+  ]);
+  assert.equal(report.scanners[0].status, 'ok');
+  assert.equal(report.scanners[0].version, 'opengrep 1.2.3');
+  assert.equal(report.scanners[0].findingCount, 2);
+  const scan = sem.calls.find((c) => c.args[0] === 'scan');
+  assert.equal(scan.command, 'opengrep');
+  assert.equal(scan.cwd, ROOT);
+  assert.ok(scan.args.includes(DEFAULT_CONFIG));
+  assert.ok(!scan.args.includes('--metrics=off'));
+  assert.ok(fs.existsSync(DEFAULT_CONFIG));
+});
+
+test('SAST uses ESLint JSON when Opengrep and Semgrep are absent', async () => {
+  const eslintOut = JSON.stringify([{
+    filePath: path.join(ROOT, 'index.js'),
+    messages: [{
+      ruleId: 'vulnsight/xss-res-send', severity: 2, message: 'User input written into the HTTP response (XSS)',
+      line: 4, endLine: 4, source: 'res.send(req.query.name)',
+    }],
+  }]);
+  const exec = async (command, args) => {
+    if (args[0] === '--version') return { stdout: 'v9.15.0\n', stderr: '', code: 0 };
+    return { stdout: eslintOut, stderr: '', code: 1 };
+  };
+  const report = await scanTarget({ path: ROOT }, [
+    createSemgrepAdapter({
+      exec,
+      fallback: true,
+      resolveEngine: () => ({ kind: 'eslint', bin: 'eslint' }),
+    }),
+  ]);
+  assert.equal(report.scanners[0].status, 'ok', report.scanners[0].error);
+  assert.match(report.scanners[0].version, /eslint/);
+  assert.ok(report.findings.some((f) => f.identifiers.primary === 'vulnsight/xss-res-send' && f.location.line === 4));
+});
+
+test('parseEslintJson maps rule, line and CWE', () => {
+  const findings = parseEslintJson(JSON.stringify([{
+    filePath: path.join(ROOT, 'app.js'),
+    messages: [
+      { ruleId: 'vulnsight/detect-eval-with-expression', severity: 2, message: 'eval', line: 18, source: 'eval(req.body.expression)' },
+      { ruleId: null, severity: 2, message: 'ignored parse error', line: 1 },
+    ],
+  }]), ROOT, 'eslint 9');
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].severity, 'high');
+  assert.deepEqual(findings[0].identifiers.cwe, ['CWE-95']);
+  assert.equal(findings[0].location.line, 18);
 });
 
 test('semgrep secret-detection findings never carry evidence', () => {

@@ -5,7 +5,7 @@
 //   VULNSIGHT_TOOLS_DIR=<dir with gitleaks, trivy (and venv/Scripts/semgrep)>
 //   VULNSIGHT_CHECKOV_PYTHON=<python that has checkov installed>
 //   npm test
-// Needs network (Semgrep rule registry, Trivy vulnerability database).
+// SAST uses local rules (Opengrep/Semgrep/ESLint/builtin). Trivy still needs a vulnerability DB.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');

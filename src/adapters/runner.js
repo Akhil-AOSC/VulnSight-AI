@@ -44,6 +44,7 @@ async function runAdapter(adapter, target, { timeoutMs = DEFAULT_TIMEOUT_MS } = 
         const out = await Promise.race([adapter.run(target, { timeoutMs, signal: controller.signal }), timeout]);
         result.findings = out.findings || [];
         result.raw = out.raw === undefined ? null : out.raw;
+        if (out.version) result.version = out.version;
       } finally {
         clearTimeout(timer);
       }

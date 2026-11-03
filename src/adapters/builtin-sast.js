@@ -9,8 +9,12 @@ const SKIP_DIRS = new Set([
   '.vulnsight-data', '.vulnsight-tools', '.next', '__pycache__', 'out',
 ]);
 const SOURCE_EXTS = new Set(['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.py']);
-const MAX_FILES = 400;
+const MAX_FILES = 1500;
 const MAX_FILE_BYTES = 200000;
+const CALL_WINDOW = 800;
+
+const USER_INPUT = /\breq\.(query|body|params|headers|cookies)\b|\bprocess\.argv\b/;
+const CONCAT = /\+|`[^`]*\$\{/;
 
 const RULES = [
   {
@@ -19,7 +23,8 @@ const RULES = [
     severity: 'high',
     cwe: ['CWE-79'],
     files: /\.(js|jsx|mjs|cjs|ts|tsx)$/,
-    re: /\bres\.(send|write|end)\s*\([\s\S]{0,200}?\breq\.(query|body|params|headers)\b/,
+    callee: /\bres\.(send|write|end)\s*\(/g,
+    tainted: (slice) => USER_INPUT.test(slice),
     advice: 'Do not concatenate request data into HTML. Use a template engine with auto-escaping, or send JSON.',
   },
   {
@@ -28,7 +33,8 @@ const RULES = [
     severity: 'high',
     cwe: ['CWE-78'],
     files: /\.(js|jsx|mjs|cjs|ts|tsx)$/,
-    re: /\b(exec|execSync|spawn|spawnSync|execFile)\s*\([\s\S]{0,160}?\+[\s\S]{0,80}?\b(req\.|process\.argv|query|body)/,
+    callee: /\b(?:exec|execSync|spawn|spawnSync)\s*\(/g,
+    tainted: (slice) => USER_INPUT.test(slice) && CONCAT.test(slice),
     advice: 'Pass arguments as an array to spawn/execFile and never build a shell string from user input.',
   },
   {
@@ -37,26 +43,9 @@ const RULES = [
     severity: 'high',
     cwe: ['CWE-95'],
     files: /\.(js|jsx|mjs|cjs|ts|tsx)$/,
-    re: /\beval\s*\(\s*(req\.|.*body|.*query|.*params)/,
+    callee: /\beval\s*\(/g,
+    tainted: (slice) => USER_INPUT.test(slice),
     advice: 'Remove eval. Parse JSON with JSON.parse, or use a dedicated expression library with a sandbox.',
-  },
-  {
-    id: 'javascript.browser.security.innerhtml',
-    title: 'Assignment to innerHTML',
-    severity: 'medium',
-    cwe: ['CWE-79'],
-    files: /\.(js|jsx|mjs|cjs|ts|tsx)$/,
-    re: /\.innerHTML\s*=/,
-    advice: 'Use textContent or a safe DOM API instead of innerHTML when the value can include user data.',
-  },
-  {
-    id: 'python.lang.security.audit.eval-used',
-    title: 'Use of eval() or exec() on untrusted data',
-    severity: 'high',
-    cwe: ['CWE-95'],
-    files: /\.py$/,
-    re: /\b(eval|exec)\s*\(/,
-    advice: 'Avoid eval/exec. Use ast.literal_eval for literals, or a dedicated parser.',
   },
   {
     id: 'python.lang.security.audit.subprocess-shell-true',
@@ -64,7 +53,8 @@ const RULES = [
     severity: 'high',
     cwe: ['CWE-78'],
     files: /\.py$/,
-    re: /\bsubprocess\.(call|run|Popen|check_output)\s*\([\s\S]{0,200}?shell\s*=\s*True/,
+    callee: /\bsubprocess\.(?:call|run|Popen|check_output)\s*\(/g,
+    tainted: (slice) => /shell\s*=\s*True/.test(slice),
     advice: 'Call subprocess with a list of arguments and shell=False.',
   },
   {
@@ -73,7 +63,8 @@ const RULES = [
     severity: 'high',
     cwe: ['CWE-78'],
     files: /\.py$/,
-    re: /\bos\.system\s*\(/,
+    callee: /\bos\.system\s*\(/g,
+    tainted: () => true,
     advice: 'Use subprocess with a list of arguments instead of os.system.',
   },
 ];
@@ -89,6 +80,7 @@ function walk(root, acc = [], state = { files: 0 }) {
   for (const entry of entries) {
     if (state.files >= MAX_FILES) break;
     if (entry.name.startsWith('.') && entry.name !== '.') continue;
+    if (entry.name.endsWith('.min.js')) continue;
     const full = path.join(root, entry.name);
     if (entry.isDirectory()) {
       if (SKIP_DIRS.has(entry.name)) continue;
@@ -109,11 +101,55 @@ function lineNumber(text, index) {
   return line;
 }
 
-function snippetAt(text, index) {
+function lineAt(text, index) {
   const start = text.lastIndexOf('\n', index) + 1;
   const end = text.indexOf('\n', index);
-  const line = text.slice(start, end === -1 ? undefined : end).trim();
-  return line.slice(0, 240);
+  return text.slice(start, end === -1 ? undefined : end);
+}
+
+function isCommentLine(line, ext) {
+  const trimmed = line.trim();
+  if (ext === '.py') return trimmed.startsWith('#');
+  return trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*');
+}
+
+function extractCall(text, from) {
+  const start = text.indexOf('(', from);
+  if (start === -1) return '';
+  let depth = 0;
+  let quote = null;
+  for (let i = start; i < text.length && i < start + CALL_WINDOW; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === '\\' && quote !== '`') {
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '(') depth += 1;
+    else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return text.slice(start, start + CALL_WINDOW);
+}
+
+function eachCall(text, callee) {
+  const re = new RegExp(callee.source, callee.flags.includes('g') ? callee.flags : `${callee.flags}g`);
+  const hits = [];
+  let match;
+  while ((match = re.exec(text))) {
+    hits.push({ index: match.index, slice: extractCall(text, match.index) });
+    if (match[0].length === 0) re.lastIndex += 1;
+  }
+  return hits;
 }
 
 function scanBuiltinSast(root, { version = 'builtin-rules' } = {}) {
@@ -131,21 +167,23 @@ function scanBuiltinSast(root, { version = 'builtin-rules' } = {}) {
     const ext = path.extname(file);
     for (const rule of RULES) {
       if (!rule.files.test(ext)) continue;
-      rule.re.lastIndex = 0;
-      const match = rule.re.exec(text);
-      if (!match) continue;
-      const line = lineNumber(text, match.index);
-      findings.push(createFinding({
-        category: 'sast',
-        scanner: { name: 'semgrep', version, ruleId: rule.id },
-        title: rule.title,
-        description: rule.advice,
-        severity: rule.severity,
-        identifiers: { primary: rule.id, aliases: [], cwe: rule.cwe },
-        location: { file: rel, line, endLine: line },
-        remediation: { advice: rule.advice },
-        evidence: snippetAt(text, match.index),
-      }));
+      for (const hit of eachCall(text, rule.callee)) {
+        const lineText = lineAt(text, hit.index);
+        if (isCommentLine(lineText, ext)) continue;
+        if (!rule.tainted(hit.slice)) continue;
+        const line = lineNumber(text, hit.index);
+        findings.push(createFinding({
+          category: 'sast',
+          scanner: { name: 'semgrep', version, ruleId: rule.id },
+          title: rule.title,
+          description: rule.advice,
+          severity: rule.severity,
+          identifiers: { primary: rule.id, aliases: [], cwe: rule.cwe },
+          location: { file: rel, line, endLine: line },
+          remediation: { advice: rule.advice },
+          evidence: lineText.trim().slice(0, 240),
+        }));
+      }
     }
   }
   return findings;

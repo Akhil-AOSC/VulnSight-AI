@@ -24727,7 +24727,7 @@ var import_react6 = __toESM(require_react());
 var import_jsx_runtime6 = __toESM(require_jsx_runtime());
 var SCANNERS = [
   ["sca", "Dependencies (OSV)"],
-  ["semgrep", "Code (Semgrep)"],
+  ["semgrep", "Code (SAST)"],
   ["gitleaks", "Secrets (Gitleaks)"],
   ["trivy", "Dependencies + IaC (Trivy)"],
   ["checkov", "Infrastructure (Checkov)"]
@@ -25576,7 +25576,7 @@ function ScanView({ scanId }) {
             rows: scan.scanners.map((s, i) => ({
               id: `${s.scanner}-${i}`,
               cells: [
-                { osv: "Dependencies (OSV)", semgrep: "Code (Semgrep)", gitleaks: "Secrets (Gitleaks)", trivy: "Trivy", checkov: "Checkov" }[s.scanner] || s.scanner,
+                { osv: "Dependencies (OSV)", semgrep: "Code (SAST)", gitleaks: "Secrets (Gitleaks)", trivy: "Trivy", checkov: "Checkov" }[s.scanner] || s.scanner,
                 /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(StatusBadge, { status: s.status }),
                 s.version || "-",
                 pad(s.findingCount),

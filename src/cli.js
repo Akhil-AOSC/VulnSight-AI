@@ -34,6 +34,7 @@ Options:
 
 Scan options:
   --scanners=<list>             Comma list of: sca,semgrep,gitleaks,trivy,checkov (default: sca,semgrep,gitleaks)
+                                semgrep = local SAST (Opengrep, Semgrep, ESLint, or built-in rules)
   --format=<fmt>                text|json|csv|markdown|cyclonedx (default: text)
   --output=<file>               Write the report to a file instead of stdout
   --fail-on=<level>             Exit 1 only for findings at or above low|medium|high|critical (default: low)

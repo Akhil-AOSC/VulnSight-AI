@@ -519,7 +519,7 @@ export function ScanView({ scanId }) {
                 rows={scan.scanners.map((s, i) => ({
                   id: `${s.scanner}-${i}`,
                   cells: [
-                    ({ osv: 'Dependencies (OSV)', semgrep: 'Code (Semgrep)', gitleaks: 'Secrets (Gitleaks)', trivy: 'Trivy', checkov: 'Checkov' }[s.scanner] || s.scanner),
+                    ({ osv: 'Dependencies (OSV)', semgrep: 'Code (SAST)', gitleaks: 'Secrets (Gitleaks)', trivy: 'Trivy', checkov: 'Checkov' }[s.scanner] || s.scanner),
                     <StatusBadge status={s.status} />,
                     s.version || '-',
                     pad(s.findingCount),

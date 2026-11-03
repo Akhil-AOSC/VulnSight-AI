@@ -65,4 +65,30 @@ function resolveSemgrep(preferred = 'semgrep') {
   return which(preferred) || which('semgrep') || which('semgrep.exe');
 }
 
-module.exports = { ensureGitleaks, resolveSemgrep, GITLEAKS_VERSION };
+function resolveOpengrep() {
+  return which('opengrep') || which('opengrep.exe');
+}
+
+function resolveEslint(cwd) {
+  const local = cwd
+    ? which(path.join(cwd, 'node_modules', '.bin', process.platform === 'win32' ? 'eslint.cmd' : 'eslint'))
+      || which(path.join(cwd, 'node_modules', '.bin', 'eslint'))
+    : null;
+  return local || which('eslint') || which('eslint.cmd') || which('eslint.exe');
+}
+
+// Local SAST engines, strongest first. None of these are downloaded; missing tools fall through.
+function resolveSastEngine({ lookup, cwd } = {}) {
+  const find = lookup || which;
+  const opengrep = find('opengrep') || find('opengrep.exe');
+  if (opengrep) return { kind: 'opengrep', bin: opengrep };
+  const semgrep = find('semgrep') || find('semgrep.exe');
+  if (semgrep) return { kind: 'semgrep', bin: semgrep };
+  const eslintName = process.platform === 'win32' ? 'eslint.cmd' : 'eslint';
+  const eslintLocal = cwd ? find(path.join(cwd, 'node_modules', '.bin', eslintName)) || find(path.join(cwd, 'node_modules', '.bin', 'eslint')) : null;
+  const eslint = eslintLocal || find('eslint') || find('eslint.cmd') || find('eslint.exe');
+  if (eslint) return { kind: 'eslint', bin: eslint };
+  return { kind: 'builtin', bin: null };
+}
+
+module.exports = { ensureGitleaks, resolveSemgrep, resolveOpengrep, resolveEslint, resolveSastEngine, GITLEAKS_VERSION };
