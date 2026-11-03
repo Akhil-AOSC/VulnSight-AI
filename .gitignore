@@ -1,0 +1,10 @@
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+report.json
+report.md
+test-fixtures/report.md
+test-fixtures/report.json
+.DS_Store
+Thumbs.db

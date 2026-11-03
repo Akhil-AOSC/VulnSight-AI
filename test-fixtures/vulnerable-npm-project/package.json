@@ -1,0 +1,11 @@
+{
+  "name": "sample-vulnerable-app",
+  "version": "1.0.0",
+  "description": "Sample test fixture containing deliberately outdated dependencies for SCA testing",
+  "private": true,
+  "dependencies": {
+    "express": "4.16.4",
+    "lodash": "4.17.15",
+    "minimist": "1.2.0"
+  }
+}
