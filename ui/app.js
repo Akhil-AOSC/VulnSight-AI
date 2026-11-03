@@ -46,7 +46,10 @@
     return body;
   }
 
-  const basename = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || String(p);
+  const basename = (p) => {
+    const name = String(p).split(/[\\/]/).filter(Boolean).pop() || String(p);
+    return name.endsWith('.git') ? name.slice(0, -4) : name;
+  };
   const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
   const formatDate = (iso) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 
@@ -88,6 +91,7 @@
     }
     for (const item of state.history) {
       const worst = SEVERITIES.find((s) => item.summary[s] > 0);
+      const isMongo = item.source === 'mongodb';
       list.append(el('li', {},
         el('button', {
           type: 'button',
@@ -97,7 +101,8 @@
         el('span', { class: 'history-name', text: basename(item.target) }),
         el('span', { class: 'history-meta' },
           worst ? el('i', { class: `dot sev-${worst}`, 'aria-hidden': 'true' }) : null,
-          `${plural(item.summary.issues, 'issue')} · ${formatDate(item.scannedAt)}`))));
+          `${plural(item.summary.issues, 'issue')} · ${formatDate(item.scannedAt)}`,
+          isMongo ? el('span', { class: 'mongo-badge', title: 'Stored in MongoDB Atlas' }, '· Mongo') : null))));
     }
   }
 
@@ -126,10 +131,21 @@
 
   async function runScan(event) {
     event.preventDefault();
+    const targetVal = $('scan-path').value.trim();
+    const isGit = /^(https?|git|ssh):\/\//i.test(targetVal)
+      || /^(github|gitlab|bitbucket)\.[a-zA-Z0-9.-]+\//i.test(targetVal)
+      || (targetVal.endsWith('.git') && !targetVal.includes('\\'));
+
     const button = $('scan-submit');
     button.disabled = true;
     button.textContent = 'Scanning...';
-    setStatus('Checking every package against OSV.dev. This can take a few seconds.', false, true);
+    setStatus(
+      isGit
+        ? 'Cloning remote repository and checking OSV.dev...'
+        : 'Checking every package against OSV.dev. This can take a few seconds.',
+      false,
+      true
+    );
     try {
       const record = await api('/api/scans', {
         method: 'POST',
@@ -181,6 +197,7 @@
     $('results').hidden = false;
 
     renderSummary();
+    renderAiCard();
     renderSeverityBar();
     renderWarnings();
     renderProjects();
@@ -188,6 +205,42 @@
     renderFilters();
     renderIssues();
     renderHistory();
+  }
+
+  function renderAiCard() {
+    const ai = state.scan.ai;
+    const card = $('ai-card');
+    if (!card) return;
+    if (!ai) {
+      card.hidden = true;
+      return;
+    }
+    card.hidden = false;
+    const tag = $('ai-risk-tag');
+    tag.textContent = `Risk: ${ai.riskLevel || 'Analyzed'}`;
+    tag.className = `ai-risk-tag ai-risk-${ai.riskLevel || 'Medium'}`;
+
+    $('ai-summary').textContent = ai.executiveSummary || '';
+
+    const impactBox = $('ai-impact-box');
+    if (ai.impactAnalysis) {
+      impactBox.hidden = false;
+      $('ai-impact').textContent = ai.impactAnalysis;
+    } else {
+      impactBox.hidden = true;
+    }
+
+    const recBox = $('ai-rec-box');
+    const recsList = $('ai-recs');
+    recsList.replaceChildren();
+    if (Array.isArray(ai.keyRecommendations) && ai.keyRecommendations.length > 0) {
+      recBox.hidden = false;
+      for (const rec of ai.keyRecommendations) {
+        recsList.append(el('li', { text: rec }));
+      }
+    } else {
+      recBox.hidden = true;
+    }
   }
 
   function renderSummary() {
@@ -329,17 +382,21 @@
 
   function detailsRow(issue) {
     const cves = issue.aliases.length ? issue.aliases.join(', ') : 'None';
-    return el('tr', { class: 'details' },
-      el('td', { colspan: 5 },
-        el('dl', {},
-          el('dt', { text: 'Remediation' }), el('dd', { text: issue.remediation }),
-          el('dt', { text: 'Dependency paths' }),
-          el('dd', {}, el('ul', {}, issue.paths.map((p) => el('li', { class: 'mono', text: p.join(' › ') })))),
-          el('dt', { text: 'Other IDs' }), el('dd', { class: 'mono', text: cves }),
-          el('dt', { text: 'CVSS score' }), el('dd', { text: issue.cvssScore === null ? 'Not provided' : issue.cvssScore.toFixed(1) }),
-          el('dt', { text: 'Found in' }), el('dd', { class: 'mono', text: issue.project.file }),
-          el('dt', { text: 'Advisory' }),
-          el('dd', {}, el('a', { href: issue.url, target: '_blank', rel: 'noopener noreferrer', text: issue.url })))));
+    const items = [];
+    if (issue.aiExplanation) {
+      items.push(el('dt', { text: 'AI Explanation' }), el('dd', { class: 'ai-explanation', text: issue.aiExplanation }));
+    }
+    items.push(
+      el('dt', { text: 'Remediation' }), el('dd', { text: issue.remediation }),
+      el('dt', { text: 'Dependency paths' }),
+      el('dd', {}, el('ul', {}, issue.paths.map((p) => el('li', { class: 'mono', text: p.join(' › ') })))),
+      el('dt', { text: 'Other IDs' }), el('dd', { class: 'mono', text: cves }),
+      el('dt', { text: 'CVSS score' }), el('dd', { text: issue.cvssScore === null ? 'Not provided' : issue.cvssScore.toFixed(1) }),
+      el('dt', { text: 'Found in' }), el('dd', { class: 'mono', text: issue.project.file }),
+      el('dt', { text: 'Advisory' }),
+      el('dd', {}, el('a', { href: issue.url, target: '_blank', rel: 'noopener noreferrer', text: issue.url }))
+    );
+    return el('tr', { class: 'details' }, el('td', { colspan: 5 }, el('dl', {}, ...items)));
   }
 
   function issueRow(issue) {
@@ -398,7 +455,24 @@
     try {
       const config = await api('/api/config');
       $('scan-path').value = config.defaultTarget;
-      $('version').textContent = `v${config.version}`;
+      let tags = [`v${config.version}`];
+      if (config.aiEnabled) tags.push('Groq AI');
+      $('version').textContent = tags.join(' · ');
+
+      const indicator = $('db-indicator');
+      if (indicator && config.mongo) {
+        indicator.hidden = false;
+        if (config.mongo.connected) {
+          indicator.textContent = 'MongoDB Atlas';
+          indicator.className = 'db-indicator db-connected';
+          indicator.title = 'History actively synced with MongoDB Atlas collection.';
+        } else if (config.mongo.configured) {
+          indicator.textContent = 'Local (Atlas Blocked)';
+          indicator.className = 'db-indicator db-fallback';
+          indicator.title = 'MongoDB Atlas connection blocked by IP Access List. Add your IP or 0.0.0.0/0 at cloud.mongodb.com -> Network Access to enable live sync.';
+        }
+      }
+
       await loadHistory();
     } catch (err) {
       setStatus(`Could not reach the VulnSight-AI server: ${err.message}`, true);

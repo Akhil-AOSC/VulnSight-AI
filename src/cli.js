@@ -1,6 +1,8 @@
 'use strict';
 
 const path = require('path');
+const { initEnv } = require('./env');
+initEnv();
 const { detectProjects, loadProject } = require('./detect');
 const { scanProjects, applyThreshold } = require('./scanner');
 const { renderText, renderJson } = require('./report');
@@ -9,6 +11,7 @@ const fs = require('fs');
 const { runPipeline, DEFAULT_SCANNERS, SCANNERS } = require('./pipeline');
 const exporters = require('./reports/export');
 const { summarize } = require('./risk');
+const { isGitUrl, cloneRepository } = require('./git');
 const pkg = require('../package.json');
 
 // Exit codes follow the same convention as other scanners so CI can rely on them.
@@ -18,10 +21,10 @@ const THRESHOLDS = ['low', 'medium', 'high', 'critical'];
 const HELP = `VulnSight-AI ${pkg.version} - open-source dependency vulnerability scanner (data: OSV.dev)
 
 Usage:
-  vulnsight test [path] [options]    Scan the project in [path] (default: current directory)
-  vulnsight scan [path] [options]    Run all scanners (dependencies, code, secrets, IaC) on [path]
-  vulnsight serve [--port=4400]      Run the multi-user platform (API + web app + background worker)
-  vulnsight ui [path] [--port=4321]  Open the web dashboard at http://localhost:4321
+  vulnsight test [path|url] [options]  Scan local [path] or remote Git [url] (default: current directory)
+  vulnsight scan [path] [options]      Run all scanners (dependencies, code, secrets, IaC) on [path]
+  vulnsight serve [--port=4400]        Run the multi-user platform (API + web app + background worker)
+  vulnsight ui [path] [--port=4321]    Open the web dashboard at http://localhost:4321
 
 Options:
   --file=<lockfile>             Scan one file instead of auto-detecting
@@ -117,22 +120,51 @@ async function runScanCommand(opts, { pipeline = runPipeline, stdout = console.l
 }
 
 async function runTest(opts, { scan = scanProjects, stdout = console.log, stderr = console.error } = {}) {
-  const dir = path.resolve(opts.target || '.');
-  const { projects, warnings } = opts.file
-    ? { projects: [loadProject(path.resolve(dir, opts.file), opts)], warnings: [] }
-    : detectProjects(dir, opts);
+  const rawTarget = opts.target || '.';
+  let dir;
+  let cleanup = null;
+  let isRemote = false;
 
-  if (!projects.length) {
-    for (const w of warnings) stderr(`Warning: ${w}`);
-    stderr(`No supported dependency files found in ${dir}. Run "vulnsight --help" to see supported files.`);
-    return EXIT.NO_PROJECTS;
+  if (isGitUrl(rawTarget)) {
+    isRemote = true;
+    stdout(`Cloning ${rawTarget}...`);
+    try {
+      const cloned = await cloneRepository(rawTarget);
+      dir = cloned.dir;
+      cleanup = cloned.cleanup;
+    } catch (err) {
+      stderr(`Error: ${err.message}`);
+      return EXIT.ERROR;
+    }
+  } else {
+    dir = path.resolve(rawTarget);
   }
 
-  const results = applyThreshold(await scan(projects), opts.threshold);
+  try {
+    const { projects, warnings } = opts.file
+      ? { projects: [loadProject(path.resolve(dir, opts.file), opts)], warnings: [] }
+      : detectProjects(dir, opts);
 
-  const color = opts.color ?? (Boolean(process.stdout.isTTY) && !process.env.NO_COLOR);
-  stdout(opts.json ? renderJson(results, warnings) : renderText(results, warnings, { color }));
-  return results.some((r) => r.issues.length) ? EXIT.ISSUES : EXIT.OK;
+    if (!projects.length) {
+      for (const w of warnings) stderr(`Warning: ${w}`);
+      stderr(`No supported dependency files found in ${rawTarget}. Run "vulnsight --help" to see supported files.`);
+      return EXIT.NO_PROJECTS;
+    }
+
+    if (isRemote) {
+      for (const p of projects) {
+        p.file = path.relative(dir, p.file) || path.basename(p.file);
+      }
+    }
+
+    const results = applyThreshold(await scan(projects), opts.threshold);
+
+    const color = opts.color ?? (Boolean(process.stdout.isTTY) && !process.env.NO_COLOR);
+    stdout(opts.json ? renderJson(results, warnings) : renderText(results, warnings, { color }));
+    return results.some((r) => r.issues.length) ? EXIT.ISSUES : EXIT.OK;
+  } finally {
+    if (cleanup) cleanup();
+  }
 }
 
 // Runs until the process is stopped (Ctrl+C).

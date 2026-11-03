@@ -40,6 +40,8 @@ npm link
 
 ```bash
 vulnsight test path/to/your/project
+# Or scan a remote Git repository directly:
+vulnsight test https://github.com/user/repo
 ```
 
 ## Web dashboard
@@ -62,7 +64,9 @@ can't use it to start scans. Use `--port=<n>` if 4321 is taken.
 ## Usage
 
 ```
-vulnsight test [path] [options]
+vulnsight test [path|url] [options]
+
+  Scan a local directory or remote Git URL directly (e.g. https://github.com/owner/repo)
 
   --file=<lockfile>             Scan one file instead of auto-detecting
   --severity-threshold=<level>  Only report issues at or above low|medium|high|critical
