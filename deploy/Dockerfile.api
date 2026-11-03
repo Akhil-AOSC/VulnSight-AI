@@ -1,10 +1,11 @@
-# API + web app. Zero runtime dependencies, so the image is just Node and our code.
+# API + web app.
 FROM node:22-alpine
 ENV NODE_ENV=production
 # git is needed to clone repositories. Semgrep/Gitleaks/Trivy/Checkov live in the worker image.
 RUN apk add --no-cache git
 WORKDIR /app
-COPY package.json ./
+COPY package*.json ./
+RUN npm ci --omit=dev
 COPY src ./src
 COPY web ./web
 RUN mkdir -p /data && chown -R node:node /data

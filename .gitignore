@@ -4,8 +4,8 @@ node_modules/
 .vulnsight-data/
 
 # Environment & Sensitive Credentials
-.env
-.env.local
-.env.*.local
+.env*
+*.env
+*.download
 *.pem
 *.key

@@ -10,7 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
  && rm -rf /var/lib/apt/lists/*
 ENV PATH="/opt/py/bin:${PATH}" SEMGREP_SEND_METRICS=off
 WORKDIR /app
-COPY package.json ./
+COPY package*.json ./
+RUN npm ci --omit=dev
 COPY src ./src
 RUN useradd -u 10001 -m scanner
 USER 10001:10001
