@@ -13,9 +13,13 @@
     "ui"
   ],
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test \"test/**/*.test.js\"",
     "ui": "node bin/vulnsight.js ui",
-    "scan:examples": "node bin/vulnsight.js test examples/npm-app && node bin/vulnsight.js test examples/python-app"
+    "scan:examples": "node bin/vulnsight.js test examples/npm-app && node bin/vulnsight.js test examples/python-app",
+    "ops": "node scripts/ops.js",
+    "loadtest": "node scripts/loadtest.js",
+    "probe": "node scripts/security-probe.js",
+    "probe:xss": "node scripts/xss-probe.js"
   },
   "engines": {
     "node": ">=18"

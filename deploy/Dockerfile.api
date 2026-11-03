@@ -1,0 +1,15 @@
+# API + web app. Zero runtime dependencies, so the image is just Node and our code.
+FROM node:22-alpine
+ENV NODE_ENV=production
+# git is needed to clone repositories. Semgrep/Gitleaks/Trivy/Checkov live in the worker image.
+RUN apk add --no-cache git
+WORKDIR /app
+COPY package.json ./
+COPY src ./src
+COPY web ./web
+RUN mkdir -p /data && chown -R node:node /data
+USER node
+ENV VULNSIGHT_DB=/data/vulnsight.db
+EXPOSE 4400
+HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://127.0.0.1:4400/api/v1/health || exit 1
+CMD ["node", "src/platform/serve.js"]

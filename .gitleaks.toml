@@ -1,0 +1,11 @@
+# The insecure example app contains deliberately fake credentials used to test the scanners.
+title = "VulnSight AI gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Deliberately insecure test fixtures"
+paths = [
+  '''examples/insecure-app/.*''',
+]

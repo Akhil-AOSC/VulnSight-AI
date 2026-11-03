@@ -1,0 +1,952 @@
+'use strict';
+
+const crypto = require('crypto');
+const { uuid, now, transaction } = require('./db');
+const {
+  hashPassword, hashPasswordAsync, verifyPasswordAsync, checkPasswordPolicy, newToken, sha256, safeEqual,
+} = require('./crypto');
+const {
+  ROLES, can, assertCan, ForbiddenError, NotFoundError, ValidationError, AuthError,
+} = require('./rbac');
+const { validateRepoUrl, validateBranch, cloneRepo } = require('./git');
+const { PROVIDERS, providerForHost } = require('./providers');
+const { runSandboxed } = require('./sandbox');
+const { createLocalExecutor } = require('./executors');
+const { NonRetryableError } = require('./queue');
+const { DEFAULT_SCANNERS, SCANNERS } = require('../pipeline');
+const { summarize } = require('../risk');
+const exporters = require('../reports/export');
+const ai = require('../ai/assistant');
+const { providerFromEnv } = require('../ai/providers');
+
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const GRANT_TTL_MS = 10 * 60 * 1000;
+const DEFAULT_SETTINGS = { aiEnabled: false, aiSendCode: false, retentionDays: 90 };
+const SCHEDULES = { hourly: 3600e3, daily: 86400e3, weekly: 7 * 86400e3 };
+const STATUSES = ['open', 'acknowledged', 'suppressed', 'fixed'];
+const LIMITS = { reposPerOrg: 100, activeScansPerOrg: 10, aiRequestsPerHour: 60, pageSize: 200 };
+const EMAIL = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,}$/;
+const DUMMY_HASH = hashPassword('dummy-password-for-timing-A1');
+
+const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { return fallback; } };
+
+function createPlatform({
+  db, secretBox, queue,
+  fetchImpl = fetch,
+  validateUrl = validateRepoUrl,
+  clone = cloneRepo,
+  runScan = runSandboxed,
+  sandboxMode = 'process',
+  executor = createLocalExecutor({ clone, runScan, mode: sandboxMode }),
+  aiProviderFactory = () => providerFromEnv(),
+  allowHosts = ['github.com', 'gitlab.com', 'bitbucket.org'],
+  clock = () => Date.now(),
+} = {}) {
+  const nowIso = () => new Date(clock()).toISOString();
+
+  // ---------- helpers ----------------------------------------------------------------------
+  function roleOf(userId, orgId) {
+    const row = db.prepare('SELECT role FROM memberships WHERE org_id = ? AND user_id = ?').get(orgId, userId);
+    // Non-members get "not found" so organisation ids can't be probed.
+    if (!row) throw new NotFoundError('Organisation not found');
+    return row.role;
+  }
+
+  // Authorizes ctx for a permission in its org and returns the role.
+  function authorize(ctx, permission) {
+    if (!ctx || !ctx.userId || !ctx.orgId) throw new AuthError();
+    const role = roleOf(ctx.userId, ctx.orgId);
+    assertCan(role, permission);
+    return role;
+  }
+
+  function audit(ctx, action, target = null, detail = null) {
+    db.prepare('INSERT INTO audit_logs (id, org_id, user_id, action, target, detail, ip, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(uuid(), (ctx && ctx.orgId) || null, (ctx && ctx.userId) || null, action, target, detail ? JSON.stringify(detail) : null, (ctx && ctx.ip) || null, nowIso());
+  }
+
+  function notify(orgId, kind, title, body, roles = ['owner', 'admin']) {
+    const users = db.prepare(`SELECT user_id FROM memberships WHERE org_id = ? AND role IN (${roles.map(() => '?').join(',')})`).all(orgId, ...roles);
+    const stmt = db.prepare('INSERT INTO notifications (id, org_id, user_id, kind, title, body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    for (const u of users) stmt.run(uuid(), orgId, u.user_id, kind, title, body, nowIso());
+  }
+
+  function settingsOf(orgId) {
+    const row = db.prepare('SELECT settings FROM orgs WHERE id = ?').get(orgId);
+    if (!row) throw new NotFoundError('Organisation not found');
+    return { ...DEFAULT_SETTINGS, ...parse(row.settings, {}) };
+  }
+
+  function getRepo(orgId, repoId) {
+    const repo = db.prepare('SELECT * FROM repositories WHERE id = ? AND org_id = ?').get(repoId, orgId);
+    if (!repo) throw new NotFoundError('Repository not found');
+    return repo;
+  }
+
+  const publicRepo = (r) => ({
+    id: r.id, provider: r.provider, fullName: r.full_name, cloneUrl: r.clone_url, defaultBranch: r.default_branch,
+    teamId: r.team_id, connectionId: r.connection_id, config: parse(r.config, {}), schedule: r.schedule,
+    nextScanAt: r.next_scan_at, createdAt: r.created_at,
+  });
+
+  const publicScan = (s) => ({
+    id: s.id, repoId: s.repo_id, branch: s.branch, commit: s.commit_sha, trigger: s.trigger, status: s.status,
+    scanners: parse(s.scanners, []), summary: parse(s.summary, null), error: s.error,
+    createdAt: s.created_at, startedAt: s.started_at, finishedAt: s.finished_at,
+  });
+
+  function getScan(orgId, scanId) {
+    const scan = db.prepare('SELECT * FROM scans WHERE id = ? AND org_id = ?').get(scanId, orgId);
+    if (!scan) throw new NotFoundError('Scan not found');
+    return scan;
+  }
+
+  const states = (orgId, repoId) => new Map(
+    db.prepare('SELECT * FROM finding_states WHERE org_id = ? AND repo_id = ?').all(orgId, repoId).map((s) => [s.fingerprint, s]));
+
+  function hydrateFindings(orgId, scan) {
+    const st = states(orgId, scan.repo_id);
+    return db.prepare('SELECT id, data, fingerprint FROM findings WHERE org_id = ? AND scan_id = ?').all(orgId, scan.id).map((row) => {
+      const f = parse(row.data);
+      const s = st.get(row.fingerprint);
+      f.rowId = row.id;
+      if (s) { f.status = s.status; f.assigneeId = s.assignee_id; f.note = s.note; }
+      return f;
+    });
+  }
+
+  // ---------- auth ------------------------------------------------------------------------
+  const auth = {
+    async signup({ email, name, password, orgName }, ctx = {}) {
+      email = String(email || '').trim().toLowerCase();
+      if (!EMAIL.test(email)) throw new ValidationError('Enter a valid email address');
+      const policy = checkPasswordPolicy(password);
+      if (policy) throw new ValidationError(policy);
+      const cleanName = String(name || '').trim().slice(0, 100) || email.split('@')[0];
+      const cleanOrg = String(orgName || '').trim().slice(0, 100) || `${cleanName}'s organisation`;
+      if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) throw new ValidationError('Unable to create an account with those details');
+
+      const passwordHash = await hashPasswordAsync(password); // off the event loop
+      // Re-check after the await: a concurrent signup with the same email may have won the race.
+      if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) throw new ValidationError('Unable to create an account with those details');
+      const userId = uuid();
+      const orgId = uuid();
+      transaction(db, () => {
+        db.prepare('INSERT INTO users (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)').run(userId, email, cleanName, passwordHash, nowIso());
+        db.prepare('INSERT INTO orgs (id, name, created_at, settings) VALUES (?, ?, ?, ?)').run(orgId, cleanOrg, nowIso(), '{}');
+        db.prepare('INSERT INTO memberships (org_id, user_id, role, created_at) VALUES (?, ?, ?, ?)').run(orgId, userId, 'owner', nowIso());
+      });
+      audit({ ...ctx, userId, orgId }, 'user.signup', userId);
+      return { ...auth.createSession(userId), user: { id: userId, email, name: cleanName }, orgId };
+    },
+
+    async login({ email, password }, ctx = {}) {
+      email = String(email || '').trim().toLowerCase();
+      const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+      // Always run a hash comparison so response time doesn't reveal whether the email exists.
+      const ok = await verifyPasswordAsync(String(password || ''), user ? user.password_hash : DUMMY_HASH);
+      if (!user || !ok || user.disabled) {
+        audit({ ...ctx }, 'user.login_failed', null, { email });
+        throw new AuthError('Incorrect email or password');
+      }
+      audit({ ...ctx, userId: user.id }, 'user.login', user.id);
+      return { ...auth.createSession(user.id), user: { id: user.id, email: user.email, name: user.name } };
+    },
+
+    createSession(userId) {
+      const token = newToken();
+      db.prepare('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
+        .run(sha256(token), userId, nowIso(), new Date(clock() + SESSION_TTL_MS).toISOString());
+      return { token };
+    },
+
+    authenticate(token) {
+      if (!token) throw new AuthError();
+      const row = db.prepare('SELECT s.user_id, s.expires_at, u.disabled FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?').get(sha256(String(token)));
+      if (!row || row.disabled || new Date(row.expires_at).getTime() < clock()) throw new AuthError('Session expired. Please sign in again');
+      return { userId: row.user_id };
+    },
+
+    logout(token) {
+      db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha256(String(token || '')));
+    },
+
+    me(userId) {
+      const user = db.prepare('SELECT id, email, name, created_at FROM users WHERE id = ?').get(userId);
+      if (!user) throw new AuthError();
+      const orgs = db.prepare('SELECT o.id, o.name, m.role FROM memberships m JOIN orgs o ON o.id = m.org_id WHERE m.user_id = ? ORDER BY o.name').all(userId);
+      const { PERMISSIONS } = require('./rbac');
+      return { ...user, orgs: orgs.map((o) => ({ ...o, permissions: PERMISSIONS[o.role] || [] })) };
+    },
+  };
+
+  // ---------- organisations, members, teams ------------------------------------------------
+  const orgs = {
+    create(userId, { name }) {
+      const clean = String(name || '').trim().slice(0, 100);
+      if (!clean) throw new ValidationError('Organisation name is required');
+      const orgId = uuid();
+      transaction(db, () => {
+        db.prepare('INSERT INTO orgs (id, name, created_at, settings) VALUES (?, ?, ?, ?)').run(orgId, clean, nowIso(), '{}');
+        db.prepare('INSERT INTO memberships (org_id, user_id, role, created_at) VALUES (?, ?, ?, ?)').run(orgId, userId, 'owner', nowIso());
+      });
+      audit({ userId, orgId }, 'org.create', orgId);
+      return { id: orgId, name: clean, role: 'owner' };
+    },
+
+    getSettings(ctx) {
+      authorize(ctx, 'repos:read');
+      return settingsOf(ctx.orgId);
+    },
+
+    updateSettings(ctx, patch) {
+      authorize(ctx, 'org:settings');
+      const next = { ...settingsOf(ctx.orgId) };
+      if (typeof patch.aiEnabled === 'boolean') next.aiEnabled = patch.aiEnabled;
+      if (typeof patch.aiSendCode === 'boolean') next.aiSendCode = patch.aiSendCode && next.aiEnabled;
+      if (!next.aiEnabled) next.aiSendCode = false;
+      if (patch.retentionDays !== undefined) {
+        const d = Number(patch.retentionDays);
+        if (!Number.isInteger(d) || d < 1 || d > 3650) throw new ValidationError('Retention must be between 1 and 3650 days');
+        next.retentionDays = d;
+      }
+      db.prepare('UPDATE orgs SET settings = ? WHERE id = ?').run(JSON.stringify(next), ctx.orgId);
+      audit(ctx, 'org.settings', ctx.orgId, next);
+      return next;
+    },
+
+    rename(ctx, name) {
+      authorize(ctx, 'org:settings');
+      const clean = String(name || '').trim().slice(0, 100);
+      if (!clean) throw new ValidationError('Organisation name is required');
+      db.prepare('UPDATE orgs SET name = ? WHERE id = ?').run(clean, ctx.orgId);
+      audit(ctx, 'org.rename', ctx.orgId);
+      return { id: ctx.orgId, name: clean };
+    },
+
+    delete(ctx) {
+      authorize(ctx, 'org:delete');
+      transaction(db, () => {
+        for (const t of ['finding_states', 'finding_reviews', 'ai_history', 'notifications', 'jobs', 'scan_raw', 'findings']) {
+          db.prepare(`DELETE FROM ${t} WHERE org_id = ?`).run(ctx.orgId);
+        }
+        db.prepare('DELETE FROM orgs WHERE id = ?').run(ctx.orgId);
+      });
+      audit({ userId: ctx.userId, ip: ctx.ip }, 'org.delete', ctx.orgId);
+    },
+
+    listMembers(ctx) {
+      authorize(ctx, 'teams:read');
+      return db.prepare('SELECT u.id, u.email, u.name, m.role, m.created_at AS joinedAt FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.org_id = ? ORDER BY u.email').all(ctx.orgId);
+    },
+
+    addMember(ctx, { email, role = 'developer' }) {
+      const actorRole = authorize(ctx, 'members:manage');
+      if (!ROLES.includes(role)) throw new ValidationError('Unknown role');
+      if (role === 'owner' && actorRole !== 'owner') throw new ForbiddenError('Only owners can add owners');
+      const user = db.prepare('SELECT id FROM users WHERE email = ?').get(String(email || '').trim().toLowerCase());
+      if (!user) throw new NotFoundError('No user with that email. They need to create an account first');
+      if (db.prepare('SELECT 1 FROM memberships WHERE org_id = ? AND user_id = ?').get(ctx.orgId, user.id)) throw new ValidationError('Already a member');
+      db.prepare('INSERT INTO memberships (org_id, user_id, role, created_at) VALUES (?, ?, ?, ?)').run(ctx.orgId, user.id, role, nowIso());
+      audit(ctx, 'member.add', user.id, { role });
+      return { userId: user.id, role };
+    },
+
+    setMemberRole(ctx, userId, role) {
+      const actorRole = authorize(ctx, 'members:manage');
+      if (!ROLES.includes(role)) throw new ValidationError('Unknown role');
+      const current = roleOf(userId, ctx.orgId);
+      if ((role === 'owner' || current === 'owner') && actorRole !== 'owner') throw new ForbiddenError('Only owners can change owner roles');
+      if (current === 'owner' && role !== 'owner') assertNotLastOwner(ctx.orgId);
+      db.prepare('UPDATE memberships SET role = ? WHERE org_id = ? AND user_id = ?').run(role, ctx.orgId, userId);
+      audit(ctx, 'member.role', userId, { from: current, to: role });
+      return { userId, role };
+    },
+
+    removeMember(ctx, userId) {
+      const actorRole = authorize(ctx, 'members:manage');
+      const current = roleOf(userId, ctx.orgId);
+      if (current === 'owner') {
+        if (actorRole !== 'owner') throw new ForbiddenError('Only owners can remove owners');
+        assertNotLastOwner(ctx.orgId);
+      }
+      db.prepare('DELETE FROM memberships WHERE org_id = ? AND user_id = ?').run(ctx.orgId, userId);
+      db.prepare('DELETE FROM team_members WHERE user_id = ? AND team_id IN (SELECT id FROM teams WHERE org_id = ?)').run(userId, ctx.orgId);
+      audit(ctx, 'member.remove', userId);
+    },
+  };
+
+  function assertNotLastOwner(orgId) {
+    const n = db.prepare("SELECT COUNT(*) AS n FROM memberships WHERE org_id = ? AND role = 'owner'").get(orgId).n;
+    if (n <= 1) throw new ValidationError('An organisation must keep at least one owner');
+  }
+
+  const teams = {
+    list(ctx) {
+      authorize(ctx, 'teams:read');
+      return db.prepare('SELECT id, name, created_at AS createdAt FROM teams WHERE org_id = ? ORDER BY name').all(ctx.orgId).map((t) => ({
+        ...t, members: db.prepare('SELECT user_id AS userId FROM team_members WHERE team_id = ?').all(t.id).map((m) => m.userId),
+      }));
+    },
+    create(ctx, { name }) {
+      authorize(ctx, 'teams:manage');
+      const clean = String(name || '').trim().slice(0, 100);
+      if (!clean) throw new ValidationError('Team name is required');
+      const id = uuid();
+      try {
+        db.prepare('INSERT INTO teams (id, org_id, name, created_at) VALUES (?, ?, ?, ?)').run(id, ctx.orgId, clean, nowIso());
+      } catch {
+        throw new ValidationError('A team with that name already exists');
+      }
+      audit(ctx, 'team.create', id);
+      return { id, name: clean };
+    },
+    addMember(ctx, teamId, userId) {
+      authorize(ctx, 'teams:manage');
+      if (!db.prepare('SELECT 1 FROM teams WHERE id = ? AND org_id = ?').get(teamId, ctx.orgId)) throw new NotFoundError('Team not found');
+      roleOf(userId, ctx.orgId);
+      db.prepare('INSERT OR IGNORE INTO team_members (team_id, user_id) VALUES (?, ?)').run(teamId, userId);
+      audit(ctx, 'team.member_add', teamId, { userId });
+    },
+    removeMember(ctx, teamId, userId) {
+      authorize(ctx, 'teams:manage');
+      if (!db.prepare('SELECT 1 FROM teams WHERE id = ? AND org_id = ?').get(teamId, ctx.orgId)) throw new NotFoundError('Team not found');
+      db.prepare('DELETE FROM team_members WHERE team_id = ? AND user_id = ?').run(teamId, userId);
+      audit(ctx, 'team.member_remove', teamId, { userId });
+    },
+    delete(ctx, teamId) {
+      authorize(ctx, 'teams:manage');
+      db.prepare('DELETE FROM teams WHERE id = ? AND org_id = ?').run(teamId, ctx.orgId);
+      audit(ctx, 'team.delete', teamId);
+    },
+  };
+
+  // ---------- git provider connections ------------------------------------------------------
+  function connectionToken(orgId, connectionId) {
+    const c = db.prepare('SELECT * FROM provider_connections WHERE id = ? AND org_id = ?').get(connectionId, orgId);
+    if (!c) throw new NotFoundError('Connection not found');
+    return { connection: c, token: secretBox.decrypt(c.token_enc) };
+  }
+
+  const connections = {
+    async connect(ctx, { provider, token, label }) {
+      authorize(ctx, 'providers:manage');
+      const impl = PROVIDERS[provider];
+      if (!impl) throw new ValidationError('Unsupported provider. Use github, gitlab or bitbucket');
+      if (typeof token !== 'string' || token.length < 8 || token.length > 500) throw new ValidationError('Enter a valid access token');
+      const { account } = await impl.validate(token, fetchImpl);
+      const id = uuid();
+      db.prepare('INSERT INTO provider_connections (id, org_id, provider, label, token_enc, account, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, ctx.orgId, provider, String(label || account || provider).slice(0, 100), secretBox.encrypt(token), account, ctx.userId, nowIso());
+      audit(ctx, 'provider.connect', id, { provider, account });
+      return { id, provider, account };
+    },
+    list(ctx) {
+      authorize(ctx, 'repos:read');
+      // Tokens are never returned.
+      return db.prepare('SELECT id, provider, label, account, created_at AS createdAt FROM provider_connections WHERE org_id = ? ORDER BY created_at').all(ctx.orgId);
+    },
+    async listRemoteRepos(ctx, connectionId) {
+      authorize(ctx, 'repos:write');
+      const { connection, token } = connectionToken(ctx.orgId, connectionId);
+      return PROVIDERS[connection.provider].listRepos(token, fetchImpl);
+    },
+    async listBranches(ctx, connectionId, fullName) {
+      authorize(ctx, 'repos:write');
+      const { connection, token } = connectionToken(ctx.orgId, connectionId);
+      return PROVIDERS[connection.provider].listBranches(token, fullName, fetchImpl);
+    },
+    remove(ctx, connectionId) {
+      authorize(ctx, 'providers:manage');
+      db.prepare('DELETE FROM provider_connections WHERE id = ? AND org_id = ?').run(connectionId, ctx.orgId);
+      audit(ctx, 'provider.disconnect', connectionId);
+    },
+  };
+
+  // ---------- repositories ---------------------------------------------------------------------
+  function validateConfig(config = {}) {
+    const out = {};
+    if (config.scanners !== undefined) {
+      if (!Array.isArray(config.scanners) || !config.scanners.every((s) => SCANNERS[s] && s !== 'trivy-image')) throw new ValidationError('Invalid scanner list');
+      out.scanners = [...new Set(config.scanners)];
+    }
+    if (config.threshold !== undefined) {
+      if (!['low', 'medium', 'high', 'critical'].includes(config.threshold)) throw new ValidationError('Invalid severity threshold');
+      out.threshold = config.threshold;
+    }
+    if (config.branches !== undefined) {
+      if (!Array.isArray(config.branches) || config.branches.length > 20) throw new ValidationError('Invalid branch list');
+      out.branches = config.branches.map(validateBranch);
+    }
+    return out;
+  }
+
+  const repos = {
+    async add(ctx, { url, branch, connectionId = null, teamId = null, config }) {
+      authorize(ctx, 'repos:write');
+      if (db.prepare('SELECT COUNT(*) AS n FROM repositories WHERE org_id = ?').get(ctx.orgId).n >= LIMITS.reposPerOrg) throw new ValidationError('Repository limit reached for this organisation');
+      const v = await validateUrl(url, { allowHosts });
+      const provider = providerForHost(v.host);
+      if (!provider) throw new ValidationError('Unsupported Git host');
+      if (connectionId) {
+        const { connection } = connectionToken(ctx.orgId, connectionId);
+        if (connection.provider !== provider) throw new ValidationError('That connection is for a different Git provider');
+      }
+      if (teamId && !db.prepare('SELECT 1 FROM teams WHERE id = ? AND org_id = ?').get(teamId, ctx.orgId)) throw new NotFoundError('Team not found');
+      const defaultBranch = branch ? validateBranch(branch) : 'main';
+      const cleanConfig = validateConfig(config);
+      const id = uuid();
+      try {
+        db.prepare(`INSERT INTO repositories (id, org_id, team_id, connection_id, provider, full_name, clone_url, default_branch, config, webhook_secret, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(id, ctx.orgId, teamId, connectionId, provider, v.fullName, v.url, defaultBranch, JSON.stringify(cleanConfig), secretBox.encrypt(newToken(24)), nowIso());
+      } catch {
+        throw new ValidationError('That repository is already connected');
+      }
+      audit(ctx, 'repo.add', id, { url: v.url });
+      return publicRepo(getRepo(ctx.orgId, id));
+    },
+
+    list(ctx) {
+      authorize(ctx, 'repos:read');
+      return db.prepare('SELECT * FROM repositories WHERE org_id = ? ORDER BY full_name').all(ctx.orgId).map((r) => {
+        const last = db.prepare("SELECT * FROM scans WHERE org_id = ? AND repo_id = ? ORDER BY created_at DESC LIMIT 1").get(ctx.orgId, r.id);
+        const lastDone = db.prepare("SELECT summary FROM scans WHERE org_id = ? AND repo_id = ? AND status = 'completed' ORDER BY created_at DESC LIMIT 1").get(ctx.orgId, r.id);
+        return { ...publicRepo(r), lastScan: last ? publicScan(last) : null, security: lastDone ? parse(lastDone.summary) : null };
+      });
+    },
+
+    get(ctx, repoId) {
+      authorize(ctx, 'repos:read');
+      return publicRepo(getRepo(ctx.orgId, repoId));
+    },
+
+    update(ctx, repoId, patch) {
+      authorize(ctx, 'repos:write');
+      const repo = getRepo(ctx.orgId, repoId);
+      const config = { ...parse(repo.config, {}), ...validateConfig(patch.config) };
+      const branch = patch.defaultBranch ? validateBranch(patch.defaultBranch) : repo.default_branch;
+      let teamId = repo.team_id;
+      if (patch.teamId !== undefined) {
+        if (patch.teamId && !db.prepare('SELECT 1 FROM teams WHERE id = ? AND org_id = ?').get(patch.teamId, ctx.orgId)) throw new NotFoundError('Team not found');
+        teamId = patch.teamId || null;
+      }
+      db.prepare('UPDATE repositories SET config = ?, default_branch = ?, team_id = ? WHERE id = ?').run(JSON.stringify(config), branch, teamId, repoId);
+      audit(ctx, 'repo.update', repoId);
+      return publicRepo(getRepo(ctx.orgId, repoId));
+    },
+
+    setSchedule(ctx, repoId, schedule) {
+      authorize(ctx, 'repos:write');
+      getRepo(ctx.orgId, repoId);
+      if (schedule !== null && !SCHEDULES[schedule]) throw new ValidationError('Schedule must be hourly, daily, weekly or null');
+      const next = schedule ? new Date(clock() + SCHEDULES[schedule]).toISOString() : null;
+      db.prepare('UPDATE repositories SET schedule = ?, next_scan_at = ? WHERE id = ?').run(schedule, next, repoId);
+      audit(ctx, 'repo.schedule', repoId, { schedule });
+      return { schedule, nextScanAt: next };
+    },
+
+    remove(ctx, repoId) {
+      authorize(ctx, 'repos:write');
+      getRepo(ctx.orgId, repoId);
+      transaction(db, () => {
+        for (const t of ['finding_states', 'finding_reviews', 'ai_history']) db.prepare(`DELETE FROM ${t} WHERE org_id = ? AND repo_id = ?`).run(ctx.orgId, repoId);
+        db.prepare('DELETE FROM repositories WHERE id = ? AND org_id = ?').run(repoId, ctx.orgId);
+      });
+      audit(ctx, 'repo.remove', repoId);
+    },
+
+    async branches(ctx, repoId) {
+      authorize(ctx, 'repos:read');
+      const repo = getRepo(ctx.orgId, repoId);
+      if (!repo.connection_id) return [repo.default_branch];
+      const { token } = connectionToken(ctx.orgId, repo.connection_id);
+      return PROVIDERS[repo.provider].listBranches(token, repo.full_name, fetchImpl);
+    },
+
+    webhookSecret(ctx, repoId) {
+      authorize(ctx, 'repos:write');
+      return secretBox.decrypt(getRepo(ctx.orgId, repoId).webhook_secret);
+    },
+  };
+
+  // ---------- scans ------------------------------------------------------------------------
+  function createScan(orgId, repo, { branch, trigger, userId }) {
+    const active = db.prepare("SELECT COUNT(*) AS n FROM scans WHERE org_id = ? AND status IN ('queued','running')").get(orgId).n;
+    if (active >= LIMITS.activeScansPerOrg) throw new ValidationError('Too many scans are in progress. Try again shortly');
+    if (db.prepare("SELECT 1 FROM scans WHERE repo_id = ? AND branch = ? AND status IN ('queued','running')").get(repo.id, branch)) {
+      throw new ValidationError('A scan of that branch is already in progress');
+    }
+    const id = uuid();
+    db.prepare('INSERT INTO scans (id, org_id, repo_id, branch, trigger, status, requested_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, orgId, repo.id, branch, trigger, 'queued', userId || null, nowIso());
+    queue.enqueue('scan', { scanId: id }, { orgId });
+    return id;
+  }
+
+  const scans = {
+    start(ctx, repoId, { branch } = {}) {
+      authorize(ctx, 'scans:run');
+      const repo = getRepo(ctx.orgId, repoId);
+      const b = validateBranch(branch || repo.default_branch);
+      const id = createScan(ctx.orgId, repo, { branch: b, trigger: 'manual', userId: ctx.userId });
+      audit(ctx, 'scan.start', id, { repo: repo.full_name, branch: b });
+      return publicScan(getScan(ctx.orgId, id));
+    },
+
+    list(ctx, { repoId, limit = 50 } = {}) {
+      authorize(ctx, 'scans:read');
+      const lim = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+      const rows = repoId
+        ? db.prepare('SELECT * FROM scans WHERE org_id = ? AND repo_id = ? ORDER BY created_at DESC LIMIT ?').all(ctx.orgId, repoId, lim)
+        : db.prepare('SELECT * FROM scans WHERE org_id = ? ORDER BY created_at DESC LIMIT ?').all(ctx.orgId, lim);
+      return rows.map(publicScan);
+    },
+
+    get(ctx, scanId) {
+      authorize(ctx, 'scans:read');
+      return publicScan(getScan(ctx.orgId, scanId));
+    },
+
+    cancel(ctx, scanId) {
+      authorize(ctx, 'scans:run');
+      const scan = getScan(ctx.orgId, scanId);
+      if (scan.status !== 'queued') throw new ValidationError('Only queued scans can be cancelled');
+      queue.cancelWhere('scan', (p) => p.scanId === scanId);
+      db.prepare("UPDATE scans SET status = 'cancelled', finished_at = ? WHERE id = ?").run(nowIso(), scanId);
+      audit(ctx, 'scan.cancel', scanId);
+      return publicScan(getScan(ctx.orgId, scanId));
+    },
+
+    findings(ctx, scanId, filters = {}) {
+      authorize(ctx, 'findings:read');
+      const scan = getScan(ctx.orgId, scanId);
+      let list = hydrateFindings(ctx.orgId, scan);
+      if (filters.severity) list = list.filter((f) => String(filters.severity).split(',').includes(f.severity));
+      if (filters.category) list = list.filter((f) => f.category === filters.category);
+      if (filters.status) list = list.filter((f) => f.status === filters.status);
+      if (filters.assignee) list = list.filter((f) => f.assigneeId === filters.assignee);
+      if (filters.q) {
+        const q = String(filters.q).toLowerCase();
+        list = list.filter((f) => [f.title, f.identifiers.primary, ...f.identifiers.aliases, f.location.package, f.location.file].some((v) => v && String(v).toLowerCase().includes(q)));
+      }
+      const sorted = exporters.sortFindings(list);
+      if (filters.sort === 'package') sorted.sort((a, b) => String(a.location.package || a.location.file).localeCompare(String(b.location.package || b.location.file)));
+      const pageSize = Math.min(Math.max(parseInt(filters.pageSize, 10) || 50, 1), LIMITS.pageSize);
+      const page = Math.max(parseInt(filters.page, 10) || 1, 1);
+      return { total: sorted.length, page, pageSize, items: sorted.slice((page - 1) * pageSize, page * pageSize) };
+    },
+
+    report(ctx, scanId, format) {
+      authorize(ctx, 'reports:read');
+      const scan = getScan(ctx.orgId, scanId);
+      const repo = getRepo(ctx.orgId, scan.repo_id);
+      const raw = db.prepare('SELECT data FROM scan_raw WHERE scan_id = ? AND org_id = ?').get(scanId, ctx.orgId);
+      const report = {
+        target: { path: `${repo.full_name}@${scan.branch}` },
+        startedAt: scan.started_at || scan.created_at,
+        scanners: parse(scan.scanners, []),
+        raw: raw ? parse(raw.data, {}) : {},
+        findings: hydrateFindings(ctx.orgId, scan),
+      };
+      audit(ctx, 'report.export', scanId, { format });
+      switch (format) {
+        case 'csv': return { type: 'text/csv; charset=utf-8', ext: 'csv', body: exporters.renderCsv(report.findings) };
+        case 'markdown': return { type: 'text/markdown; charset=utf-8', ext: 'md', body: exporters.renderMarkdown(report, { title: `Security report: ${repo.full_name}` }) };
+        case 'cyclonedx': return { type: 'application/json', ext: 'cdx.json', body: exporters.renderCycloneDx(report, { name: repo.full_name }) };
+        case 'json': return { type: 'application/json', ext: 'json', body: exporters.renderJsonReport(report) };
+        default: throw new ValidationError('Format must be csv, markdown, cyclonedx or json');
+      }
+    },
+  };
+
+  // ---------- scan grants: credential handoff to remote scan jobs ------------------------------------
+  // A remote job must not receive the Git token in its start request (that request is readable by
+  // anyone who can read job executions). Instead the request carries a random one-time secret; the
+  // job exchanges it here, once, for the credential. Valid only while its scan is running.
+  const grants = {
+    issue(scanId, orgId, auth) {
+      const secret = newToken(32);
+      db.prepare(`INSERT INTO scan_grants (scan_id, org_id, secret_hash, payload_enc, expires_at) VALUES (?, ?, ?, ?, ?)
+                  ON CONFLICT (scan_id) DO UPDATE SET secret_hash = excluded.secret_hash, payload_enc = excluded.payload_enc,
+                  expires_at = excluded.expires_at, used_at = NULL`)
+        .run(scanId, orgId, sha256(secret), secretBox.encrypt(JSON.stringify(auth)), new Date(clock() + GRANT_TTL_MS).toISOString());
+      return secret;
+    },
+
+    // Returns the credential exactly once. Every failure looks the same to the caller.
+    redeem(scanId, secret, ip = null) {
+      const fail = (why) => {
+        audit({ ip }, 'scan.grant_denied', String(scanId).slice(0, 80), { why });
+        throw new ForbiddenError('Invalid or expired grant');
+      };
+      if (typeof scanId !== 'string' || typeof secret !== 'string' || secret.length < 20 || secret.length > 200) return fail('malformed');
+      const row = db.prepare('SELECT * FROM scan_grants WHERE scan_id = ?').get(scanId);
+      if (!row) return fail('unknown');
+      if (!safeEqual(row.secret_hash, sha256(secret))) return fail('wrong secret');
+      if (row.used_at) return fail('already used'); // a replay: someone else has seen the secret
+      if (new Date(row.expires_at).getTime() < clock()) return fail('expired');
+      const scan = db.prepare('SELECT status FROM scans WHERE id = ?').get(scanId);
+      if (!scan || scan.status !== 'running') return fail('scan not running');
+      // Atomic single use: only one caller can flip used_at from NULL.
+      const claimed = db.prepare('UPDATE scan_grants SET used_at = ? WHERE scan_id = ? AND used_at IS NULL').run(nowIso(), scanId);
+      if (Number(claimed.changes) !== 1) return fail('already used');
+      audit({ orgId: row.org_id, ip }, 'scan.grant_used', scanId);
+      return parse(secretBox.decrypt(row.payload_enc));
+    },
+
+    revoke(scanId) {
+      db.prepare('DELETE FROM scan_grants WHERE scan_id = ?').run(scanId);
+    },
+  };
+
+  // The worker's scan job.
+  const NON_RETRYABLE = /access denied|not found|too large|too many|not allowed|non-public|invalid|resolve/i;
+
+  async function handleScanJob({ scanId }, job = { attempts: 1, max_attempts: 1 }) {
+    const scan = db.prepare('SELECT * FROM scans WHERE id = ?').get(scanId);
+    if (!scan || scan.status === 'cancelled') return;
+    const repo = db.prepare('SELECT * FROM repositories WHERE id = ? AND org_id = ?').get(scan.repo_id, scan.org_id);
+    if (!repo) {
+      db.prepare("UPDATE scans SET status = 'failed', error = ?, finished_at = ? WHERE id = ?").run('Repository was removed', nowIso(), scanId);
+      return;
+    }
+    db.prepare("UPDATE scans SET status = 'running', started_at = ?, error = NULL WHERE id = ?").run(nowIso(), scanId);
+
+    try {
+      const validated = await validateUrl(repo.clone_url, { allowHosts });
+      let authInfo = null;
+      if (repo.connection_id) {
+        const { connection, token } = connectionToken(scan.org_id, repo.connection_id);
+        authInfo = PROVIDERS[connection.provider].cloneAuth(token);
+      }
+      const config = parse(repo.config, {});
+      const issueGrant = (auth) => grants.issue(scanId, scan.org_id, auth);
+      const result = await executor({ validated, branch: scan.branch, auth: authInfo, config, scanId, issueGrant });
+      storeResults(scan, repo, result.report, { commit: result.commit, scrub: result.scrub || [] });
+    } catch (err) {
+      const message = String(err.message || err).replace(/vulnsight-[\w-]+/g, '<workspace>').slice(0, 300);
+      const finalAttempt = job.attempts >= job.max_attempts;
+      const retryable = !NON_RETRYABLE.test(message) && !finalAttempt;
+      if (retryable) {
+        db.prepare("UPDATE scans SET status = 'queued', error = ? WHERE id = ?").run(message, scanId);
+        throw err;
+      }
+      db.prepare("UPDATE scans SET status = 'failed', error = ?, finished_at = ? WHERE id = ?").run(message, nowIso(), scanId);
+      notify(scan.org_id, 'scan.failed', `Scan failed: ${repo.full_name}`, message);
+      throw new NonRetryableError(message);
+    } finally {
+      grants.revoke(scanId); // the credential never outlives the scan
+    }
+  }
+
+  function storeResults(scan, repo, report, workspace) {
+    const scrub = (s) => (typeof s === 'string' ? workspace.scrub.filter(Boolean).reduce((acc, dir) => acc.split(dir).join('<repo>'), s) : s);
+    const scanners = (report.scanners || []).map((s) => ({ ...s, error: scrub(s.error) }));
+    const everyFailed = scanners.length > 0 && scanners.every((s) => s.status === 'error' || s.status === 'timeout');
+    if (everyFailed) throw new Error(`All scanners failed: ${scanners[0].error}`);
+
+    const prev = db.prepare("SELECT id FROM scans WHERE org_id = ? AND repo_id = ? AND branch = ? AND status = 'completed' AND id != ? ORDER BY created_at DESC LIMIT 1")
+      .get(scan.org_id, repo.id, scan.branch, scan.id);
+    const prevFps = new Set(prev ? db.prepare('SELECT fingerprint FROM findings WHERE scan_id = ?').all(prev.id).map((r) => r.fingerprint) : []);
+    const findings = report.findings || [];
+    const currentFps = new Set(findings.map((f) => f.id));
+    const fixed = [...prevFps].filter((fp) => !currentFps.has(fp));
+    const added = findings.filter((f) => !prevFps.has(f.id));
+
+    transaction(db, () => {
+      const insert = db.prepare('INSERT INTO findings (id, scan_id, org_id, repo_id, fingerprint, severity, category, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+      for (const f of findings) insert.run(uuid(), scan.id, scan.org_id, repo.id, f.id, f.severity, f.category, JSON.stringify(f));
+      db.prepare('INSERT INTO scan_raw (scan_id, org_id, data) VALUES (?, ?, ?)').run(scan.id, scan.org_id, JSON.stringify(report.raw || {}));
+
+      // Lifecycle: findings that disappeared are marked fixed; findings that come back reopen.
+      const upsert = db.prepare(`INSERT INTO finding_states (org_id, repo_id, fingerprint, status, updated_by, updated_at) VALUES (?, ?, ?, ?, NULL, ?)
+                                 ON CONFLICT (org_id, repo_id, fingerprint) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at`);
+      const review = db.prepare('INSERT INTO finding_reviews (id, org_id, repo_id, fingerprint, user_id, action, detail, created_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)');
+      const cur = (fp) => db.prepare('SELECT status FROM finding_states WHERE org_id = ? AND repo_id = ? AND fingerprint = ?').get(scan.org_id, repo.id, fp);
+      for (const fp of fixed) {
+        const s = cur(fp);
+        if (!s || s.status === 'open' || s.status === 'acknowledged') {
+          upsert.run(scan.org_id, repo.id, fp, 'fixed', nowIso());
+          review.run(uuid(), scan.org_id, repo.id, fp, 'auto-fixed', `Not present in scan ${scan.id}`, nowIso());
+        }
+      }
+      for (const f of findings) {
+        const s = cur(f.id);
+        if (s && s.status === 'fixed') {
+          upsert.run(scan.org_id, repo.id, f.id, 'open', nowIso());
+          review.run(uuid(), scan.org_id, repo.id, f.id, 'reopened', `Detected again in scan ${scan.id}`, nowIso());
+        }
+      }
+
+      const hydrated = hydrateFindings(scan.org_id, { ...scan, repo_id: repo.id });
+      const summary = { ...summarize(hydrated), new: added.length, fixed: fixed.length, totalDetected: findings.length };
+      db.prepare("UPDATE scans SET status = 'completed', commit_sha = ?, scanners = ?, summary = ?, finished_at = ?, error = NULL WHERE id = ?")
+        .run(workspace.commit, JSON.stringify(scanners), JSON.stringify(summary), nowIso(), scan.id);
+    });
+
+    const newSevere = added.filter((f) => f.severity === 'critical' || f.severity === 'high');
+    if (newSevere.length) {
+      notify(scan.org_id, 'findings.new', `${newSevere.length} new high/critical finding(s) in ${repo.full_name}`,
+        newSevere.slice(0, 5).map((f) => f.title).join('; '), ['owner', 'admin', 'developer']);
+    }
+  }
+
+  // ---------- finding workflow -------------------------------------------------------------------
+  const findingsApi = {
+    update(ctx, repoId, fingerprint, { status, assigneeId, note }) {
+      authorize(ctx, 'findings:write');
+      getRepo(ctx.orgId, repoId);
+      if (!db.prepare('SELECT 1 FROM findings WHERE org_id = ? AND repo_id = ? AND fingerprint = ? LIMIT 1').get(ctx.orgId, repoId, fingerprint)) throw new NotFoundError('Finding not found');
+      if (status !== undefined && !STATUSES.includes(status)) throw new ValidationError('Invalid status');
+      if (assigneeId) roleOf(assigneeId, ctx.orgId);
+      const cur = db.prepare('SELECT * FROM finding_states WHERE org_id = ? AND repo_id = ? AND fingerprint = ?').get(ctx.orgId, repoId, fingerprint) || { status: 'open', assignee_id: null, note: null };
+      if (status === 'suppressed' && cur.status !== 'suppressed' && !String(note || cur.note || '').trim()) {
+        throw new ValidationError('Add a note explaining why this finding is suppressed');
+      }
+      const next = {
+        status: status === undefined ? cur.status : status,
+        assignee: assigneeId === undefined ? cur.assignee_id : (assigneeId || null),
+        note: note === undefined ? cur.note : String(note).slice(0, 1000),
+      };
+      transaction(db, () => {
+        db.prepare(`INSERT INTO finding_states (org_id, repo_id, fingerprint, status, assignee_id, note, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (org_id, repo_id, fingerprint) DO UPDATE SET status = excluded.status, assignee_id = excluded.assignee_id, note = excluded.note, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+          .run(ctx.orgId, repoId, fingerprint, next.status, next.assignee, next.note, ctx.userId, nowIso());
+        const changes = [];
+        if (next.status !== cur.status) changes.push(`status ${cur.status} -> ${next.status}`);
+        if (next.assignee !== cur.assignee_id) changes.push(`assignee -> ${next.assignee || 'none'}`);
+        if (note !== undefined && next.note !== cur.note) changes.push('note updated');
+        if (changes.length) {
+          db.prepare('INSERT INTO finding_reviews (id, org_id, repo_id, fingerprint, user_id, action, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+            .run(uuid(), ctx.orgId, repoId, fingerprint, ctx.userId, 'update', `${changes.join('; ')}${next.note ? ` (${next.note})` : ''}`, nowIso());
+        }
+      });
+      audit(ctx, 'finding.update', fingerprint, { status: next.status });
+      return { fingerprint, ...next };
+    },
+
+    history(ctx, repoId, fingerprint) {
+      authorize(ctx, 'findings:read');
+      getRepo(ctx.orgId, repoId);
+      return db.prepare(`SELECT r.action, r.detail, r.created_at AS createdAt, u.email AS user FROM finding_reviews r LEFT JOIN users u ON u.id = r.user_id
+                         WHERE r.org_id = ? AND r.repo_id = ? AND r.fingerprint = ? ORDER BY r.created_at`).all(ctx.orgId, repoId, fingerprint);
+    },
+  };
+
+  // ---------- dashboard ------------------------------------------------------------------------------
+  const dashboard = {
+    overview(ctx) {
+      authorize(ctx, 'repos:read');
+      const repoRows = db.prepare('SELECT * FROM repositories WHERE org_id = ? ORDER BY full_name').all(ctx.orgId);
+      const totals = { total: 0, critical: 0, high: 0, medium: 0, low: 0 };
+      let scoreSum = 0;
+      let scored = 0;
+      const repositories = repoRows.map((r) => {
+        const done = db.prepare("SELECT id, summary FROM scans WHERE org_id = ? AND repo_id = ? AND status = 'completed' ORDER BY created_at DESC LIMIT 1").get(ctx.orgId, r.id);
+        const last = db.prepare('SELECT status, finished_at FROM scans WHERE org_id = ? AND repo_id = ? ORDER BY created_at DESC LIMIT 1').get(ctx.orgId, r.id);
+        const summary = done ? parse(done.summary) : null;
+        if (summary) {
+          totals.total += summary.total;
+          for (const l of ['critical', 'high', 'medium', 'low']) totals[l] += summary.bySeverity[l];
+          scoreSum += summary.posture.score;
+          scored++;
+        }
+        return { id: r.id, fullName: r.full_name, posture: summary && summary.posture, total: summary ? summary.total : null, bySeverity: summary && summary.bySeverity, lastStatus: last && last.status, lastScanAt: last && last.finished_at };
+      });
+
+      // Organisation-wide trend: at each completed scan, sum the latest known result of every
+      // repository (so scans of different repositories add up rather than overwrite each other).
+      const latestByRepo = new Map();
+      const trend = db.prepare("SELECT repo_id, COALESCE(finished_at, created_at) AS at, summary FROM scans WHERE org_id = ? AND status = 'completed' ORDER BY COALESCE(finished_at, created_at) DESC, rowid DESC LIMIT 60").all(ctx.orgId)
+        .reverse().map((s) => {
+          latestByRepo.set(s.repo_id, pickTrend(parse(s.summary)));
+          const sum = { total: 0, critical: 0, high: 0, medium: 0, low: 0 };
+          for (const t of latestByRepo.values()) for (const k of Object.keys(sum)) sum[k] += t[k] || 0;
+          return { at: s.at, ...sum };
+        });
+
+      const stateCounts = Object.fromEntries(STATUSES.map((s) => [s, 0]));
+      for (const row of db.prepare('SELECT status, COUNT(*) AS n FROM finding_states WHERE org_id = ? GROUP BY status').all(ctx.orgId)) stateCounts[row.status] = row.n;
+
+      return {
+        totals,
+        riskScore: scored ? Math.round(100 - scoreSum / scored) : 0,
+        posture: scored ? Math.round(scoreSum / scored) : null,
+        repositories,
+        trend,
+        recentScans: db.prepare('SELECT * FROM scans WHERE org_id = ? ORDER BY created_at DESC LIMIT 10').all(ctx.orgId).map(publicScan),
+        failedScans: db.prepare("SELECT * FROM scans WHERE org_id = ? AND status = 'failed' ORDER BY created_at DESC LIMIT 5").all(ctx.orgId).map(publicScan),
+        remediation: { ...stateCounts, fixRate: (stateCounts.fixed + stateCounts.open + stateCounts.acknowledged) ? Math.round(100 * stateCounts.fixed / (stateCounts.fixed + stateCounts.open + stateCounts.acknowledged)) : null },
+      };
+    },
+  };
+  const pickTrend = (s) => (s ? { total: s.total, critical: s.bySeverity.critical, high: s.bySeverity.high, medium: s.bySeverity.medium, low: s.bySeverity.low } : {});
+
+  // ---------- AI assistant ------------------------------------------------------------------------------
+  function aiContext(ctx) {
+    authorize(ctx, 'ai:use');
+    const settings = settingsOf(ctx.orgId);
+    if (!settings.aiEnabled) throw new ValidationError('AI analysis is turned off for this organisation. An admin can enable it in settings');
+    const recent = db.prepare("SELECT COUNT(*) AS n FROM ai_history WHERE org_id = ? AND user_id = ? AND created_at > ?").get(ctx.orgId, ctx.userId, new Date(clock() - 3600e3).toISOString()).n;
+    if (recent >= LIMITS.aiRequestsPerHour) throw Object.assign(new ValidationError('AI request limit reached. Try again later'), { status: 429 });
+    const provider = aiProviderFactory();
+    if (!provider) throw new ValidationError('No AI provider is configured on this server');
+    return { provider, consent: { aiEnabled: true, sendCode: settings.aiSendCode === true } };
+  }
+
+  function saveAi(ctx, { repoId = null, findingId = null, kind, provider, question = null, answer }) {
+    db.prepare('INSERT INTO ai_history (id, org_id, repo_id, finding_id, user_id, kind, provider, question, answer, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(uuid(), ctx.orgId, repoId, findingId, ctx.userId, kind, provider, question, answer, nowIso());
+  }
+
+  function findingByRowId(ctx, rowId) {
+    const row = db.prepare('SELECT f.data, f.repo_id, f.scan_id FROM findings f WHERE f.id = ? AND f.org_id = ?').get(rowId, ctx.orgId);
+    if (!row) throw new NotFoundError('Finding not found');
+    return { finding: parse(row.data), repoId: row.repo_id };
+  }
+
+  const aiApi = {
+    async explain(ctx, rowId) {
+      const { provider, consent } = aiContext(ctx);
+      const { finding, repoId } = findingByRowId(ctx, rowId);
+      const out = await ai.explainFinding(finding, { provider, consent });
+      saveAi(ctx, { repoId, findingId: finding.id, kind: 'explanation', provider: provider.name, answer: out.text });
+      return out;
+    },
+    async fix(ctx, rowId) {
+      const { provider, consent } = aiContext(ctx);
+      const { finding, repoId } = findingByRowId(ctx, rowId);
+      const out = await ai.suggestFix(finding, { provider, consent });
+      saveAi(ctx, { repoId, findingId: finding.id, kind: 'remediation', provider: provider.name, answer: out.text });
+      return out;
+    },
+    async ask(ctx, repoId, question, history = []) {
+      const { provider, consent } = aiContext(ctx);
+      getRepo(ctx.orgId, repoId);
+      if (typeof question !== 'string' || !question.trim() || question.length > 2000) throw new ValidationError('Ask a question of up to 2000 characters');
+      const latest = db.prepare("SELECT * FROM scans WHERE org_id = ? AND repo_id = ? AND status = 'completed' ORDER BY created_at DESC LIMIT 1").get(ctx.orgId, repoId);
+      const findings = latest ? hydrateFindings(ctx.orgId, latest).filter((f) => f.status !== 'suppressed' && f.status !== 'fixed') : [];
+      const out = await ai.askQuestion(question, findings, { provider, consent, history });
+      saveAi(ctx, { repoId, kind: 'question', provider: provider.name, question, answer: out.text });
+      return out;
+    },
+    async summary(ctx, repoId) {
+      const { provider, consent } = aiContext(ctx);
+      getRepo(ctx.orgId, repoId);
+      const latest = db.prepare("SELECT * FROM scans WHERE org_id = ? AND repo_id = ? AND status = 'completed' ORDER BY created_at DESC LIMIT 1").get(ctx.orgId, repoId);
+      if (!latest) throw new ValidationError('Run a scan first');
+      const out = await ai.summarizePosture(hydrateFindings(ctx.orgId, latest), { provider, consent });
+      saveAi(ctx, { repoId, kind: 'summary', provider: provider.name, answer: out.text });
+      return out;
+    },
+    history(ctx, repoId) {
+      authorize(ctx, 'ai:use');
+      getRepo(ctx.orgId, repoId);
+      return db.prepare('SELECT id, kind, provider, question, answer, finding_id AS findingId, created_at AS createdAt FROM ai_history WHERE org_id = ? AND repo_id = ? ORDER BY created_at DESC LIMIT 50').all(ctx.orgId, repoId);
+    },
+  };
+
+  // ---------- audit log, notifications ---------------------------------------------------------------------
+  const auditApi = {
+    list(ctx, { limit = 100, action } = {}) {
+      authorize(ctx, 'audit:read');
+      const lim = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 500);
+      const rows = action
+        ? db.prepare('SELECT a.id, a.action, a.target, a.detail, a.ip, a.created_at AS createdAt, u.email AS user FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id WHERE a.org_id = ? AND a.action = ? ORDER BY a.created_at DESC LIMIT ?').all(ctx.orgId, action, lim)
+        : db.prepare('SELECT a.id, a.action, a.target, a.detail, a.ip, a.created_at AS createdAt, u.email AS user FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id WHERE a.org_id = ? ORDER BY a.created_at DESC LIMIT ?').all(ctx.orgId, lim);
+      return rows.map((r) => ({ ...r, detail: parse(r.detail) }));
+    },
+  };
+
+  const notifications = {
+    list(ctx) {
+      authorize(ctx, 'repos:read');
+      return db.prepare('SELECT id, kind, title, body, read, created_at AS createdAt FROM notifications WHERE org_id = ? AND (user_id = ? OR user_id IS NULL) ORDER BY created_at DESC LIMIT 100').all(ctx.orgId, ctx.userId);
+    },
+    markRead(ctx, id) {
+      authorize(ctx, 'repos:read');
+      db.prepare('UPDATE notifications SET read = 1 WHERE org_id = ? AND user_id = ? AND (id = ? OR ? IS NULL)').run(ctx.orgId, ctx.userId, id || null, id || null);
+    },
+  };
+
+  // ---------- automation: schedules, webhooks, retention -------------------------------------------------------
+  const automation = {
+    // Enqueues scans for repositories whose schedule is due. Called on an interval by the server.
+    tickSchedules() {
+      const due = db.prepare('SELECT * FROM repositories WHERE schedule IS NOT NULL AND next_scan_at IS NOT NULL AND next_scan_at <= ?').all(nowIso());
+      const started = [];
+      for (const repo of due) {
+        db.prepare('UPDATE repositories SET next_scan_at = ? WHERE id = ?').run(new Date(clock() + SCHEDULES[repo.schedule]).toISOString(), repo.id);
+        try {
+          started.push(createScan(repo.org_id, repo, { branch: repo.default_branch, trigger: 'schedule' }));
+        } catch { /* a scan is already running or the org is at its limit: skip this round */ }
+      }
+      return started;
+    },
+
+    // Verifies the provider's signature, then scans pushed branches. Returns what it did.
+    handleWebhook(repoId, headers, rawBody) {
+      const repo = db.prepare('SELECT * FROM repositories WHERE id = ?').get(repoId);
+      if (!repo) throw new NotFoundError('Not found');
+      const secret = secretBox.decrypt(repo.webhook_secret);
+      const lower = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
+      const body = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody));
+
+      let verified = false;
+      if (lower['x-hub-signature-256']) {
+        const expected = `sha256=${crypto.createHmac('sha256', secret).update(body).digest('hex')}`;
+        verified = safeEqual(lower['x-hub-signature-256'], expected);
+      } else if (lower['x-gitlab-token'] || lower['x-webhook-token']) {
+        verified = safeEqual(lower['x-gitlab-token'] || lower['x-webhook-token'], secret);
+      }
+      if (!verified) throw new ForbiddenError('Invalid webhook signature');
+
+      const event = parse(body.toString('utf8'), null);
+      if (!event) throw new ValidationError('Invalid payload');
+      const kind = lower['x-github-event'] || lower['x-gitlab-event'] || lower['x-event-key'] || 'push';
+      let branch = null;
+      if (typeof event.ref === 'string' && event.ref.startsWith('refs/heads/')) branch = event.ref.slice('refs/heads/'.length);
+      if (!branch && event.pull_request && event.pull_request.head && event.pull_request.head.repo
+        && event.pull_request.head.repo.full_name === repo.full_name && ['opened', 'synchronize', 'reopened'].includes(event.action)) {
+        branch = event.pull_request.head.ref;
+      }
+      if (!branch) return { scanned: false, reason: `ignored ${kind} event` };
+
+      const config = parse(repo.config, {});
+      const watched = config.branches && config.branches.length ? config.branches : [repo.default_branch];
+      if (!event.pull_request && !watched.includes(branch)) return { scanned: false, reason: 'branch not monitored' };
+      try {
+        validateBranch(branch);
+        const id = createScan(repo.org_id, repo, { branch, trigger: 'webhook' });
+        audit({ orgId: repo.org_id }, 'scan.webhook', id, { branch });
+        return { scanned: true, scanId: id };
+      } catch (err) {
+        return { scanned: false, reason: err.message };
+      }
+    },
+
+    // Deletes scan data past each organisation's retention period, plus expired sessions and old jobs.
+    purge() {
+      let scansDeleted = 0;
+      for (const org of db.prepare('SELECT id FROM orgs').all()) {
+        const cutoff = new Date(clock() - settingsOf(org.id).retentionDays * 86400e3).toISOString();
+        const r = db.prepare("DELETE FROM scans WHERE org_id = ? AND created_at < ? AND status IN ('completed','failed','cancelled')").run(org.id, cutoff);
+        scansDeleted += Number(r.changes);
+        db.prepare('DELETE FROM notifications WHERE org_id = ? AND created_at < ?').run(org.id, cutoff);
+        db.prepare('DELETE FROM ai_history WHERE org_id = ? AND created_at < ?').run(org.id, cutoff);
+      }
+      db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(nowIso());
+      db.prepare('DELETE FROM scan_grants WHERE expires_at < ?').run(nowIso());
+      db.prepare("DELETE FROM jobs WHERE status IN ('done','cancelled','failed') AND created_at < ?").run(new Date(clock() - 7 * 86400e3).toISOString());
+      return { scansDeleted };
+    },
+  };
+
+  return {
+    auth, orgs, teams, connections, repos, scans, findings: findingsApi, dashboard, ai: aiApi,
+    audit: auditApi, notifications, automation, grants, handlers: { scan: handleScanJob }, authorize, can,
+  };
+}
+
+module.exports = { createPlatform, LIMITS, DEFAULT_SETTINGS };

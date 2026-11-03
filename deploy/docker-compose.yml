@@ -1,0 +1,23 @@
+# Local/staging stack. Build the images first:
+#   docker build -f deploy/Dockerfile.api -t vulnsight-api .
+#   docker build -f deploy/Dockerfile.worker -t vulnsight-worker .
+# Generate a master key with:  node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+services:
+  api:
+    image: vulnsight-api
+    ports: ["127.0.0.1:4400:4400"]
+    environment:
+      NODE_ENV: production
+      VULNSIGHT_MASTER_KEY: ${VULNSIGHT_MASTER_KEY:?set VULNSIGHT_MASTER_KEY}
+      # 'process' runs scans inside this container (NOT isolated; trusted repos only). Use 'docker'
+      # only on a host where this process can start worker containers (see docs/SECURITY.md).
+      VULNSIGHT_SANDBOX: process
+      VULNSIGHT_HSTS: "1"
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes: ["vulnsight-data:/data"]
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+volumes:
+  vulnsight-data:

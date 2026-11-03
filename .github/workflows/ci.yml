@@ -1,0 +1,45 @@
+name: CI and security gates
+on:
+  push: { branches: [main, dev] }
+  pull_request:
+permissions: { contents: read }
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm test
+
+  self-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Dependency scan (our own tool)
+        run: node bin/vulnsight.js scan . --scanners=sca --fail-on=high
+      - name: Secrets (Gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+      - name: SAST (Semgrep)
+        run: pipx run semgrep scan --config p/javascript --config p/nodejs --error --metrics=off src web
+      - name: IaC (Checkov)
+        run: pipx run checkov -d deploy --quiet --soft-fail-on LOW
+
+  images:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f deploy/Dockerfile.api -t vulnsight-api .
+      - run: docker build -f deploy/Dockerfile.worker -t vulnsight-worker .
+      - name: Trivy image scan (API)
+        uses: aquasecurity/trivy-action@0.28.0
+        with: { image-ref: vulnsight-api, severity: "CRITICAL,HIGH", exit-code: "1", ignore-unfixed: true }
+      - name: Trivy image scan (worker)
+        uses: aquasecurity/trivy-action@0.28.0
+        with: { image-ref: vulnsight-worker, severity: "CRITICAL", exit-code: "1", ignore-unfixed: true }
