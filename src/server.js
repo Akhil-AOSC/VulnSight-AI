@@ -9,9 +9,20 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const { initEnv } = require('./env');
+initEnv();
+
 const { detectProjects } = require('./detect');
 const { scanProjects, applyThreshold } = require('./scanner');
 const { buildJsonReport } = require('./report');
+const { isGitUrl, cloneRepository } = require('./git');
+const { generateAiAnalysis } = require('./ai');
+const {
+  isMongoConfigured,
+  saveScanToMongo,
+  listScansFromMongo,
+  getScanFromMongo,
+} = require('./db');
 const pkg = require('../package.json');
 
 const UI_DIR = path.join(__dirname, '..', 'ui');
@@ -35,8 +46,8 @@ function defaultHistoryFile() {
   return path.join(os.homedir(), '.vulnsight', 'history.json');
 }
 
-// Past scans, newest first, kept in a JSON file so they survive restarts.
-function createHistoryStore(file = defaultHistoryFile()) {
+// Past scans, newest first, kept in MongoDB Atlas or local JSON file.
+function createHistoryStore(file = defaultHistoryFile(), { useMongo = (file !== null && isMongoConfigured()) } = {}) {
   let scans = [];
   try {
     const loaded = file ? JSON.parse(fs.readFileSync(file, 'utf8')) : [];
@@ -47,22 +58,43 @@ function createHistoryStore(file = defaultHistoryFile()) {
 
   function save() {
     if (!file) return;
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(scans));
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(scans));
+    } catch {
+      /* best effort */
+    }
   }
 
   return {
-    list: () => scans.map((s) => ({
-      id: s.id,
-      scannedAt: s.scannedAt,
-      target: s.target,
-      projectCount: s.projects.length,
-      summary: s.summary,
-    })),
-    get: (id) => scans.find((s) => s.id === id) || null,
-    add(scan) {
+    async list() {
+      if (useMongo) {
+        const fromMongo = await listScansFromMongo();
+        if (fromMongo && fromMongo.length > 0) return fromMongo;
+      }
+      return scans.map((s) => ({
+        id: s.id,
+        scannedAt: s.scannedAt,
+        target: s.target,
+        projectCount: Array.isArray(s.projects) ? s.projects.length : (s.projectCount || 0),
+        summary: s.summary,
+        ai: s.ai || null,
+        source: 'local',
+      }));
+    },
+    async get(id) {
+      if (useMongo) {
+        const fromMongo = await getScanFromMongo(id);
+        if (fromMongo) return fromMongo;
+      }
+      return scans.find((s) => s.id === id) || null;
+    },
+    async add(scan) {
       scans = [scan, ...scans].slice(0, MAX_HISTORY);
       save();
+      if (useMongo) {
+        await saveScanToMongo(scan);
+      }
     },
   };
 }
@@ -96,34 +128,86 @@ function sendJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-function createApp({ scan = scanProjects, history = createHistoryStore(), defaultTarget = process.cwd() } = {}) {
+function createApp({
+  scan = scanProjects,
+  history = createHistoryStore(),
+  defaultTarget = process.cwd(),
+  enableAi = Boolean(process.env.GROQ_API_KEY) && scan === scanProjects,
+} = {}) {
   async function runScan(body) {
-    const target = typeof body.path === 'string' && body.path.trim() ? body.path.trim() : defaultTarget;
+    const rawTarget = typeof body.path === 'string' && body.path.trim() ? body.path.trim() : defaultTarget;
     const threshold = THRESHOLDS.includes(body.threshold) ? body.threshold : 'low';
     const dev = body.dev === true;
-    const dir = path.resolve(target);
 
-    let detected;
+    let dir;
+    let cleanup = null;
+    let isRemote = false;
+
+    if (isGitUrl(rawTarget)) {
+      isRemote = true;
+      try {
+        const cloned = await cloneRepository(rawTarget);
+        dir = cloned.dir;
+        cleanup = cloned.cleanup;
+      } catch (err) {
+        throw new HttpError(400, err.message);
+      }
+    } else {
+      dir = path.resolve(rawTarget);
+    }
+
     try {
-      detected = detectProjects(dir, { dev });
-    } catch (err) {
-      throw new HttpError(400, err.message);
-    }
-    if (!detected.projects.length) {
-      const hint = detected.warnings.length ? ` ${detected.warnings.join(' ')}` : '';
-      throw new HttpError(400, `No supported dependency files found in ${dir}.${hint}`);
-    }
+      let detected;
+      try {
+        detected = detectProjects(dir, { dev });
+      } catch (err) {
+        throw new HttpError(400, err.message);
+      }
+      if (!detected.projects.length) {
+        const hint = detected.warnings.length ? ` ${detected.warnings.join(' ')}` : '';
+        throw new HttpError(400, `No supported dependency files found in ${rawTarget}.${hint}`);
+      }
 
-    const results = applyThreshold(await scan(detected.projects), threshold);
-    const record = {
-      id: crypto.randomUUID(),
-      scannedAt: new Date().toISOString(),
-      target: dir,
-      options: { dev, threshold },
-      ...buildJsonReport(results, detected.warnings),
-    };
-    history.add(record);
-    return record;
+      if (isRemote) {
+        for (const p of detected.projects) {
+          p.file = path.relative(dir, p.file) || path.basename(p.file);
+        }
+      }
+
+      const results = applyThreshold(await scan(detected.projects), threshold);
+      const jsonReport = buildJsonReport(results, detected.warnings);
+
+      // Enhance findings with Groq Open-Source LLM
+      let ai = null;
+      try {
+        ai = await generateAiAnalysis(jsonReport);
+        if (ai && ai.packageExplanations) {
+          for (const proj of jsonReport.projects) {
+            for (const vuln of proj.vulnerabilities) {
+              if (ai.packageExplanations[vuln.package]) {
+                vuln.aiExplanation = ai.packageExplanations[vuln.package];
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[AI Warning] Could not generate AI analysis:', err.message);
+      }
+
+      const record = {
+        id: crypto.randomUUID(),
+        scannedAt: new Date().toISOString(),
+        target: isRemote ? rawTarget : dir,
+        options: { dev, threshold },
+        ai,
+        ...jsonReport,
+      };
+
+      await history.add(record);
+      return record;
+    } finally {
+      if (cleanup) cleanup();
+    }
   }
 
   return async function handle(req, res) {
@@ -141,16 +225,22 @@ function createApp({ scan = scanProjects, history = createHistoryStore(), defaul
         return;
       }
       if (req.method === 'GET' && url.pathname === '/api/config') {
-        sendJson(res, 200, { version: pkg.version, defaultTarget: path.resolve(defaultTarget) });
+        sendJson(res, 200, {
+          version: pkg.version,
+          defaultTarget: path.resolve(defaultTarget),
+          aiEnabled: Boolean(process.env.GROQ_API_KEY),
+          mongoEnabled: isMongoConfigured(),
+        });
         return;
       }
       if (req.method === 'GET' && url.pathname === '/api/scans') {
-        sendJson(res, 200, history.list());
+        const list = await history.list();
+        sendJson(res, 200, list);
         return;
       }
       const match = url.pathname.match(/^\/api\/scans\/([\w-]+)$/);
       if (req.method === 'GET' && match) {
-        const record = history.get(match[1]);
+        const record = await history.get(match[1]);
         if (!record) throw new HttpError(404, 'Scan not found');
         sendJson(res, 200, record);
         return;
@@ -170,7 +260,7 @@ function createApp({ scan = scanProjects, history = createHistoryStore(), defaul
   };
 }
 
-function startServer({ port = 4321, ...opts } = {}) {
+function startServer({ port = Number(process.env.VULNSIGHT_PORT) || 4321, ...opts } = {}) {
   return new Promise((resolve, reject) => {
     const server = http.createServer(createApp(opts));
     server.once('error', reject);

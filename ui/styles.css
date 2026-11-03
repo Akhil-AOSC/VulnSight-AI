@@ -278,3 +278,91 @@ table.issues { width: 100%; border-collapse: collapse; font-size: 13px; }
   .main { padding: 16px 16px 40px; }
   .issues th:nth-child(4), .issues td:nth-child(4) { display: none; }
 }
+
+/* AI Security Intelligence Card */
+.ai-card {
+  border: 1px solid rgba(144, 133, 233, 0.35);
+  background: linear-gradient(180deg, rgba(144, 133, 233, 0.08) 0%, var(--surface) 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ai-head-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.ai-badge {
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.ai-risk-tag {
+  font-weight: 700;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  text-transform: uppercase;
+}
+.ai-risk-Critical { background: var(--danger-bg); color: var(--danger-ink); border: 1px solid var(--sev-critical); }
+.ai-risk-High { background: #3a2214; color: #f59e6b; border: 1px solid var(--sev-high); }
+.ai-risk-Medium { background: var(--warn-bg); color: var(--warn-ink); border: 1px solid var(--sev-medium); }
+.ai-risk-Low, .ai-risk-None { background: #152b1b; color: #5ad47a; border: 1px solid var(--success); }
+
+.ai-summary {
+  font-size: 14.5px;
+  line-height: 1.6;
+  margin: 0;
+  color: var(--text);
+  font-weight: 500;
+}
+.ai-impact-box {
+  background: var(--surface-2);
+  border-left: 3px solid var(--sev-high);
+  padding: 10px 14px;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  font-size: 13px;
+}
+.ai-impact-box strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text);
+}
+.ai-impact-box p { margin: 0; color: var(--text-2); }
+
+.ai-rec-box strong {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+.ai-recs {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.ai-explanation {
+  background: var(--surface);
+  border: 1px dashed var(--accent);
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.5;
+}
+.mongo-badge {
+  font-size: 11px;
+  color: var(--accent);
+  margin-left: 4px;
+}

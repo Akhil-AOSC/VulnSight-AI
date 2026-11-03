@@ -32,8 +32,8 @@
       <section class="card" id="scan-card">
         <form id="scan-form" class="scan-form">
           <label class="field field-grow">
-            <span>Project folder</span>
-            <input type="text" id="scan-path" name="path" autocomplete="off" spellcheck="false" placeholder="C:\path\to\project">
+            <span>Project folder or Git URL</span>
+            <input type="text" id="scan-path" name="path" autocomplete="off" spellcheck="false" placeholder="C:\path\to\project or https://github.com/...">
           </label>
           <label class="field">
             <span>Minimum severity</span>
@@ -55,11 +55,30 @@
 
       <section class="empty" id="empty-state">
         <h2>No scan selected</h2>
-        <p>Enter a project folder above and run a scan, or open a past scan from the history.</p>
+        <p>Enter a local project folder or Git repository URL above and run a scan, or open a past scan from the history.</p>
         <p class="subtle">Supported: package-lock.json, npm-shrinkwrap.json, requirements*.txt, poetry.lock, Pipfile.lock</p>
       </section>
 
       <div id="results" hidden>
+        <section class="card ai-card" id="ai-card" hidden>
+          <div class="card-head">
+            <div class="ai-head-title">
+              <h2>AI Security Intelligence</h2>
+              <span class="ai-badge">Groq AI Powered</span>
+            </div>
+            <span class="ai-risk-tag" id="ai-risk-tag"></span>
+          </div>
+          <p class="ai-summary" id="ai-summary"></p>
+          <div class="ai-impact-box" id="ai-impact-box" hidden>
+            <strong>Attack Vector & Impact Analysis:</strong>
+            <p id="ai-impact"></p>
+          </div>
+          <div class="ai-rec-box" id="ai-rec-box" hidden>
+            <strong>AI Prioritized Remediation Guidance:</strong>
+            <ul class="ai-recs" id="ai-recs"></ul>
+          </div>
+        </section>
+
         <section class="tiles" aria-label="Summary">
           <div class="tile tile-hero">
             <span class="tile-label">Total issues</span>
