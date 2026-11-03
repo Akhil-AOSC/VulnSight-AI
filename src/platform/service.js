@@ -1,6 +1,8 @@
 'use strict';
 
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { uuid, now, transaction } = require('./db');
 const {
   hashPassword, hashPasswordAsync, verifyPasswordAsync, checkPasswordPolicy, newToken, sha256, safeEqual,
@@ -18,6 +20,15 @@ const { summarize } = require('../risk');
 const exporters = require('../reports/export');
 const ai = require('../ai/assistant');
 const { providerFromEnv } = require('../ai/providers');
+const { generateAiAnalysis } = require('../ai');
+const { fromScaIssue, createFinding } = require('../findings');
+const { upgradePlan } = require('../report');
+const {
+  isMongoConfigured,
+  getMongoStatus,
+  saveScanToMongo,
+  listFullScansFromMongo,
+} = require('../db');
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const GRANT_TTL_MS = 10 * 60 * 1000;
@@ -30,7 +41,7 @@ const DUMMY_HASH = hashPassword('dummy-password-for-timing-A1');
 
 const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { return fallback; } };
 
-function createPlatform({
+  function createPlatform({
   db, secretBox, queue,
   fetchImpl = fetch,
   validateUrl = validateRepoUrl,
@@ -41,6 +52,8 @@ function createPlatform({
   aiProviderFactory = () => providerFromEnv(),
   allowHosts = ['github.com', 'gitlab.com', 'bitbucket.org'],
   clock = () => Date.now(),
+  enableMongo = false,
+  enableAutoAi = false,
 } = {}) {
   const nowIso = () => new Date(clock()).toISOString();
 
@@ -74,7 +87,9 @@ function createPlatform({
   function settingsOf(orgId) {
     const row = db.prepare('SELECT settings FROM orgs WHERE id = ?').get(orgId);
     if (!row) throw new NotFoundError('Organisation not found');
-    return { ...DEFAULT_SETTINGS, ...parse(row.settings, {}) };
+    const parsed = parse(row.settings, {});
+    const defaultAi = Boolean(enableAutoAi && (process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY));
+    return { ...DEFAULT_SETTINGS, aiEnabled: defaultAi, ...parsed };
   }
 
   function getRepo(orgId, repoId) {
@@ -89,11 +104,20 @@ function createPlatform({
     nextScanAt: r.next_scan_at, createdAt: r.created_at,
   });
 
-  const publicScan = (s) => ({
-    id: s.id, repoId: s.repo_id, branch: s.branch, commit: s.commit_sha, trigger: s.trigger, status: s.status,
-    scanners: parse(s.scanners, []), summary: parse(s.summary, null), error: s.error,
-    createdAt: s.created_at, startedAt: s.started_at, finishedAt: s.finished_at,
-  });
+  const publicScan = (s) => {
+    const rawRow = s.id ? db.prepare('SELECT data FROM scan_raw WHERE scan_id = ?').get(s.id) : null;
+    const raw = rawRow ? parse(rawRow.data, {}) : {};
+    return {
+      id: s.id, repoId: s.repo_id, branch: s.branch, commit: s.commit_sha, trigger: s.trigger, status: s.status,
+      scanners: parse(s.scanners, []), summary: parse(s.summary, null), error: s.error,
+      createdAt: s.created_at, startedAt: s.started_at, finishedAt: s.finished_at,
+      ai: raw.ai || null,
+      projects: (raw.osv && Array.isArray(raw.osv.projects)) ? raw.osv.projects : (Array.isArray(raw.projects) ? raw.projects : []),
+      warnings: (raw.osv && Array.isArray(raw.osv.warnings)) ? raw.osv.warnings : (Array.isArray(raw.warnings) ? raw.warnings : []),
+      source: raw.source || (isMongoConfigured() ? 'mongodb' : 'local'),
+      target: raw.target || null,
+    };
+  };
 
   function getScan(orgId, scanId) {
     const scan = db.prepare('SELECT * FROM scans WHERE id = ? AND org_id = ?').get(scanId, orgId);
@@ -136,6 +160,10 @@ function createPlatform({
         db.prepare('INSERT INTO orgs (id, name, created_at, settings) VALUES (?, ?, ?, ?)').run(orgId, cleanOrg, nowIso(), '{}');
         db.prepare('INSERT INTO memberships (org_id, user_id, role, created_at) VALUES (?, ?, ?, ?)').run(orgId, userId, 'owner', nowIso());
       });
+      if (enableMongo && !mongoSyncedOrgs.has(orgId)) {
+        mongoSyncedOrgs.add(orgId);
+        try { await dashboard.syncMongo(orgId); } catch { /* best effort */ }
+      }
       audit({ ...ctx, userId, orgId }, 'user.signup', userId);
       return { ...auth.createSession(userId), user: { id: userId, email, name: cleanName }, orgId };
     },
@@ -385,10 +413,23 @@ function createPlatform({
     async add(ctx, { url, branch, connectionId = null, teamId = null, config }) {
       authorize(ctx, 'repos:write');
       if (db.prepare('SELECT COUNT(*) AS n FROM repositories WHERE org_id = ?').get(ctx.orgId).n >= LIMITS.reposPerOrg) throw new ValidationError('Repository limit reached for this organisation');
-      const v = await validateUrl(url, { allowHosts });
-      const provider = providerForHost(v.host);
-      if (!provider) throw new ValidationError('Unsupported Git host');
-      if (connectionId) {
+      const rawUrl = String(url || '').trim();
+      const isLocalPath = enableMongo && (path.isAbsolute(rawUrl) || /^[A-Za-z]:[\\/]/.test(rawUrl) || (rawUrl && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(rawUrl) && fs.existsSync(path.resolve(rawUrl))));
+      let v;
+      let provider;
+      if (isLocalPath) {
+        const resolved = path.resolve(rawUrl);
+        if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) throw new ValidationError(`Local project directory not found: ${rawUrl}`);
+        const parts = resolved.split(/[\\/]/).filter(Boolean);
+        const fullName = parts.slice(-2).join('/') || parts[parts.length - 1] || 'local-project';
+        v = { url: resolved, host: 'local', fullName };
+        provider = 'local';
+      } else {
+        v = await validateUrl(url, { allowHosts });
+        provider = providerForHost(v.host);
+        if (!provider) throw new ValidationError('Unsupported Git host');
+      }
+      if (connectionId && provider !== 'local') {
         const { connection } = connectionToken(ctx.orgId, connectionId);
         if (connection.provider !== provider) throw new ValidationError('That connection is for a different Git provider');
       }
@@ -492,6 +533,27 @@ function createPlatform({
       const id = createScan(ctx.orgId, repo, { branch: b, trigger: 'manual', userId: ctx.userId });
       audit(ctx, 'scan.start', id, { repo: repo.full_name, branch: b });
       return publicScan(getScan(ctx.orgId, id));
+    },
+
+    async quickScan(ctx, { target, branch, threshold = 'low' } = {}) {
+      authorize(ctx, 'scans:run');
+      const rawTarget = String(target || '').trim();
+      if (!rawTarget) throw new ValidationError('Enter a repository URL or local project folder');
+
+      let repo = db.prepare('SELECT * FROM repositories WHERE org_id = ? AND (clone_url = ? OR LOWER(full_name) = LOWER(?))').get(ctx.orgId, rawTarget, rawTarget);
+      if (!repo) {
+        const added = await repos.add(ctx, {
+          url: rawTarget,
+          branch: branch || 'main',
+          config: { scanners: ['sca', 'semgrep', 'gitleaks'], threshold: ['low', 'medium', 'high', 'critical'].includes(threshold) ? threshold : 'low' },
+        });
+        repo = getRepo(ctx.orgId, added.id);
+      } else if (threshold && ['low', 'medium', 'high', 'critical'].includes(threshold)) {
+        const cfg = { ...parse(repo.config, {}), threshold };
+        db.prepare('UPDATE repositories SET config = ? WHERE id = ?').run(JSON.stringify(cfg), repo.id);
+        repo = getRepo(ctx.orgId, repo.id);
+      }
+      return scans.start(ctx, repo.id, { branch: branch || repo.default_branch });
     },
 
     list(ctx, { repoId, limit = 50 } = {}) {
@@ -614,16 +676,30 @@ function createPlatform({
     db.prepare("UPDATE scans SET status = 'running', started_at = ?, error = NULL WHERE id = ?").run(nowIso(), scanId);
 
     try {
-      const validated = await validateUrl(repo.clone_url, { allowHosts });
-      let authInfo = null;
-      if (repo.connection_id) {
-        const { connection, token } = connectionToken(scan.org_id, repo.connection_id);
-        authInfo = PROVIDERS[connection.provider].cloneAuth(token);
-      }
       const config = parse(repo.config, {});
-      const issueGrant = (auth) => grants.issue(scanId, scan.org_id, auth);
-      const result = await executor({ validated, branch: scan.branch, auth: authInfo, config, scanId, issueGrant });
-      storeResults(scan, repo, result.report, { commit: result.commit, scrub: result.scrub || [] });
+      let result;
+      if (repo.provider === 'local') {
+        const localDir = path.resolve(repo.clone_url);
+        if (!fs.existsSync(localDir) || !fs.statSync(localDir).isDirectory()) {
+          throw new NonRetryableError(`Local directory not found: ${repo.clone_url}`);
+        }
+        const report = await runScan(localDir, {
+          scanners: config.scanners || DEFAULT_SCANNERS,
+          threshold: config.threshold || 'low',
+          mode: sandboxMode,
+        });
+        result = { report, commit: 'local', scrub: [localDir] };
+      } else {
+        const validated = await validateUrl(repo.clone_url, { allowHosts });
+        let authInfo = null;
+        if (repo.connection_id) {
+          const { connection, token } = connectionToken(scan.org_id, repo.connection_id);
+          authInfo = PROVIDERS[connection.provider].cloneAuth(token);
+        }
+        const issueGrant = (auth) => grants.issue(scanId, scan.org_id, auth);
+        result = await executor({ validated, branch: scan.branch, auth: authInfo, config, scanId, issueGrant });
+      }
+      await storeResults(scan, repo, result.report, { commit: result.commit, scrub: result.scrub || [] });
     } catch (err) {
       const message = String(err.message || err).replace(/vulnsight-[\w-]+/g, '<workspace>').slice(0, 300);
       const finalAttempt = job.attempts >= job.max_attempts;
@@ -640,7 +716,69 @@ function createPlatform({
     }
   }
 
-  function storeResults(scan, repo, report, workspace) {
+  function buildAiReportInput(findings, rawData) {
+    const osvProjects = (rawData && rawData.osv && Array.isArray(rawData.osv.projects)) ? rawData.osv.projects : [];
+    const byCounts = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
+    for (const f of findings) {
+      byCounts[f.severity] = (byCounts[f.severity] || 0) + 1;
+    }
+    const totalDeps = osvProjects.reduce((acc, p) => acc + (p.dependencyCount || (p.dependencies ? p.dependencies.length : 0)), 0);
+    const vulns = findings.map((f) => ({
+      id: (f.identifiers && f.identifiers.primary) || f.id,
+      aliases: (f.identifiers && f.identifiers.aliases) || [],
+      title: f.title,
+      severity: f.severity,
+      cvssScore: f.cvssScore,
+      package: (f.location && f.location.package) || (f.location && f.location.file) || f.category,
+      version: (f.location && f.location.version) || (f.location && f.location.line ? `line ${f.location.line}` : 'source'),
+      ecosystem: (f.location && f.location.ecosystem) || f.category,
+      fixedIn: (f.remediation && f.remediation.fixedIn) || null,
+      url: f.url || null,
+      direct: f.location ? f.location.direct : null,
+      paths: (f.location && f.location.paths) || [],
+      remediation: (f.remediation && (f.remediation.advice || (f.remediation.fixedIn ? `Upgrade ${(f.location && f.location.package) || ''} to ${f.remediation.fixedIn}`.trim() : 'Review finding details'))) || 'Review finding details',
+    }));
+
+    const projects = osvProjects.length ? osvProjects.map((p) => {
+      const pVulns = Array.isArray(p.vulnerabilities) && p.vulnerabilities.length
+        ? p.vulnerabilities
+        : vulns.filter((v) => v.package && p.dependencies && p.dependencies.some((d) => d.name === v.package));
+      return {
+        file: p.file,
+        packageManager: p.packageManager || p.type || 'npm',
+        ecosystem: p.ecosystem || 'npm',
+        projectName: p.projectName || p.name || p.file,
+        dependencyCount: p.dependencyCount != null ? p.dependencyCount : (p.dependencies ? p.dependencies.length : 0),
+        skipped: p.skipped || [],
+        summary: p.summary || byCounts,
+        upgradePlan: p.upgradePlan || upgradePlan(pVulns),
+        vulnerabilities: pVulns,
+      };
+    }) : [{
+      file: 'repository',
+      packageManager: 'scanner',
+      ecosystem: 'multi',
+      projectName: 'repository',
+      dependencyCount: totalDeps,
+      skipped: [],
+      summary: byCounts,
+      upgradePlan: upgradePlan(vulns.filter((v) => v.fixedIn)),
+      vulnerabilities: vulns,
+    }];
+
+    return {
+      ok: findings.length === 0,
+      warnings: (rawData && rawData.osv && rawData.osv.warnings) || [],
+      summary: {
+        issues: findings.length,
+        dependencies: totalDeps,
+        ...byCounts,
+      },
+      projects,
+    };
+  }
+
+  async function storeResults(scan, repo, report, workspace) {
     const scrub = (s) => (typeof s === 'string' ? workspace.scrub.filter(Boolean).reduce((acc, dir) => acc.split(dir).join('<repo>'), s) : s);
     const scanners = (report.scanners || []).map((s) => ({ ...s, error: scrub(s.error) }));
     const everyFailed = scanners.length > 0 && scanners.every((s) => s.status === 'error' || s.status === 'timeout');
@@ -654,10 +792,52 @@ function createPlatform({
     const fixed = [...prevFps].filter((fp) => !currentFps.has(fp));
     const added = findings.filter((f) => !prevFps.has(f.id));
 
+    const rawData = { ...(report.raw || {}) };
+    const aiInput = buildAiReportInput(findings, rawData);
+
+    // Enhance findings with Groq Open-Source LLM when enabled
+    let aiBriefing = null;
+    if (enableAutoAi && process.env.GROQ_API_KEY) {
+      try {
+        aiBriefing = await generateAiAnalysis(aiInput);
+        if (aiBriefing && aiBriefing.packageExplanations) {
+          for (const f of findings) {
+            const key = (f.location && f.location.package) || (f.location && f.location.file) || f.category;
+            if (key && aiBriefing.packageExplanations[key]) {
+              f.aiExplanation = aiBriefing.packageExplanations[key];
+            }
+          }
+          for (const proj of aiInput.projects) {
+            for (const vuln of proj.vulnerabilities || []) {
+              if (aiBriefing.packageExplanations[vuln.package]) {
+                vuln.aiExplanation = aiBriefing.packageExplanations[vuln.package];
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[AI Warning] Could not generate AI analysis:', err.message);
+      }
+    }
+
+    rawData.ai = aiBriefing;
+    rawData.projects = aiInput.projects;
+    rawData.warnings = aiInput.warnings;
+    rawData.target = repo.clone_url || repo.full_name;
+    rawData.source = (enableMongo && isMongoConfigured()) ? 'mongodb' : 'local';
+
+    let finalSummary = null;
+    const finishedAt = nowIso();
+
     transaction(db, () => {
       const insert = db.prepare('INSERT INTO findings (id, scan_id, org_id, repo_id, fingerprint, severity, category, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
       for (const f of findings) insert.run(uuid(), scan.id, scan.org_id, repo.id, f.id, f.severity, f.category, JSON.stringify(f));
-      db.prepare('INSERT INTO scan_raw (scan_id, org_id, data) VALUES (?, ?, ?)').run(scan.id, scan.org_id, JSON.stringify(report.raw || {}));
+      db.prepare('INSERT INTO scan_raw (scan_id, org_id, data) VALUES (?, ?, ?)').run(scan.id, scan.org_id, JSON.stringify(rawData));
+
+      if (aiBriefing && aiBriefing.executiveSummary) {
+        db.prepare('INSERT INTO ai_history (id, org_id, repo_id, finding_id, user_id, kind, provider, question, answer, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(uuid(), scan.org_id, repo.id, null, scan.requested_by || null, 'summary', aiBriefing.provider || 'groq', 'Automated Scan Security Briefing', aiBriefing.executiveSummary, finishedAt);
+      }
 
       // Lifecycle: findings that disappeared are marked fixed; findings that come back reopen.
       const upsert = db.prepare(`INSERT INTO finding_states (org_id, repo_id, fingerprint, status, updated_by, updated_at) VALUES (?, ?, ?, ?, NULL, ?)
@@ -667,23 +847,53 @@ function createPlatform({
       for (const fp of fixed) {
         const s = cur(fp);
         if (!s || s.status === 'open' || s.status === 'acknowledged') {
-          upsert.run(scan.org_id, repo.id, fp, 'fixed', nowIso());
-          review.run(uuid(), scan.org_id, repo.id, fp, 'auto-fixed', `Not present in scan ${scan.id}`, nowIso());
+          upsert.run(scan.org_id, repo.id, fp, 'fixed', finishedAt);
+          review.run(uuid(), scan.org_id, repo.id, fp, 'auto-fixed', `Not present in scan ${scan.id}`, finishedAt);
         }
       }
       for (const f of findings) {
         const s = cur(f.id);
         if (s && s.status === 'fixed') {
-          upsert.run(scan.org_id, repo.id, f.id, 'open', nowIso());
-          review.run(uuid(), scan.org_id, repo.id, f.id, 'reopened', `Detected again in scan ${scan.id}`, nowIso());
+          upsert.run(scan.org_id, repo.id, f.id, 'open', finishedAt);
+          review.run(uuid(), scan.org_id, repo.id, f.id, 'reopened', `Detected again in scan ${scan.id}`, finishedAt);
         }
       }
 
       const hydrated = hydrateFindings(scan.org_id, { ...scan, repo_id: repo.id });
-      const summary = { ...summarize(hydrated), new: added.length, fixed: fixed.length, totalDetected: findings.length };
+      finalSummary = { ...summarize(hydrated), new: added.length, fixed: fixed.length, totalDetected: findings.length, dependencies: aiInput.summary.dependencies };
       db.prepare("UPDATE scans SET status = 'completed', commit_sha = ?, scanners = ?, summary = ?, finished_at = ?, error = NULL WHERE id = ?")
-        .run(workspace.commit, JSON.stringify(scanners), JSON.stringify(summary), nowIso(), scan.id);
+        .run(workspace.commit, JSON.stringify(scanners), JSON.stringify(finalSummary), finishedAt, scan.id);
     });
+
+    if (enableMongo && isMongoConfigured()) {
+      const mongoRecord = {
+        id: scan.id,
+        orgId: scan.org_id,
+        repoId: repo.id,
+        fullName: repo.full_name,
+        branch: scan.branch,
+        commit: workspace.commit,
+        trigger: scan.trigger,
+        status: 'completed',
+        scannedAt: finishedAt,
+        createdAt: scan.created_at,
+        startedAt: scan.started_at,
+        finishedAt,
+        target: repo.clone_url || repo.full_name,
+        options: parse(repo.config, {}),
+        ai: aiBriefing,
+        ok: findings.length === 0,
+        warnings: aiInput.warnings,
+        summary: {
+          ...aiInput.summary,
+          ...finalSummary,
+        },
+        scanners,
+        projects: aiInput.projects,
+        findings,
+      };
+      await saveScanToMongo(mongoRecord);
+    }
 
     const newSevere = added.filter((f) => f.severity === 'critical' || f.severity === 'high');
     if (newSevere.length) {
@@ -735,6 +945,7 @@ function createPlatform({
   };
 
   // ---------- dashboard ------------------------------------------------------------------------------
+  let mongoSyncedOrgs = new Set();
   const dashboard = {
     overview(ctx) {
       authorize(ctx, 'repos:read');
@@ -778,7 +989,160 @@ function createPlatform({
         recentScans: db.prepare('SELECT * FROM scans WHERE org_id = ? ORDER BY created_at DESC LIMIT 10').all(ctx.orgId).map(publicScan),
         failedScans: db.prepare("SELECT * FROM scans WHERE org_id = ? AND status = 'failed' ORDER BY created_at DESC LIMIT 5").all(ctx.orgId).map(publicScan),
         remediation: { ...stateCounts, fixRate: (stateCounts.fixed + stateCounts.open + stateCounts.acknowledged) ? Math.round(100 * stateCounts.fixed / (stateCounts.fixed + stateCounts.open + stateCounts.acknowledged)) : null },
+        mongo: getMongoStatus(),
+        aiEnabled: Boolean(process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY),
       };
+    },
+
+    async syncMongo(orgId) {
+      if (!enableMongo || !isMongoConfigured()) return { imported: 0 };
+      const docs = await listFullScansFromMongo(100);
+      if (!docs || !docs.length) return { imported: 0 };
+
+      let imported = 0;
+      const sorted = [...docs].sort((a, b) => new Date(a.scannedAt || a.createdAt || 0).getTime() - new Date(b.scannedAt || b.createdAt || 0).getTime());
+
+      for (const doc of sorted) {
+        if (!doc || !doc.id) continue;
+        if (db.prepare('SELECT 1 FROM scans WHERE id = ?').get(doc.id)) continue;
+
+        const rawTarget = String(doc.target || doc.fullName || 'local/project').trim();
+        let fullName = doc.fullName || null;
+        let cloneUrl = rawTarget;
+        let provider = 'github';
+
+        const urlMatch = rawTarget.match(/^(?:https?:\/\/)?(github\.com|gitlab\.com|bitbucket\.org)\/([^/]+\/[^/]+?)(?:\.git)?$/i);
+        if (urlMatch) {
+          const host = urlMatch[1].toLowerCase();
+          provider = host.startsWith('gitlab') ? 'gitlab' : host.startsWith('bitbucket') ? 'bitbucket' : 'github';
+          fullName = urlMatch[2];
+          cloneUrl = `https://${host}/${fullName}.git`;
+        } else {
+          const parts = rawTarget.replace(/\.git$/i, '').split(/[\\/]/).filter(Boolean);
+          const namePart = parts.slice(-2).join('/') || parts[parts.length - 1] || 'project';
+          fullName = doc.fullName || namePart;
+          cloneUrl = rawTarget;
+          provider = 'local';
+        }
+
+        let repo = db.prepare('SELECT * FROM repositories WHERE org_id = ? AND (clone_url = ? OR LOWER(full_name) = LOWER(?))').get(orgId, cloneUrl, fullName);
+        if (!repo) {
+          const repoId = uuid();
+          try {
+            db.prepare(`INSERT INTO repositories (id, org_id, team_id, connection_id, provider, full_name, clone_url, default_branch, config, webhook_secret, created_at)
+                        VALUES (?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)`)
+              .run(repoId, orgId, provider, fullName, cloneUrl, doc.branch || 'main', JSON.stringify(doc.options || {}), secretBox.encrypt(newToken(24)), doc.scannedAt || nowIso());
+            repo = db.prepare('SELECT * FROM repositories WHERE id = ?').get(repoId);
+          } catch {
+            repo = db.prepare('SELECT * FROM repositories WHERE org_id = ?').get(orgId);
+          }
+        }
+        if (!repo) continue;
+
+        let findings = [];
+        if (Array.isArray(doc.findings) && doc.findings.length) {
+          findings = doc.findings.map((f) => {
+            const copy = createFinding({
+              category: f.category || 'sca',
+              scanner: f.scanner || { name: 'osv', version: 'osv.dev-api-v1', ruleId: (f.identifiers && f.identifiers.primary) || f.id },
+              title: f.title || 'Vulnerability finding',
+              description: f.description || null,
+              severity: f.severity || 'unknown',
+              cvssScore: f.cvssScore != null ? f.cvssScore : null,
+              identifiers: f.identifiers || { primary: f.id, aliases: f.aliases || [], cwe: [] },
+              location: f.location || { file: 'package-lock.json', package: f.package, version: f.version, ecosystem: f.ecosystem || 'npm', direct: f.direct, paths: f.paths || [] },
+              remediation: f.remediation && typeof f.remediation === 'object' ? f.remediation : { fixedIn: f.fixedIn || null, advice: typeof f.remediation === 'string' ? f.remediation : null },
+              url: f.url || null,
+            });
+            if (f.aiExplanation) copy.aiExplanation = f.aiExplanation;
+            return copy;
+          });
+        } else if (Array.isArray(doc.projects)) {
+          for (const proj of doc.projects) {
+            const relFile = path.basename(proj.file || 'package-lock.json');
+            for (const v of proj.vulnerabilities || []) {
+              const f = fromScaIssue(v, { file: relFile, scannerVersion: 'osv.dev-api-v1' });
+              if (v.remediation && typeof v.remediation === 'string') f.remediation.advice = v.remediation;
+              if (v.aiExplanation) {
+                f.aiExplanation = v.aiExplanation;
+              } else if (doc.ai && doc.ai.packageExplanations && doc.ai.packageExplanations[v.package]) {
+                f.aiExplanation = doc.ai.packageExplanations[v.package];
+              }
+              findings.push(f);
+            }
+          }
+        }
+
+        const scannedAt = doc.scannedAt || doc.finishedAt || doc.createdAt || nowIso();
+        const totalDeps = (doc.summary && doc.summary.dependencies) || (Array.isArray(doc.projects) ? doc.projects.reduce((a, p) => a + (p.dependencyCount || 0), 0) : 0);
+        const scanners = Array.isArray(doc.scanners) && doc.scanners.length ? doc.scanners : [
+          { scanner: 'osv', status: 'ok', version: 'osv.dev-api-v1', findingCount: findings.length, durationMs: 0 },
+        ];
+
+        const rawData = {
+          ai: doc.ai || null,
+          projects: doc.projects || [],
+          warnings: doc.warnings || [],
+          target: rawTarget,
+          source: 'mongodb',
+          osv: {
+            warnings: doc.warnings || [],
+            projects: (doc.projects || []).map((p) => ({
+              file: p.file || 'package-lock.json',
+              type: p.packageManager || p.type || 'npm',
+              packageManager: p.packageManager || p.type || 'npm',
+              ecosystem: p.ecosystem || 'npm',
+              name: p.projectName || p.name || 'project',
+              projectName: p.projectName || p.name || 'project',
+              dependencyCount: p.dependencyCount || 0,
+              skipped: p.skipped || [],
+              summary: p.summary || {},
+              upgradePlan: p.upgradePlan || [],
+              vulnerabilities: p.vulnerabilities || [],
+              dependencies: p.dependencies || [],
+            })),
+          },
+        };
+
+        const prev = db.prepare("SELECT id FROM scans WHERE org_id = ? AND repo_id = ? AND status = 'completed' ORDER BY created_at DESC LIMIT 1")
+          .get(orgId, repo.id);
+        const prevFps = new Set(prev ? db.prepare('SELECT fingerprint FROM findings WHERE scan_id = ?').all(prev.id).map((r) => r.fingerprint) : []);
+        const currentFps = new Set(findings.map((f) => f.id));
+        const fixed = [...prevFps].filter((fp) => !currentFps.has(fp));
+        const added = findings.filter((f) => !prevFps.has(f.id));
+
+        transaction(db, () => {
+          db.prepare(`INSERT INTO scans (id, org_id, repo_id, branch, commit_sha, trigger, status, scanners, summary, error, requested_by, created_at, started_at, finished_at)
+                      VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, NULL, NULL, ?, ?, ?)`)
+            .run(doc.id, orgId, repo.id, doc.branch || repo.default_branch || 'main', doc.commit || null, doc.trigger || 'mongodb-history',
+              JSON.stringify(scanners), '{}', scannedAt, scannedAt, scannedAt);
+
+          const insertFinding = db.prepare('INSERT INTO findings (id, scan_id, org_id, repo_id, fingerprint, severity, category, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+          for (const f of findings) {
+            insertFinding.run(uuid(), doc.id, orgId, repo.id, f.id, f.severity, f.category, JSON.stringify(f));
+          }
+          db.prepare('INSERT INTO scan_raw (scan_id, org_id, data) VALUES (?, ?, ?)').run(doc.id, orgId, JSON.stringify(rawData));
+
+          const upsertState = db.prepare(`INSERT INTO finding_states (org_id, repo_id, fingerprint, status, updated_by, updated_at) VALUES (?, ?, ?, 'open', NULL, ?)
+                                          ON CONFLICT (org_id, repo_id, fingerprint) DO NOTHING`);
+          for (const f of findings) {
+            upsertState.run(orgId, repo.id, f.id, scannedAt);
+          }
+
+          if (doc.ai && doc.ai.executiveSummary) {
+            db.prepare('INSERT INTO ai_history (id, org_id, repo_id, finding_id, user_id, kind, provider, question, answer, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+              .run(uuid(), orgId, repo.id, null, null, 'summary', doc.ai.provider || 'groq', 'Automated Scan Security Briefing', doc.ai.executiveSummary, scannedAt);
+          }
+
+          const hydrated = hydrateFindings(orgId, { id: doc.id, repo_id: repo.id });
+          const summary = { ...summarize(hydrated), new: added.length, fixed: fixed.length, totalDetected: findings.length, dependencies: totalDeps };
+          db.prepare('UPDATE scans SET summary = ? WHERE id = ?').run(JSON.stringify(summary), doc.id);
+        });
+
+        imported++;
+      }
+
+      return { imported };
     },
   };
   const pickTrend = (s) => (s ? { total: s.total, critical: s.bySeverity.critical, high: s.bySeverity.high, medium: s.bySeverity.medium, low: s.bySeverity.low } : {});

@@ -6,6 +6,7 @@ const { detectProjects } = require('../detect');
 const { scanProjects } = require('../scanner');
 const { createClient } = require('../osv');
 const { fromScaIssue } = require('../findings');
+const { buildJsonReport } = require('../report');
 
 const VERSION = 'osv.dev-api-v1';
 
@@ -24,12 +25,23 @@ function createScaAdapter({ client = createClient(), scan = scanProjects, option
       const rel = (file) => path.relative(target.path, file).split(path.sep).join('/');
       const findings = results.flatMap((r) =>
         r.issues.map((issue) => fromScaIssue(issue, { file: rel(r.file), scannerVersion: VERSION })));
-      // Full dependency inventory: feeds SBOM generation.
-      const inventory = results.map((r) => ({
-        file: rel(r.file), type: r.type, name: r.name,
+      // Full dependency inventory + upgrade plans and vulnerabilities per project.
+      const jsonReport = buildJsonReport(results.map((r) => ({ ...r, file: rel(r.file) })), warnings);
+      const inventory = results.map((r, idx) => ({
+        file: rel(r.file),
+        type: r.type,
+        packageManager: r.type,
+        ecosystem: r.ecosystem,
+        name: r.name,
+        projectName: r.name,
+        dependencyCount: r.dependencies.length,
+        skipped: r.skipped || [],
+        summary: jsonReport.projects[idx] ? jsonReport.projects[idx].summary : {},
+        upgradePlan: jsonReport.projects[idx] ? jsonReport.projects[idx].upgradePlan : [],
+        vulnerabilities: jsonReport.projects[idx] ? jsonReport.projects[idx].vulnerabilities : [],
         dependencies: r.dependencies.map((d) => ({ name: d.name, version: d.version, ecosystem: d.ecosystem, direct: d.direct, paths: d.paths })),
       }));
-      return { findings, raw: { warnings, projects: inventory } };
+      return { findings, raw: { warnings, summary: jsonReport.summary, projects: inventory } };
     },
   };
 }

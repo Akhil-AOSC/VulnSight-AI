@@ -6,6 +6,7 @@
 const DEFAULTS = {
   claude: { model: 'claude-sonnet-5-5', url: 'https://api.anthropic.com/v1/messages' },
   openai: { model: 'gpt-4.1', url: 'https://api.openai.com/v1/chat/completions' },
+  groq: { model: 'openai/gpt-oss-20b', url: 'https://api.groq.com/openai/v1/chat/completions' },
 };
 
 async function postJson(fetchImpl, url, headers, body, timeoutMs) {
@@ -51,6 +52,20 @@ function createOpenAiProvider({ apiKey, model = DEFAULTS.openai.model, fetchImpl
   };
 }
 
+function createGroqProvider({ apiKey, model = DEFAULTS.groq.model, fetchImpl = fetch, timeoutMs = 60000 } = {}) {
+  if (!apiKey) throw new Error('A Groq API key is required');
+  return {
+    name: 'groq',
+    model,
+    async complete({ system, messages, maxTokens = 1024 }) {
+      const data = await postJson(fetchImpl, DEFAULTS.groq.url,
+        { authorization: `Bearer ${apiKey}` },
+        { model, max_tokens: maxTokens, messages: [{ role: 'system', content: system }, ...messages] }, timeoutMs);
+      return (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+    },
+  };
+}
+
 // Deterministic provider for tests and offline demos.
 function createMockProvider(reply = 'Mock analysis.') {
   const calls = [];
@@ -65,12 +80,13 @@ function createMockProvider(reply = 'Mock analysis.') {
   };
 }
 
-// Picks a provider from env: VULNSIGHT_AI_PROVIDER = claude | openai, with ANTHROPIC_API_KEY or OPENAI_API_KEY.
+// Picks a provider from env: VULNSIGHT_AI_PROVIDER = claude | openai | groq, with ANTHROPIC_API_KEY, OPENAI_API_KEY, or GROQ_API_KEY.
 function providerFromEnv(env = process.env, opts = {}) {
-  const wanted = (env.VULNSIGHT_AI_PROVIDER || (env.ANTHROPIC_API_KEY ? 'claude' : env.OPENAI_API_KEY ? 'openai' : '')).toLowerCase();
+  const wanted = (env.VULNSIGHT_AI_PROVIDER || (env.ANTHROPIC_API_KEY ? 'claude' : env.OPENAI_API_KEY ? 'openai' : env.GROQ_API_KEY ? 'groq' : '')).toLowerCase();
   if (wanted === 'claude') return createClaudeProvider({ apiKey: env.ANTHROPIC_API_KEY, model: env.VULNSIGHT_AI_MODEL || undefined, ...opts });
   if (wanted === 'openai') return createOpenAiProvider({ apiKey: env.OPENAI_API_KEY, model: env.VULNSIGHT_AI_MODEL || undefined, ...opts });
+  if (wanted === 'groq') return createGroqProvider({ apiKey: env.GROQ_API_KEY, model: env.GROQ_MODEL || env.VULNSIGHT_AI_MODEL || undefined, ...opts });
   return null;
 }
 
-module.exports = { createClaudeProvider, createOpenAiProvider, createMockProvider, providerFromEnv };
+module.exports = { createClaudeProvider, createOpenAiProvider, createGroqProvider, createMockProvider, providerFromEnv };

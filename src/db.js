@@ -99,6 +99,17 @@ async function listScansFromMongo() {
   }
 }
 
+async function listFullScansFromMongo(limit = 50) {
+  try {
+    const coll = await getCollection();
+    if (!coll) return null;
+    return await coll.find({}).sort({ scannedAt: -1 }).limit(limit).toArray();
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not list full scans from MongoDB:', err.message);
+    return null;
+  }
+}
+
 async function getScanFromMongo(id) {
   try {
     const coll = await getCollection();
@@ -115,6 +126,7 @@ module.exports = {
   getMongoStatus,
   saveScanToMongo,
   listScansFromMongo,
+  listFullScansFromMongo,
   getScanFromMongo,
   getClient,
 };

@@ -119,6 +119,12 @@ function createApi({ platform, trustProxy = false, hsts = false, limiter = creat
 
   // ---- scans and findings ----
   route('POST', org('/repos/:repo/scans'), async (req, p, b) => platform.scans.start(ctxOf(req, p), p.repo, b), { status: 202 });
+  route('POST', org('/quick-scan'), async (req, p, b) => platform.scans.quickScan(ctxOf(req, p), b), { status: 202 });
+  route('POST', org('/mongo/sync'), async (req, p) => {
+    const ctx = ctxOf(req, p);
+    platform.authorize(ctx, 'repos:read');
+    return platform.dashboard.syncMongo(ctx.orgId);
+  });
   route('GET', org('/scans'), async (req, p, b, q) => platform.scans.list(ctxOf(req, p), q));
   route('GET', org('/scans/:scan'), async (req, p) => platform.scans.get(ctxOf(req, p), p.scan));
   route('POST', org('/scans/:scan/cancel'), async (req, p) => platform.scans.cancel(ctxOf(req, p), p.scan));

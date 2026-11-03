@@ -83,27 +83,25 @@ function detectProjects(dir, opts = {}) {
   const warnings = [];
 
   // npm prefers the shrinkwrap when both exist.
-  if (has('npm-shrinkwrap.json')) files.push('npm-shrinkwrap.json');
-  else if (has('package-lock.json')) files.push('package-lock.json');
-  else if (has('yarn.lock')) files.push('yarn.lock');
-  else if (has('pnpm-lock.yaml')) files.push('pnpm-lock.yaml');
+  if (has('npm-shrinkwrap.json')) files.push(path.join(dir, 'npm-shrinkwrap.json'));
+  else if (has('package-lock.json')) files.push(path.join(dir, 'package-lock.json'));
+  else if (has('yarn.lock')) files.push(path.join(dir, 'yarn.lock'));
+  else if (has('pnpm-lock.yaml')) files.push(path.join(dir, 'pnpm-lock.yaml'));
   else if (has('package.json')) {
     warnings.push('Found package.json without a lockfile. Run "npm install --package-lock-only" first.');
   }
 
-  if (has('go.sum')) files.push('go.sum');
-  if (has('poetry.lock')) files.push('poetry.lock');
-  if (has('Pipfile.lock')) files.push('Pipfile.lock');
-  files.push(...names.filter((n) => /^requirements.*\.txt$/i.test(n)).sort());
+  if (has('go.sum')) files.push(path.join(dir, 'go.sum'));
+  if (has('poetry.lock')) files.push(path.join(dir, 'poetry.lock'));
+  if (has('Pipfile.lock')) files.push(path.join(dir, 'Pipfile.lock'));
+  files.push(...names.filter((n) => /^requirements.*\.txt$/i.test(n)).sort().map((f) => path.join(dir, f)));
 
-  if (files.length > 0) {
-    return { projects: files.map((f) => loadProject(path.join(dir, f), opts)), warnings };
-  }
-
-  // If no dependency files found in the root, search subdirectories (e.g. monorepos or subfolders)
+  const rootProjects = files.map((f) => loadProject(f, opts));
   const subProjects = findSubdirectoryProjects(dir, dir, opts, 1, 2);
-  if (subProjects.length > 0) {
-    return { projects: subProjects, warnings: [] };
+  const allProjects = [...rootProjects, ...subProjects];
+
+  if (allProjects.length > 0) {
+    return { projects: allProjects, warnings: rootProjects.length ? warnings : [] };
   }
 
   return { projects: [], warnings };

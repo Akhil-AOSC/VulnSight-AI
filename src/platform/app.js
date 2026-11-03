@@ -2,6 +2,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const { initEnv } = require('../env');
+initEnv();
 const { openDatabase } = require('./db');
 const { createSecretBox, generateMasterKey } = require('./crypto');
 const { createQueue, createWorker } = require('./queue');
@@ -40,6 +42,7 @@ function acaExecutorFromEnv(env) {
 async function startPlatform({
   port = 4400, host = '127.0.0.1', dataDir = path.join(process.cwd(), '.vulnsight-data'),
   env = process.env, runWorker = true, sandboxMode, limiter, log = (e) => console.log(JSON.stringify(e)),
+  enableMongo = runWorker, enableAutoAi = runWorker,
 } = {}) {
   fs.mkdirSync(dataDir, { recursive: true });
   const db = openDatabase(env.VULNSIGHT_DB || path.join(dataDir, 'vulnsight.db'));
@@ -47,8 +50,19 @@ async function startPlatform({
   const queue = createQueue(db);
   const mode = sandboxMode || env.VULNSIGHT_SANDBOX || 'process';
   const executor = mode === 'aca' ? acaExecutorFromEnv(env) : undefined; // otherwise the local executor
-  const platform = createPlatform({ db, queue, secretBox, sandboxMode: mode, executor });
+  const platform = createPlatform({ db, queue, secretBox, sandboxMode: mode, executor, enableMongo, enableAutoAi });
   const worker = createWorker({ queue, handlers: platform.handlers, onError: (err, job, outcome) => log({ level: 'warn', job: job.type, outcome, message: err.message }) });
+
+  if (enableMongo) {
+    try {
+      const orgRows = db.prepare('SELECT id FROM orgs ORDER BY created_at').all();
+      for (const org of orgRows) {
+        await platform.dashboard.syncMongo(org.id);
+      }
+    } catch (e) {
+      log({ level: 'warn', message: `MongoDB sync warning: ${e.message}` });
+    }
+  }
 
   const server = createServer({ platform, trustProxy: env.VULNSIGHT_TRUST_PROXY === '1', hsts: env.VULNSIGHT_HSTS === '1', log, ...(limiter ? { limiter } : {}) });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve); });
