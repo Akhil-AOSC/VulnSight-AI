@@ -2,10 +2,10 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "vulnsight-ui",
+      "name": "vulnsight-serve",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["bin/vulnsight.js", "ui", "examples/npm-app", "--port=4321"],
-      "port": 4321
+      "runtimeArgs": ["bin/vulnsight.js", "serve", "--port=4400"],
+      "port": 4400
     }
   ]
 }

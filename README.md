@@ -6,16 +6,19 @@ database, and tells you what is vulnerable, how it got into your project, and wh
 
 No dependencies, no account, no API key. Requires Node.js 18 or newer (22.5+ for the platform below).
 
-## Multi-user platform (new)
+## Enterprise Platform
 
 ```bash
 node bin/vulnsight.js serve          # API + web app + background worker at http://localhost:4400
+# Or:
+npm start
+npm run ui
 ```
 
 Sign up in the browser, connect a Git provider token (or add a public repo URL), and scan. Features:
 organisations, teams and roles, GitHub/GitLab/Bitbucket repos, scheduled and webhook-triggered scans,
 dependency + code + secret (+ container/IaC) scanning, finding triage, reports and SBOM export, and an
-opt-in AI assistant. Data lives in `.vulnsight-data/`.
+opt-in AI assistant. Data lives in `.vulnsight-data/` or MongoDB Atlas.
 
 ```bash
 node bin/vulnsight.js scan . --scanners=sca,semgrep,gitleaks --format=markdown --output=report.md
@@ -44,22 +47,22 @@ vulnsight test path/to/your/project
 vulnsight test https://github.com/user/repo
 ```
 
-## Web dashboard
+## Enterprise Web Platform
 
 ```bash
-node bin/vulnsight.js ui
+node bin/vulnsight.js serve          # Or: vulnsight ui
 ```
 
-Then open http://localhost:4321. From the dashboard you can run scans and review their results:
+Then open http://localhost:4400. From the Enterprise Platform you can:
 
-- Summary cards and a severity breakdown
-- A per-package fix plan
-- A searchable, filterable issues table where each row expands to show paths, IDs and the advisory link
-- Scan history, saved to `~/.vulnsight/history.json` (last 50 scans)
-- Light and dark mode
+- Manage multi-tenant organizations, teams, and role-based access control (RBAC)
+- Connect Git repositories (GitHub, GitLab, Bitbucket) or public Git URLs
+- Trigger multi-scanner pipelines (SCA, SAST, Secrets, Container, IaC)
+- Triage findings, view unified posture grades, and consult the AI remediation assistant
+- Export reports in CycloneDX SBOM, CSV, Markdown, and JSON formats
+- Monitor scan queues and background workers
 
-The dashboard only listens on `127.0.0.1` and rejects requests addressed to other host names, so other websites
-can't use it to start scans. Use `--port=<n>` if 4321 is taken.
+Use `--port=<n>` if 4400 is taken.
 
 ## Usage
 
@@ -104,8 +107,8 @@ lockfile ──▶ parser ──▶ [name, version, paths] ──▶ OSV.dev /qu
 | `src/scanner.js` | Merges duplicate advisories, picks the lowest fixed version above the installed one |
 | `src/severity.js` | Uses the advisory's own rating, falling back to a CVSS v3 base score calculator |
 | `src/report.js` | Text and JSON output, plus a per-package upgrade plan |
-| `src/server.js` | Local dashboard server: serves `ui/` and the `/api/scans` endpoints, keeps scan history |
-| `ui/` | Dashboard page (plain HTML, CSS and JavaScript, no build step) |
+| `src/platform/app.js` | Enterprise Platform server: serves `web/`, REST API, auth, scan queue, and workers |
+| `web/` | Enterprise Platform single-page application (HTML, CSS, modern SPA dashboard) |
 
 ## Development
 

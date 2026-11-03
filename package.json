@@ -10,11 +10,13 @@
   "files": [
     "bin",
     "src",
-    "ui"
+    "web"
   ],
   "scripts": {
     "test": "node --test \"test/**/*.test.js\"",
-    "ui": "node bin/vulnsight.js ui",
+    "start": "node bin/vulnsight.js serve",
+    "serve": "node bin/vulnsight.js serve",
+    "ui": "node bin/vulnsight.js serve",
     "scan:examples": "node bin/vulnsight.js test examples/npm-app && node bin/vulnsight.js test examples/python-app",
     "ops": "node scripts/ops.js",
     "loadtest": "node scripts/loadtest.js",

@@ -6,7 +6,6 @@ initEnv();
 const { detectProjects, loadProject } = require('./detect');
 const { scanProjects, applyThreshold } = require('./scanner');
 const { renderText, renderJson } = require('./report');
-const { startServer } = require('./server');
 const fs = require('fs');
 const { runPipeline, DEFAULT_SCANNERS, SCANNERS } = require('./pipeline');
 const exporters = require('./reports/export');
@@ -23,8 +22,8 @@ const HELP = `VulnSight-AI ${pkg.version} - open-source dependency vulnerability
 Usage:
   vulnsight test [path|url] [options]  Scan local [path] or remote Git [url] (default: current directory)
   vulnsight scan [path] [options]      Run all scanners (dependencies, code, secrets, IaC) on [path]
-  vulnsight serve [--port=4400]        Run the multi-user platform (API + web app + background worker)
-  vulnsight ui [path] [--port=4321]    Open the web dashboard at http://localhost:4321
+  vulnsight serve [--port=4400]        Run the Enterprise Platform (API + web app + background worker)
+  vulnsight ui [--port=4400]           Alias for serve (Enterprise Platform)
 
 Options:
   --file=<lockfile>             Scan one file instead of auto-detecting
@@ -52,7 +51,7 @@ Exit codes:
 class UsageError extends Error {}
 
 function parseArgs(argv) {
-  const opts = { command: null, target: null, json: false, dev: false, threshold: 'low', file: null, color: undefined, port: 4321, scanners: DEFAULT_SCANNERS, format: 'text', output: null, failOn: null };
+  const opts = { command: null, target: null, json: false, dev: false, threshold: 'low', file: null, color: undefined, port: 4400, scanners: DEFAULT_SCANNERS, format: 'text', output: null, failOn: null };
   for (const arg of argv) {
     if (arg === '--json') opts.json = true;
     else if (arg === '--dev') opts.dev = true;
@@ -168,18 +167,19 @@ async function runTest(opts, { scan = scanProjects, stdout = console.log, stderr
 }
 
 // Runs until the process is stopped (Ctrl+C).
-async function runUi(opts) {
-  let server;
+async function runPlatform(opts) {
+  const { startPlatform } = require('./platform/app');
+  const port = opts.port || 4400;
   try {
-    server = await startServer({ port: opts.port, defaultTarget: path.resolve(opts.target || '.') });
+    const app = await startPlatform({ port, host: opts.host || '127.0.0.1' });
+    console.log(`VulnSight AI Enterprise Platform running at http://${opts.host || 'localhost'}:${app.port}  (press Ctrl+C to stop)`);
+    await new Promise((resolve) => app.server.on('close', resolve));
+    return EXIT.OK;
   } catch (err) {
-    const reason = err.code === 'EADDRINUSE' ? `port ${opts.port} is already in use. Try --port=<other>` : err.message;
-    console.error(`Error: could not start the dashboard: ${reason}`);
+    const reason = err.code === 'EADDRINUSE' ? `port ${port} is already in use. Try --port=<other>` : err.message;
+    console.error(`Error: could not start the platform: ${reason}`);
     return EXIT.ERROR;
   }
-  console.log(`VulnSight-AI dashboard running at http://localhost:${opts.port}  (press Ctrl+C to stop)`);
-  await new Promise((resolve) => server.on('close', resolve));
-  return EXIT.OK;
 }
 
 async function main(argv) {
@@ -200,20 +200,9 @@ async function main(argv) {
     console.log(pkg.version);
     return EXIT.OK;
   }
-  if (opts.command === 'serve') {
-    const { startPlatform } = require('./platform/app');
-    const port = opts.port === 4321 ? 4400 : opts.port;
-    try {
-      const app = await startPlatform({ port, host: opts.host || '127.0.0.1' });
-      console.log(`VulnSight AI platform running at http://${opts.host || 'localhost'}:${app.port}  (press Ctrl+C to stop)`);
-      await new Promise((resolve) => app.server.on('close', resolve));
-      return EXIT.OK;
-    } catch (err) {
-      console.error(`Error: could not start the platform: ${err.message}`);
-      return EXIT.ERROR;
-    }
+  if (opts.command === 'serve' || opts.command === 'ui') {
+    return await runPlatform(opts);
   }
-  if (opts.command === 'ui') return runUi(opts);
   if (opts.command === 'scan') {
     try {
       return await runScanCommand(opts);
@@ -235,4 +224,4 @@ async function main(argv) {
   }
 }
 
-module.exports = { main, parseArgs, runTest, runScanCommand, EXIT };
+module.exports = { main, parseArgs, runTest, runScanCommand, runPlatform, EXIT };
