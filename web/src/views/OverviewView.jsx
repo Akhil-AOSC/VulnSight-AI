@@ -4,9 +4,9 @@ import {
   PageHead,
   StatCard,
   SeverityBar,
-  TrendChart,
   DataTable,
   StatusBadge,
+  ScanSkeletonLoader,
 } from '../components/Common.jsx';
 
 function RepoBarChartSvg({ repos, sevFilter, maxVal }) {
@@ -170,10 +170,9 @@ function RepoBarChartSvg({ repos, sevFilter, maxVal }) {
   );
 }
 
-function RepoSeverityBreakdown({ repositories, trend }) {
+function RepoSeverityBreakdown({ repositories }) {
   const [sevFilter, setSevFilter] = useState('all');
   const [sortBy, setSortBy] = useState('total');
-  const [viewMode, setViewMode] = useState('bars');
 
   const scannedRepos = (repositories || []).filter(
     (r) => r.bySeverity && r.total != null
@@ -211,31 +210,11 @@ function RepoSeverityBreakdown({ repositories, trend }) {
     <section className="card overview-chart-card">
       <div className="card-head">
         <div>
-          <h2>{viewMode === 'bars' ? 'Repository vulnerabilities' : 'Vulnerability trend'}</h2>
+          <h2>Repository vulnerabilities</h2>
           <span className="muted small">
-            {viewMode === 'bars'
-              ? 'Vertical bar comparison across scanned repositories'
-              : 'Historical findings trend over consecutive scans'}
+            Vertical bar comparison across scanned repositories
           </span>
         </div>
-        {scannedRepos.length > 0 && (
-          <div className="view-toggle-group" role="group" aria-label="Chart view mode">
-            <button
-              type="button"
-              className={`view-toggle-btn ${viewMode === 'bars' ? 'active' : ''}`}
-              onClick={() => setViewMode('bars')}
-            >
-              Bar chart
-            </button>
-            <button
-              type="button"
-              className={`view-toggle-btn ${viewMode === 'trend' ? 'active' : ''}`}
-              onClick={() => setViewMode('trend')}
-            >
-              Trend line
-            </button>
-          </div>
-        )}
       </div>
 
       {!scannedRepos.length ? (
@@ -243,38 +222,12 @@ function RepoSeverityBreakdown({ repositories, trend }) {
           <div className="empty-icon">📊</div>
           <h3>No scan data yet</h3>
           <p className="muted small">
-            Run a scan on any repository to view vulnerability bar charts, severity distributions, and security trends.
+            Run a scan on any repository to view vulnerability bar charts and severity distributions.
           </p>
           <a className="btn primary" href="#/new-scan">
             Scan a repository
           </a>
         </div>
-      ) : viewMode === 'trend' ? (
-        trend && trend.length ? (
-          <div className="trend-wrap">
-            <TrendChart
-              points={trend}
-              series={[
-                { key: 'total', cls: 'l-total', label: 'total' },
-                { key: 'critical', cls: 'l-critical', label: 'critical' },
-                { key: 'high', cls: 'l-high', label: 'high' },
-              ]}
-            />
-            <div className="repo-chart-legend">
-              <span className="legend-item">
-                <span className="sev-dot" style={{ background: 'var(--brand)' }} /> Total
-              </span>
-              <span className="legend-item">
-                <span className="sev-dot sev-dot-critical" /> Critical
-              </span>
-              <span className="legend-item">
-                <span className="sev-dot sev-dot-high" /> High
-              </span>
-            </div>
-          </div>
-        ) : (
-          <div className="empty">Run more scans to populate historical trends.</div>
-        )
       ) : (
         <div className="repo-chart-container">
           <div className="repo-chart-toolbar">
@@ -379,6 +332,7 @@ export function OverviewView() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [syncBusy, setSyncBusy] = useState(false);
+  const [selectedRemScanId, setSelectedRemScanId] = useState('all');
 
   const canRunScan = hasPermission(session.me, session.orgId, 'scans:run');
 
@@ -426,7 +380,12 @@ export function OverviewView() {
   }
 
   if (loading && !data) {
-    return <p className="muted">Loading...</p>;
+    return (
+      <div className="view">
+        <PageHead title="Security Overview" subtitle="Loading organization posture and telemetry..." />
+        <ScanSkeletonLoader cards={6} hasTabs={false} rows={4} />
+      </div>
+    );
   }
   if (!data) return null;
 
@@ -435,6 +394,63 @@ export function OverviewView() {
 
   const repoNameById = (id) =>
     ((data.repositories || []).find((r) => r.id === id) || {}).fullName || id;
+
+  // Deduplicate: Each repository gets exactly ONE entry in the dropdown (its latest scan)
+  const repoLatestScans = (() => {
+    const seenRepos = new Set();
+    const result = [];
+
+    for (const s of (data.recentScans || [])) {
+      if (s.status === 'completed' && s.repoId && !seenRepos.has(s.repoId)) {
+        seenRepos.add(s.repoId);
+        result.push(s);
+      }
+    }
+
+    for (const r of (data.repositories || [])) {
+      if (!seenRepos.has(r.id) && r.total != null) {
+        seenRepos.add(r.id);
+        result.push({
+          id: r.id,
+          repoId: r.id,
+          branch: 'main',
+          summary: { total: r.total, bySeverity: r.bySeverity },
+        });
+      }
+    }
+
+    return result;
+  })();
+
+  const activeRem = (() => {
+    if (selectedRemScanId !== 'all') {
+      const match = repoLatestScans.find((s) => s.id === selectedRemScanId || s.repoId === selectedRemScanId);
+      if (match) {
+        const scanTotal = (match.summary && (match.summary.total != null ? match.summary.total : match.summary.issues)) || 0;
+        const r = match.remediation || {};
+        const ack = r.acknowledged || 0;
+        const fixed = r.fixed || 0;
+        const sup = r.suppressed || 0;
+        const open = (r.open != null && r.open > 0) ? r.open : Math.max(0, scanTotal - ack - fixed - sup);
+        const total = open + ack + fixed + sup;
+        const fixRate = total > 0 ? Math.round((fixed / total) * 100) : null;
+        return { open, acknowledged: ack, fixed, suppressed: sup, total, fixRate, scanId: match.id, repoId: match.repoId };
+      }
+    }
+    const orgTotal = t.total || 0;
+    const r = rem || {};
+    const ack = r.acknowledged || 0;
+    const fixed = r.fixed || 0;
+    const sup = r.suppressed || 0;
+    const open = (r.open != null && r.open > 0) ? r.open : Math.max(0, orgTotal - ack - fixed - sup);
+    const total = open + ack + fixed + sup;
+    const fixRate = total > 0 ? Math.round((fixed / total) * 100) : null;
+    return { open, acknowledged: ack, fixed, suppressed: sup, total, fixRate };
+  })();
+
+  const totalRemTracked = activeRem.total != null
+    ? activeRem.total
+    : ((activeRem.open || 0) + (activeRem.acknowledged || 0) + (activeRem.fixed || 0) + (activeRem.suppressed || 0));
 
   function renderScanTable(scans, showError = false) {
     return (
@@ -517,37 +533,57 @@ export function OverviewView() {
             </div>
           </div>
 
-<div className="grid cols-2">
-            <RepoSeverityBreakdown repositories={data.repositories} trend={data.trend} />
-
+          <div className="grid cols-2">
+            <RepoSeverityBreakdown repositories={data.repositories} />
             <section className="card overview-remediation-card">
-              <div className="card-head">
+              <div className="card-head overview-remediation-head">
                 <div>
                   <h2>Remediation progress</h2>
                   <span className="muted small">Triage and vulnerability resolution status</span>
                 </div>
-                <span className={`badge ${rem.fixRate > 0 ? 'st-completed' : 'st-unknown'}`}>
-                  {rem.fixRate == null
-                    ? 'No tracked issues'
-                    : `${rem.fixRate}% resolved`}
-                </span>
+                <div className="remediation-header-controls">
+                  {repoLatestScans.length > 0 && (
+                    <select
+                      value={selectedRemScanId}
+                      onChange={(e) => setSelectedRemScanId(e.target.value)}
+                      className="chart-select remediation-scan-select"
+                      aria-label="Filter remediation by repository"
+                    >
+                      <option value="all">All repositories (Combined)</option>
+                      {repoLatestScans.map((s) => {
+                        const rName = (repoNameById(s.repoId) || '').split('/').pop() || repoNameById(s.repoId);
+                        const issuesCount = s.summary?.total != null ? `${s.summary.total} issues` : '';
+                        return (
+                          <option key={s.id || s.repoId} value={s.id || s.repoId}>
+                            {rName} ({s.branch || 'main'}) {issuesCount ? `· ${issuesCount}` : ''}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  )}
+                  <span className={`badge ${activeRem.fixRate > 0 ? 'st-completed' : (totalRemTracked > 0 ? 'st-queued' : 'st-unknown')}`}>
+                    {totalRemTracked === 0
+                      ? 'No tracked issues'
+                      : (activeRem.fixRate != null ? `${activeRem.fixRate}% resolved` : '0% resolved')}
+                  </span>
+                </div>
               </div>
 
               <div className="triage-stats-grid">
                 <div className="triage-stat-item st-open">
-                  <span className="triage-stat-num">{rem.open || 0}</span>
+                  <span className="triage-stat-num">{activeRem.open || 0}</span>
                   <span className="triage-stat-label">Open</span>
                 </div>
                 <div className="triage-stat-item st-ack">
-                  <span className="triage-stat-num">{rem.acknowledged || 0}</span>
+                  <span className="triage-stat-num">{activeRem.acknowledged || 0}</span>
                   <span className="triage-stat-label">Acknowledged</span>
                 </div>
                 <div className="triage-stat-item st-fixed">
-                  <span className="triage-stat-num">{rem.fixed || 0}</span>
+                  <span className="triage-stat-num">{activeRem.fixed || 0}</span>
                   <span className="triage-stat-label">Fixed</span>
                 </div>
                 <div className="triage-stat-item st-suppressed">
-                  <span className="triage-stat-num">{rem.suppressed || 0}</span>
+                  <span className="triage-stat-num">{activeRem.suppressed || 0}</span>
                   <span className="triage-stat-label">Suppressed</span>
                 </div>
               </div>
@@ -556,53 +592,61 @@ export function OverviewView() {
                 <div className="triage-progress-header">
                   <span className="muted small">Triage status distribution</span>
                   <span className="triage-total-badge">
-                    {(rem.open || 0) + (rem.acknowledged || 0) + (rem.fixed || 0) + (rem.suppressed || 0)} tracked
+                    {totalRemTracked} tracked
                   </span>
                 </div>
                 <div className="triage-progress-track">
-                  {(() => {
-                    const totalTracked = (rem.open || 0) + (rem.acknowledged || 0) + (rem.fixed || 0) + (rem.suppressed || 0);
-                    if (!totalTracked) {
-                      return <div className="triage-bar-empty" />;
-                    }
-                    return (
-                      <div className="triage-bar-segments">
-                        {rem.fixed > 0 && (
-                          <div
-                            className="triage-seg seg-fixed"
-                            style={{ width: `${(rem.fixed / totalTracked) * 100}%` }}
-                            title={`${rem.fixed} Fixed`}
-                          />
-                        )}
-                        {rem.acknowledged > 0 && (
-                          <div
-                            className="triage-seg seg-ack"
-                            style={{ width: `${(rem.acknowledged / totalTracked) * 100}%` }}
-                            title={`${rem.acknowledged} Acknowledged`}
-                          />
-                        )}
-                        {rem.open > 0 && (
-                          <div
-                            className="triage-seg seg-open"
-                            style={{ width: `${(rem.open / totalTracked) * 100}%` }}
-                            title={`${rem.open} Open`}
-                          />
-                        )}
-                        {rem.suppressed > 0 && (
-                          <div
-                            className="triage-seg seg-suppressed"
-                            style={{ width: `${(rem.suppressed / totalTracked) * 100}%` }}
-                            title={`${rem.suppressed} Suppressed`}
-                          />
-                        )}
-                      </div>
-                    );
-                  })()}
+                  {totalRemTracked === 0 ? (
+                    <div className="triage-bar-empty" />
+                  ) : (
+                    <div className="triage-bar-segments">
+                      {activeRem.fixed > 0 && (
+                        <div
+                          className="triage-seg seg-fixed"
+                          style={{ width: `${(activeRem.fixed / totalRemTracked) * 100}%` }}
+                          title={`${activeRem.fixed} Fixed`}
+                        />
+                      )}
+                      {activeRem.acknowledged > 0 && (
+                        <div
+                          className="triage-seg seg-ack"
+                          style={{ width: `${(activeRem.acknowledged / totalRemTracked) * 100}%` }}
+                          title={`${activeRem.acknowledged} Acknowledged`}
+                        />
+                      )}
+                      {activeRem.open > 0 && (
+                        <div
+                          className="triage-seg seg-open"
+                          style={{ width: `${(activeRem.open / totalRemTracked) * 100}%` }}
+                          title={`${activeRem.open} Open`}
+                        />
+                      )}
+                      {activeRem.suppressed > 0 && (
+                        <div
+                          className="triage-seg seg-suppressed"
+                          style={{ width: `${(activeRem.suppressed / totalRemTracked) * 100}%` }}
+                          title={`${activeRem.suppressed} Suppressed`}
+                        />
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 
               <div className="remediation-card-footer muted small">
-                Triage findings in scan reports to assign status, suppress false positives, and track remediation progress.
+                {selectedRemScanId !== 'all' ? (
+                  <div className="remediation-footer-scan-row">
+                    <span>Showing remediation data for selected repository.</span>
+                    <a
+                      href={activeRem.scanId && !String(activeRem.scanId).startsWith('repo-') ? `#/scans/${activeRem.scanId}` : `#/repos/${activeRem.repoId || selectedRemScanId}`}
+                      className="remediation-scan-link"
+                    >
+                      View scan report →
+                    </a>
+                  </div>
+                ) : (
+                  'Triage findings in scan reports to assign status, suppress false positives, and track remediation progress.'
+                )}
               </div>
             </section>
           </div>

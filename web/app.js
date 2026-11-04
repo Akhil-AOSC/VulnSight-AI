@@ -24187,47 +24187,6 @@ function SeverityBar({ counts }) {
     ] }, s);
   }) });
 }
-function TrendChart({ points, series }) {
-  const W = 600;
-  const H = 180;
-  const P = { l: 34, r: 8, t: 8, b: 20 };
-  const max = Math.max(1, ...points.flatMap((p) => series.map((s) => p[s.key] || 0)));
-  const x = (i) => P.l + (points.length === 1 ? (W - P.l - P.r) / 2 : i * (W - P.l - P.r) / (points.length - 1));
-  const y = (v) => H - P.b - v / max * (H - P.t - P.b);
-  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
-    "svg",
-    {
-      viewBox: `0 0 ${W} ${H}`,
-      className: "chart",
-      role: "img",
-      "aria-label": `Trend of ${series.map((s) => s.label).join(", ")} over the last ${points.length} scans`,
-      children: [
-        [0, 0.5, 1].map((f) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_react2.default.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("line", { x1: P.l, x2: W - P.r, y1: y(max * f), y2: y(max * f), className: "axis" }),
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("text", { x: P.l - 6, y: y(max * f) + 3, textAnchor: "end", children: Math.round(max * f) })
-        ] }, f)),
-        series.map((s) => {
-          const d = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p[s.key] || 0).toFixed(1)}`).join(" ");
-          return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_react2.default.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { d, fill: "none", strokeWidth: "2", className: s.cls, strokeLinejoin: "round" }),
-            points.map((p, i) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
-              "circle",
-              {
-                cx: x(i),
-                cy: y(p[s.key] || 0),
-                r: "2.5",
-                className: s.cls,
-                fill: "currentColor",
-                stroke: "none"
-              },
-              i
-            ))
-          ] }, s.key);
-        })
-      ]
-    }
-  );
-}
 var AI_TITLES = {
   explanation: "AI explanation",
   remediation: "Suggested fix",
@@ -24347,6 +24306,48 @@ function ToastContainer() {
     });
   }, []);
   return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { id: "toasts", className: "toasts", role: "status", "aria-live": "polite", children: items.map((t) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: `toast ${t.kind}`, children: t.message }, t.id)) });
+}
+function Skeleton({ width = "100%", height = "1rem", className = "", style = {}, radius = "4px" }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+    "span",
+    {
+      className: `skeleton-loader ${className}`.trim(),
+      style: {
+        display: "inline-block",
+        width,
+        height,
+        borderRadius: radius,
+        ...style
+      },
+      "aria-hidden": "true"
+    }
+  );
+}
+function ScanSkeletonLoader({ cards = 5, hasTabs = true, rows = 5 }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "skeleton-container fade-in", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "skeleton-head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Skeleton, { width: "240px", height: "1.8rem", radius: "6px" }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Skeleton, { width: "360px", height: "1rem", style: { marginTop: "0.4rem" }, radius: "4px" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "skeleton-stats-grid", children: Array.from({ length: cards }).map((_, i) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "card skeleton-stat-card", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Skeleton, { width: "54px", height: "2rem", style: { marginBottom: "0.5rem" }, radius: "4px" }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Skeleton, { width: "75%", height: "0.85rem", radius: "4px" })
+    ] }, i)) }),
+    hasTabs && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "skeleton-tab-nav", children: [130, 160, 100, 170, 140, 110].map((w, i) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Skeleton, { width: `${w}px`, height: "2.2rem", radius: "6px" }, i)) }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "card skeleton-table-card", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "skeleton-table-header", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Skeleton, { width: "180px", height: "1.25rem", radius: "4px" }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Skeleton, { width: "220px", height: "2rem", radius: "6px" })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "skeleton-table-rows", children: Array.from({ length: rows }).map((_, i) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "skeleton-table-row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Skeleton, { width: "60px", height: "1.2rem", radius: "10px" }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Skeleton, { width: "45%", height: "1rem", radius: "4px" }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Skeleton, { width: "75px", height: "1rem", radius: "4px" }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Skeleton, { width: "18%", height: "1rem", radius: "4px" }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Skeleton, { width: "55px", height: "1.5rem", radius: "4px" })
+      ] }, i)) })
+    ] })
+  ] });
 }
 
 // web/src/views/AuthView.jsx
@@ -24610,10 +24611,9 @@ function RepoBarChartSvg({ repos, sevFilter, maxVal }) {
     }
   );
 }
-function RepoSeverityBreakdown({ repositories, trend }) {
+function RepoSeverityBreakdown({ repositories }) {
   const [sevFilter, setSevFilter] = (0, import_react4.useState)("all");
   const [sortBy, setSortBy] = (0, import_react4.useState)("total");
-  const [viewMode, setViewMode] = (0, import_react4.useState)("bars");
   const scannedRepos = (repositories || []).filter(
     (r) => r.bySeverity && r.total != null
   );
@@ -24642,64 +24642,16 @@ function RepoSeverityBreakdown({ repositories, trend }) {
     )
   );
   return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("section", { className: "card overview-chart-card", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "card-head", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("h2", { children: viewMode === "bars" ? "Repository vulnerabilities" : "Vulnerability trend" }),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "muted small", children: viewMode === "bars" ? "Vertical bar comparison across scanned repositories" : "Historical findings trend over consecutive scans" })
-      ] }),
-      scannedRepos.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "view-toggle-group", role: "group", "aria-label": "Chart view mode", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
-          "button",
-          {
-            type: "button",
-            className: `view-toggle-btn ${viewMode === "bars" ? "active" : ""}`,
-            onClick: () => setViewMode("bars"),
-            children: "Bar chart"
-          }
-        ),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
-          "button",
-          {
-            type: "button",
-            className: `view-toggle-btn ${viewMode === "trend" ? "active" : ""}`,
-            onClick: () => setViewMode("trend"),
-            children: "Trend line"
-          }
-        )
-      ] })
-    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("h2", { children: "Repository vulnerabilities" }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "muted small", children: "Vertical bar comparison across scanned repositories" })
+    ] }) }),
     !scannedRepos.length ? /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "overview-chart-empty", children: [
       /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "empty-icon", children: "\u{1F4CA}" }),
       /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("h3", { children: "No scan data yet" }),
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("p", { className: "muted small", children: "Run a scan on any repository to view vulnerability bar charts, severity distributions, and security trends." }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("p", { className: "muted small", children: "Run a scan on any repository to view vulnerability bar charts and severity distributions." }),
       /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("a", { className: "btn primary", href: "#/new-scan", children: "Scan a repository" })
-    ] }) : viewMode === "trend" ? trend && trend.length ? /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "trend-wrap", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
-        TrendChart,
-        {
-          points: trend,
-          series: [
-            { key: "total", cls: "l-total", label: "total" },
-            { key: "critical", cls: "l-critical", label: "critical" },
-            { key: "high", cls: "l-high", label: "high" }
-          ]
-        }
-      ),
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "repo-chart-legend", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { className: "legend-item", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "sev-dot", style: { background: "var(--brand)" } }),
-          " Total"
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { className: "legend-item", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "sev-dot sev-dot-critical" }),
-          " Critical"
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { className: "legend-item", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "sev-dot sev-dot-high" }),
-          " High"
-        ] })
-      ] })
-    ] }) : /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "empty", children: "Run more scans to populate historical trends." }) : /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "repo-chart-container", children: [
+    ] }) : /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "repo-chart-container", children: [
       /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "repo-chart-toolbar", children: [
         /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "repo-chart-filters", children: [
           /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "toolbar-label muted", children: "Filter:" }),
@@ -24790,6 +24742,7 @@ function OverviewView() {
   const [data, setData] = (0, import_react4.useState)(null);
   const [loading, setLoading] = (0, import_react4.useState)(true);
   const [syncBusy, setSyncBusy] = (0, import_react4.useState)(false);
+  const [selectedRemScanId, setSelectedRemScanId] = (0, import_react4.useState)("all");
   const canRunScan = hasPermission(session.me, session.orgId, "scans:run");
   async function loadOverview() {
     try {
@@ -24829,12 +24782,63 @@ function OverviewView() {
     }
   }
   if (loading && !data) {
-    return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("p", { className: "muted", children: "Loading..." });
+    return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "view", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(PageHead, { title: "Security Overview", subtitle: "Loading organization posture and telemetry..." }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(ScanSkeletonLoader, { cards: 6, hasTabs: false, rows: 4 })
+    ] });
   }
   if (!data) return null;
   const t = data.totals || { total: 0, critical: 0, high: 0, medium: 0, low: 0 };
   const rem = data.remediation || { open: 0, acknowledged: 0, fixed: 0, suppressed: 0, fixRate: null };
   const repoNameById = (id) => ((data.repositories || []).find((r) => r.id === id) || {}).fullName || id;
+  const repoLatestScans = (() => {
+    const seenRepos = /* @__PURE__ */ new Set();
+    const result = [];
+    for (const s of data.recentScans || []) {
+      if (s.status === "completed" && s.repoId && !seenRepos.has(s.repoId)) {
+        seenRepos.add(s.repoId);
+        result.push(s);
+      }
+    }
+    for (const r of data.repositories || []) {
+      if (!seenRepos.has(r.id) && r.total != null) {
+        seenRepos.add(r.id);
+        result.push({
+          id: r.id,
+          repoId: r.id,
+          branch: "main",
+          summary: { total: r.total, bySeverity: r.bySeverity }
+        });
+      }
+    }
+    return result;
+  })();
+  const activeRem = (() => {
+    if (selectedRemScanId !== "all") {
+      const match = repoLatestScans.find((s) => s.id === selectedRemScanId || s.repoId === selectedRemScanId);
+      if (match) {
+        const scanTotal = match.summary && (match.summary.total != null ? match.summary.total : match.summary.issues) || 0;
+        const r2 = match.remediation || {};
+        const ack2 = r2.acknowledged || 0;
+        const fixed2 = r2.fixed || 0;
+        const sup2 = r2.suppressed || 0;
+        const open2 = r2.open != null && r2.open > 0 ? r2.open : Math.max(0, scanTotal - ack2 - fixed2 - sup2);
+        const total2 = open2 + ack2 + fixed2 + sup2;
+        const fixRate2 = total2 > 0 ? Math.round(fixed2 / total2 * 100) : null;
+        return { open: open2, acknowledged: ack2, fixed: fixed2, suppressed: sup2, total: total2, fixRate: fixRate2, scanId: match.id, repoId: match.repoId };
+      }
+    }
+    const orgTotal = t.total || 0;
+    const r = rem || {};
+    const ack = r.acknowledged || 0;
+    const fixed = r.fixed || 0;
+    const sup = r.suppressed || 0;
+    const open = r.open != null && r.open > 0 ? r.open : Math.max(0, orgTotal - ack - fixed - sup);
+    const total = open + ack + fixed + sup;
+    const fixRate = total > 0 ? Math.round(fixed / total * 100) : null;
+    return { open, acknowledged: ack, fixed, suppressed: sup, total, fixRate };
+  })();
+  const totalRemTracked = activeRem.total != null ? activeRem.total : (activeRem.open || 0) + (activeRem.acknowledged || 0) + (activeRem.fixed || 0) + (activeRem.suppressed || 0);
   function renderScanTable(scans, showError = false) {
     return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
       DataTable,
@@ -24897,30 +24901,55 @@ function OverviewView() {
         ] })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "grid cols-2", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(RepoSeverityBreakdown, { repositories: data.repositories, trend: data.trend }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(RepoSeverityBreakdown, { repositories: data.repositories }),
         /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("section", { className: "card overview-remediation-card", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "card-head", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "card-head overview-remediation-head", children: [
             /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
               /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("h2", { children: "Remediation progress" }),
               /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "muted small", children: "Triage and vulnerability resolution status" })
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: `badge ${rem.fixRate > 0 ? "st-completed" : "st-unknown"}`, children: rem.fixRate == null ? "No tracked issues" : `${rem.fixRate}% resolved` })
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "remediation-header-controls", children: [
+              repoLatestScans.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(
+                "select",
+                {
+                  value: selectedRemScanId,
+                  onChange: (e) => setSelectedRemScanId(e.target.value),
+                  className: "chart-select remediation-scan-select",
+                  "aria-label": "Filter remediation by repository",
+                  children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("option", { value: "all", children: "All repositories (Combined)" }),
+                    repoLatestScans.map((s) => {
+                      const rName = (repoNameById(s.repoId) || "").split("/").pop() || repoNameById(s.repoId);
+                      const issuesCount = s.summary?.total != null ? `${s.summary.total} issues` : "";
+                      return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("option", { value: s.id || s.repoId, children: [
+                        rName,
+                        " (",
+                        s.branch || "main",
+                        ") ",
+                        issuesCount ? `\xB7 ${issuesCount}` : ""
+                      ] }, s.id || s.repoId);
+                    })
+                  ]
+                }
+              ),
+              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: `badge ${activeRem.fixRate > 0 ? "st-completed" : totalRemTracked > 0 ? "st-queued" : "st-unknown"}`, children: totalRemTracked === 0 ? "No tracked issues" : activeRem.fixRate != null ? `${activeRem.fixRate}% resolved` : "0% resolved" })
+            ] })
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "triage-stats-grid", children: [
             /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "triage-stat-item st-open", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "triage-stat-num", children: rem.open || 0 }),
+              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "triage-stat-num", children: activeRem.open || 0 }),
               /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "triage-stat-label", children: "Open" })
             ] }),
             /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "triage-stat-item st-ack", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "triage-stat-num", children: rem.acknowledged || 0 }),
+              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "triage-stat-num", children: activeRem.acknowledged || 0 }),
               /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "triage-stat-label", children: "Acknowledged" })
             ] }),
             /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "triage-stat-item st-fixed", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "triage-stat-num", children: rem.fixed || 0 }),
+              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "triage-stat-num", children: activeRem.fixed || 0 }),
               /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "triage-stat-label", children: "Fixed" })
             ] }),
             /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "triage-stat-item st-suppressed", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "triage-stat-num", children: rem.suppressed || 0 }),
+              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "triage-stat-num", children: activeRem.suppressed || 0 }),
               /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "triage-stat-label", children: "Suppressed" })
             ] })
           ] }),
@@ -24928,52 +24957,56 @@ function OverviewView() {
             /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "triage-progress-header", children: [
               /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "muted small", children: "Triage status distribution" }),
               /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { className: "triage-total-badge", children: [
-                (rem.open || 0) + (rem.acknowledged || 0) + (rem.fixed || 0) + (rem.suppressed || 0),
+                totalRemTracked,
                 " tracked"
               ] })
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "triage-progress-track", children: (() => {
-              const totalTracked = (rem.open || 0) + (rem.acknowledged || 0) + (rem.fixed || 0) + (rem.suppressed || 0);
-              if (!totalTracked) {
-                return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "triage-bar-empty" });
-              }
-              return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "triage-bar-segments", children: [
-                rem.fixed > 0 && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
-                  "div",
-                  {
-                    className: "triage-seg seg-fixed",
-                    style: { width: `${rem.fixed / totalTracked * 100}%` },
-                    title: `${rem.fixed} Fixed`
-                  }
-                ),
-                rem.acknowledged > 0 && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
-                  "div",
-                  {
-                    className: "triage-seg seg-ack",
-                    style: { width: `${rem.acknowledged / totalTracked * 100}%` },
-                    title: `${rem.acknowledged} Acknowledged`
-                  }
-                ),
-                rem.open > 0 && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
-                  "div",
-                  {
-                    className: "triage-seg seg-open",
-                    style: { width: `${rem.open / totalTracked * 100}%` },
-                    title: `${rem.open} Open`
-                  }
-                ),
-                rem.suppressed > 0 && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
-                  "div",
-                  {
-                    className: "triage-seg seg-suppressed",
-                    style: { width: `${rem.suppressed / totalTracked * 100}%` },
-                    title: `${rem.suppressed} Suppressed`
-                  }
-                )
-              ] });
-            })() })
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "triage-progress-track", children: totalRemTracked === 0 ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "triage-bar-empty" }) : /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "triage-bar-segments", children: [
+              activeRem.fixed > 0 && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+                "div",
+                {
+                  className: "triage-seg seg-fixed",
+                  style: { width: `${activeRem.fixed / totalRemTracked * 100}%` },
+                  title: `${activeRem.fixed} Fixed`
+                }
+              ),
+              activeRem.acknowledged > 0 && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+                "div",
+                {
+                  className: "triage-seg seg-ack",
+                  style: { width: `${activeRem.acknowledged / totalRemTracked * 100}%` },
+                  title: `${activeRem.acknowledged} Acknowledged`
+                }
+              ),
+              activeRem.open > 0 && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+                "div",
+                {
+                  className: "triage-seg seg-open",
+                  style: { width: `${activeRem.open / totalRemTracked * 100}%` },
+                  title: `${activeRem.open} Open`
+                }
+              ),
+              activeRem.suppressed > 0 && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+                "div",
+                {
+                  className: "triage-seg seg-suppressed",
+                  style: { width: `${activeRem.suppressed / totalRemTracked * 100}%` },
+                  title: `${activeRem.suppressed} Suppressed`
+                }
+              )
+            ] }) })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "remediation-card-footer muted small", children: "Triage findings in scan reports to assign status, suppress false positives, and track remediation progress." })
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "remediation-card-footer muted small", children: selectedRemScanId !== "all" ? /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "remediation-footer-scan-row", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: "Showing remediation data for selected repository." }),
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+              "a",
+              {
+                href: activeRem.scanId && !String(activeRem.scanId).startsWith("repo-") ? `#/scans/${activeRem.scanId}` : `#/repos/${activeRem.repoId || selectedRemScanId}`,
+                className: "remediation-scan-link",
+                children: "View scan report \u2192"
+              }
+            )
+          ] }) : "Triage findings in scan reports to assign status, suppress false positives, and track remediation progress." })
         ] })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("section", { className: "card", children: [
@@ -25253,7 +25286,7 @@ function ReposListView() {
       toast(err.message || "Failed to queue scan", "error");
     }
   }
-  if (loading && !repos.length) return /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { className: "muted", children: "Loading..." });
+  if (loading && !repos.length) return /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(ScanSkeletonLoader, { cards: 4, hasTabs: false, rows: 4 });
   return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_jsx_runtime6.Fragment, { children: [
     /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(PageHead, { title: "Repositories", subtitle: "Connect a repository and scan it" }),
     canWrite && /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("section", { className: "card", children: [
@@ -25493,7 +25526,7 @@ function RepoDetailView({ repoId }) {
       return next;
     });
   }
-  if (loading && !repo) return /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { className: "muted", children: "Loading..." });
+  if (loading && !repo) return /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(ScanSkeletonLoader, { cards: 5, hasTabs: false, rows: 5 });
   if (!repo) return null;
   return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_jsx_runtime6.Fragment, { children: [
     /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(PageHead, { title: repo.fullName, subtitle: repo.cloneUrl, children: canScan && /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_jsx_runtime6.Fragment, { children: [
@@ -26051,6 +26084,19 @@ function AiPromptModal({ scan, repo, initialFindings = [], onClose }) {
     };
   }, [scan.id]);
   (0, import_react7.useEffect)(() => {
+    const prevOverflow = document.body.style.overflow;
+    const prevPaddingRight = document.body.style.paddingRight;
+    const scrollBarWidth = window.innerWidth - document.documentElement.clientWidth;
+    if (scrollBarWidth > 0) {
+      document.body.style.paddingRight = `${scrollBarWidth}px`;
+    }
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.body.style.paddingRight = prevPaddingRight;
+    };
+  }, []);
+  (0, import_react7.useEffect)(() => {
     function handleKeyDown(e) {
       if (e.key === "Escape") onClose();
     }
@@ -26284,7 +26330,7 @@ function ScanView({ scanId }) {
       return next;
     });
   }
-  if (loading && !scan) return /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { className: "muted", children: "Loading..." });
+  if (loading && !scan) return /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(ScanSkeletonLoader, { cards: 6, hasTabs: false, rows: 6 });
   if (!scan || !repo) return null;
   const sum = scan.summary;
   const bySev = sum ? sum.bySeverity || {
@@ -26310,11 +26356,26 @@ function ScanView({ scanId }) {
         ]
       }
     ),
-    (scan.status === "queued" || scan.status === "running") && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "card empty", children: [
-      "This scan is ",
-      scan.status,
-      ". The page refreshes automatically.",
-      scan.status === "queued" && canScan && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { type: "button", onClick: handleCancelScan, children: "Cancel scan" }) })
+    (scan.status === "queued" || scan.status === "running") && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "fade-in", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "card scan-progress-banner", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "scan-progress-top", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "scan-progress-title", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "scan-radar-dot", "aria-hidden": "true" }),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { children: scan.status === "queued" ? "Repository scan queued \xB7 Preparing sandbox worker" : "Repository security scan in progress" })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "row", style: { gap: "0.5rem", alignItems: "center" }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "badge st-running", children: "Live Scanner Active" }),
+            scan.status === "queued" && canScan && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { type: "button", className: "btn btn-sm btn-subtle", onClick: handleCancelScan, children: "Cancel scan" })
+          ] })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { className: "muted small", style: { margin: 0 }, children: scan.status === "queued" ? "The scan is queued in the platform worker queue. Analysis will begin momentarily..." : "Inspecting dependencies, static code analysis (SAST), and secret scanning. The page updates automatically." }),
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "scan-progress-bar-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "scan-progress-bar-indeterminate" }) })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "stats skeleton-stats-grid", style: { marginBottom: "1.5rem" }, children: ["Total Findings", "Critical", "High", "Medium", "Low", "Security Posture"].map((label, idx) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "card skeleton-stat-card", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(Skeleton, { width: "48px", height: "2rem", style: { marginBottom: "0.4rem" }, radius: "4px" }),
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "muted small", children: label })
+      ] }, idx)) }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "card", style: { padding: "2rem 1.5rem", textAlign: "center" }, children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { className: "muted", style: { margin: 0 }, children: "Security findings, triage status, and fix recommendations will populate here as soon as scan finishes." }) })
     ] }),
     (scan.status === "failed" || scan.status === "cancelled") && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "card", children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { children: scan.error || `Scan ${scan.status}.` }) }),
     scan.status !== "queued" && scan.status !== "running" && scan.status !== "cancelled" && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
@@ -26351,10 +26412,16 @@ function ScanView({ scanId }) {
         )
       ] }),
       Array.isArray(scan.warnings) && scan.warnings.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "warnings", children: scan.warnings.map((w, i) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "warning", children: w }, i)) }),
-      Array.isArray(scan.projects) && scan.projects.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "grid cols-2 scan-projects-grid", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("section", { className: "card", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { children: "Projects" }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("ul", { className: "projects-list", children: scan.projects.map((p, i) => {
+      Array.isArray(scan.projects) && scan.projects.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "grid cols-2 scan-subgrid", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("section", { className: "card scan-projects-card", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "card-head", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { children: "Projects" }),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("span", { className: "badge", children: [
+              scan.projects.length,
+              " scanned"
+            ] })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "projects-list-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("ul", { className: "projects-list", children: scan.projects.map((p, i) => {
             const pName = p.projectName || p.name || p.file;
             const pMeta = [
               p.packageManager || p.type,
@@ -26370,11 +26437,17 @@ function ScanView({ scanId }) {
               ] }),
               /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "small muted", children: counts })
             ] }, i);
-          }) })
+          }) }) })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("section", { className: "card", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { children: "Fix plan (One upgrade per vulnerable package)" }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("ul", { className: "plan-list", children: planSteps.length ? planSteps.map((step, i) => {
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("section", { className: "card scan-plan-card", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "card-head", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { children: "Fix plan" }),
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "muted small", children: "One upgrade per vulnerable package" })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "badge", children: planSteps.length ? `${planSteps.length} upgrade${planSteps.length === 1 ? "" : "s"}` : "Clean" })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "plan-list-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("ul", { className: "plan-list", children: planSteps.length ? planSteps.map((step, i) => {
             const label = `${step.package}@${step.version}`;
             if (!step.target) {
               return /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
@@ -26392,13 +26465,13 @@ function ScanView({ scanId }) {
                 " \u2192 ",
                 /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { className: "plan-target", children: step.target })
               ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("span", { className: "muted small", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("span", { className: "plan-fix-pill", children: [
                 "Fixes ",
                 step.fixes,
                 " issue(s)"
               ] })
             ] }, i);
-          }) : /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("li", { className: "muted small", children: "Nothing to upgrade." }) })
+          }) : /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("li", { className: "muted small", children: "Nothing to upgrade." }) }) })
         ] })
       ] }),
       Array.isArray(scan.scanners) && scan.scanners.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("section", { className: "card scan-scanners-card", children: [
@@ -26421,9 +26494,12 @@ function ScanView({ scanId }) {
         )
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("section", { className: "card scan-findings-card", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "card-head", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "grow", children: "Findings" }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "card-head findings-card-header", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "findings-title-group", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { children: "Findings" }),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "findings-count-badge", children: findingsData.total != null ? `${findingsData.total} issues` : "" })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "findings-header-actions", children: [
             /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
               "button",
               {
@@ -26434,7 +26510,7 @@ function ScanView({ scanId }) {
                 children: "\u26A1 Generate AI Fix Prompt"
               }
             ),
-            [
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "findings-export-group", role: "group", "aria-label": "Export findings", children: [
               ["csv", "CSV", "csv"],
               ["markdown", "Markdown", "md"],
               ["cyclonedx", "SBOM (CycloneDX)", "cdx.json"],
@@ -26443,6 +26519,7 @@ function ScanView({ scanId }) {
               "button",
               {
                 type: "button",
+                className: "btn-export-item",
                 onClick: () => api.download(
                   api.org(`/scans/${scanId}/report?format=${fmt}`),
                   `${repo.fullName.replace("/", "-")}-${scanId.slice(0, 8)}.${ext}`
@@ -26450,83 +26527,113 @@ function ScanView({ scanId }) {
                 children: label
               },
               fmt
-            ))
+            )) })
           ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "row findings-filter-bar", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
-            "input",
-            {
-              type: "search",
-              placeholder: "Search title, CVE, package, file",
-              size: 30,
-              "aria-label": "Search findings",
-              value: q,
-              onChange: (e) => setQ(e.target.value)
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
-            "select",
-            {
-              "aria-label": "Severity",
-              value: severity,
-              onChange: (e) => {
-                setSeverity(e.target.value);
-                setPage(1);
-              },
-              children: [
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "", children: "All severities" }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "critical", children: "Critical" }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "high", children: "High" }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "medium", children: "Medium" }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "low", children: "Low" })
-              ]
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
-            "select",
-            {
-              "aria-label": "Category",
-              value: category,
-              onChange: (e) => {
-                setCategory(e.target.value);
-                setPage(1);
-              },
-              children: [
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "", children: "All types" }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "sca", children: "Dependencies" }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "sast", children: "Code" }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "secret", children: "Secrets" }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "container", children: "Containers" }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "iac", children: "Infrastructure" })
-              ]
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
-            "select",
-            {
-              "aria-label": "Status",
-              value: status,
-              onChange: (e) => {
-                setStatus(e.target.value);
-                setPage(1);
-              },
-              children: [
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "", children: "Any status" }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "open", children: "Open" }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "acknowledged", children: "Acknowledged" }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "suppressed", children: "Suppressed" }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "fixed", children: "Fixed" })
-              ]
-            }
-          )
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "findings-filter-bar", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "findings-search-wrapper", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "findings-search-icon", "aria-hidden": "true", children: "\u{1F50D}" }),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+              "input",
+              {
+                type: "search",
+                className: "findings-search-input",
+                placeholder: "Search title, CVE, package, file...",
+                "aria-label": "Search findings",
+                value: q,
+                onChange: (e) => setQ(e.target.value)
+              }
+            ),
+            q && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+              "button",
+              {
+                type: "button",
+                className: "btn-clear-search",
+                onClick: () => setQ(""),
+                title: "Clear search",
+                children: "\u2715"
+              }
+            )
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "findings-filter-controls", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
+              "select",
+              {
+                "aria-label": "Severity",
+                value: severity,
+                onChange: (e) => {
+                  setSeverity(e.target.value);
+                  setPage(1);
+                },
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "", children: "All severities" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "critical", children: "\u{1F6A8} Critical" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "high", children: "\u26A0\uFE0F High" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "medium", children: "\u{1F7E1} Medium" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "low", children: "\u{1F535} Low" })
+                ]
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
+              "select",
+              {
+                "aria-label": "Category",
+                value: category,
+                onChange: (e) => {
+                  setCategory(e.target.value);
+                  setPage(1);
+                },
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "", children: "All types" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "sca", children: "Dependencies" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "sast", children: "Code" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "secret", children: "Secrets" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "container", children: "Containers" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "iac", children: "Infrastructure" })
+                ]
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
+              "select",
+              {
+                "aria-label": "Status",
+                value: status,
+                onChange: (e) => {
+                  setStatus(e.target.value);
+                  setPage(1);
+                },
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "", children: "Any status" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "open", children: "Open" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "acknowledged", children: "Acknowledged" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "suppressed", children: "Suppressed" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: "fixed", children: "Fixed" })
+                ]
+              }
+            ),
+            (q || severity || category || status) && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+              "button",
+              {
+                type: "button",
+                className: "btn-reset-filters",
+                onClick: () => {
+                  setQ("");
+                  setSeverity("");
+                  setCategory("");
+                  setStatus("");
+                  setPage(1);
+                },
+                title: "Reset all filters",
+                children: "Reset"
+              }
+            )
+          ] })
         ] }),
         !findingsData.items.length ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "empty", children: "No findings match." }) : /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("table", { children: [
           /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("thead", { children: /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("tr", { children: [
             /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("th", { scope: "col", style: { width: "90px" }, children: "Severity" }),
             /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("th", { scope: "col", children: "Finding" }),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("th", { scope: "col", style: { width: "90px" }, children: "Type" }),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("th", { scope: "col", children: "Location" }),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("th", { scope: "col", style: { width: "130px" }, children: "Type" }),
             /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("th", { scope: "col", style: { width: "100px" }, children: "Status" }),
             /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("th", { scope: "col", style: { width: "95px", textAlign: "center" }, children: "Details" })
           ] }) }),
@@ -26552,10 +26659,12 @@ function ScanView({ scanId }) {
                     /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(SevBadge, { severity: f.severity }) }),
                     /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "finding-title-cell", children: [
                       /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: `finding-chevron ${isOpen ? "open" : ""}`, "aria-hidden": "true", children: isOpen ? "\u25BC" : "\u25B6" }),
-                      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "finding-title-text", children: f.title })
+                      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "finding-title-content", children: [
+                        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "finding-title-text", children: f.title }),
+                        where && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "finding-loc-sub mono", children: where })
+                      ] })
                     ] }) }),
                     /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("td", { children: typeLabel }),
-                    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("td", { className: "mono", children: where }),
                     /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(StatusBadge, { status: f.status }) }),
                     /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("td", { style: { textAlign: "center" }, children: /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
                       "button",
@@ -26577,7 +26686,7 @@ function ScanView({ scanId }) {
                   ]
                 }
               ),
-              isOpen && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("tr", { className: "finding-detail-row", children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("td", { colSpan: 6, children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+              isOpen && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("tr", { className: "finding-detail-row", children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("td", { colSpan: 5, children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
                 FindingDetail,
                 {
                   finding: f,
@@ -28004,7 +28113,7 @@ function WebsitesView({ onSelectScan }) {
           }
         )
       ] }) }),
-      loading && !websites.length ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: "empty", children: "Loading website targets..." }) : /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
+      loading && !websites.length ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { style: { padding: "1rem 0" }, children: /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(ScanSkeletonLoader, { cards: 4, hasTabs: false, rows: 4 }) }) : /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
         DataTable,
         {
           headers,
@@ -28135,6 +28244,22 @@ function WebsiteScanView({ websiteId, scanId }) {
     }
     loadData();
   }, [websiteId, scanId]);
+  (0, import_react12.useEffect)(() => {
+    if (!scan || scan.status !== "queued" && scan.status !== "running") return;
+    const timer = setInterval(async () => {
+      try {
+        const scanData = await api.get(api.org(`/websites/${websiteId}/scans/${scanId}`));
+        if (scanData) {
+          setScan(scanData);
+          if (scanData.status !== "queued" && scanData.status !== "running") {
+            toast("Website security scan complete");
+          }
+        }
+      } catch {
+      }
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [scan, websiteId, scanId]);
   async function handleDownloadReport(format) {
     try {
       const res = await api.get(api.org(`/websites/${websiteId}/scans/${scanId}/report?format=${format}`));
@@ -28154,11 +28279,8 @@ function WebsiteScanView({ websiteId, scanId }) {
       toast(err.message || "Report download failed", "error");
     }
   }
-  if (loading) {
-    return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "view", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(PageHead, { title: "Website Security Scan", subtitle: "Loading scan results..." }),
-      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "empty", children: "Loading vulnerability report and security telemetry..." })
-    ] });
+  if (loading && !scan) {
+    return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "view", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ScanSkeletonLoader, { cards: 5, hasTabs: true, rows: 5 }) });
   }
   if (!scan || !site) {
     return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "view", children: [
@@ -28237,314 +28359,333 @@ function WebsiteScanView({ websiteId, scanId }) {
         )
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "stats", style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-        StatCard,
-        {
-          num: scan.postureScore != null ? `${scan.postureScore}/100` : "N/A",
-          label: `Security Posture (Grade ${s.grade || "N/A"})`
-        }
-      ),
-      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-        StatCard,
-        {
-          className: "stat-critical",
-          num: pad(s.critical || 0),
-          label: "Critical Severity"
-        }
-      ),
-      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-        StatCard,
-        {
-          className: "stat-high",
-          num: pad(s.high || 0),
-          label: "High Severity"
-        }
-      ),
-      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-        StatCard,
-        {
-          className: "stat-medium",
-          num: pad((s.medium || 0) + (s.low || 0)),
-          label: "Medium & Low"
-        }
-      ),
-      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-        StatCard,
-        {
-          num: pad(endpoints.length || 1),
-          label: "Endpoints Inspected"
-        }
-      )
-    ] }),
-    scan.aiAnalysis && /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginBottom: "1.5rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(AiBriefingCard, { ai: scan.aiAnalysis }) }),
-    /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "tab-nav", style: { display: "flex", gap: "0.5rem", borderBottom: "1px solid var(--color-border)", marginBottom: "1rem" }, children: [
-      ["findings", `Vulnerabilities (${allFindings.length})`],
-      ["headers", "Security Headers & CORS"],
-      ["cookies", `Cookies (${cookiesList.length})`],
-      ["tls", "TLS / SSL Configuration"],
-      ["crawl", `Endpoints & Forms (${endpoints.length})`],
-      ["technologies", `Technologies (${tech.length})`]
-    ].map(([key, label]) => /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-      "button",
-      {
-        type: "button",
-        className: `tab-btn ${activeTab === key ? "active" : ""}`,
-        onClick: () => setActiveTab(key),
-        style: {
-          padding: "0.5rem 0.85rem",
-          background: "none",
-          border: "none",
-          borderBottom: activeTab === key ? "2px solid var(--color-primary)" : "2px solid transparent",
-          fontWeight: activeTab === key ? 600 : 400,
-          cursor: "pointer"
-        },
-        children: label
-      },
-      key
-    )) }),
-    activeTab === "findings" && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "row", style: { justifyContent: "space-between", width: "100%", flexWrap: "wrap", gap: "0.5rem" }, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "row", style: { gap: "0.4rem", alignItems: "center" }, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Filter severity:" }),
-          ["all", "critical", "high", "medium", "low"].map((level) => /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-            "button",
-            {
-              type: "button",
-              className: `btn btn-sm ${sevFilter === level ? "btn-primary" : "btn-subtle"}`,
-              onClick: () => setSevFilter(level),
-              children: level.toUpperCase()
-            },
-            level
-          ))
+    scan.status === "queued" || scan.status === "running" ? /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "fade-in", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "card scan-progress-banner", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "scan-progress-top", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "scan-progress-title", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "scan-radar-dot", "aria-hidden": "true" }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { children: scan.status === "queued" ? "Website scan queued \xB7 Preparing inspection worker" : "Website security scan in progress" })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "badge st-running", children: "Live Scanner Active" })
         ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("p", { className: "muted small", style: { margin: 0 }, children: scan.status === "queued" ? "The scan is queued in the platform worker queue. Analysis will begin momentarily..." : "Inspecting HTTP security headers, CORS policies, cookies, TLS/SSL configuration, endpoints, and web vulnerabilities. Results stream in automatically." }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "scan-progress-bar-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "scan-progress-bar-indeterminate" }) })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "stats", style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }, children: ["Security Posture", "Critical Severity", "High Severity", "Medium & Low", "Endpoints Inspected"].map((label, idx) => /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "card skeleton-stat-card", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(Skeleton, { width: "48px", height: "2rem", style: { marginBottom: "0.4rem" }, radius: "4px" }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "muted small", children: label })
+      ] }, idx)) }),
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card", style: { padding: "2rem 1.5rem", textAlign: "center" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("p", { className: "muted", style: { margin: 0 }, children: "Security telemetry and vulnerability findings will populate here once inspection completes." }) })
+    ] }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(import_jsx_runtime12.Fragment, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "stats", style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }, children: [
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-          "input",
+          StatCard,
           {
-            type: "search",
-            placeholder: "Search findings...",
-            value: searchQuery,
-            onChange: (e) => setSearchQuery(e.target.value),
-            style: { minWidth: "220px" }
+            num: scan.postureScore != null ? `${scan.postureScore}/100` : "N/A",
+            label: `Security Posture (Grade ${s.grade || "N/A"})`
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+          StatCard,
+          {
+            className: "stat-critical",
+            num: pad(s.critical || 0),
+            label: "Critical Severity"
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+          StatCard,
+          {
+            className: "stat-high",
+            num: pad(s.high || 0),
+            label: "High Severity"
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+          StatCard,
+          {
+            className: "stat-medium",
+            num: pad((s.medium || 0) + (s.low || 0)),
+            label: "Medium & Low"
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+          StatCard,
+          {
+            num: pad(endpoints.length || 1),
+            label: "Endpoints Inspected"
           }
         )
-      ] }) }),
-      !filteredFindings.length ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "empty", children: "No security findings match the selected filters." }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("table", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("thead", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("tr", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", style: { width: "100px" }, children: "Severity" }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Vulnerability" }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Affected Location" }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Recommended Remediation" }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", style: { width: "80px" }, children: "Details" })
-        ] }) }),
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("tbody", { children: filteredFindings.map((f) => /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(import_react12.default.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(
-            "tr",
+      ] }),
+      scan.aiAnalysis && /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginBottom: "1.5rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(AiBriefingCard, { ai: scan.aiAnalysis }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "tab-nav", style: { display: "flex", gap: "0.5rem", borderBottom: "1px solid var(--color-border)", marginBottom: "1rem" }, children: [
+        ["findings", `Vulnerabilities (${allFindings.length})`],
+        ["headers", "Security Headers & CORS"],
+        ["cookies", `Cookies (${cookiesList.length})`],
+        ["tls", "TLS / SSL Configuration"],
+        ["crawl", `Endpoints & Forms (${endpoints.length})`],
+        ["technologies", `Technologies (${tech.length})`]
+      ].map(([key, label]) => /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+        "button",
+        {
+          type: "button",
+          className: `tab-btn ${activeTab === key ? "active" : ""}`,
+          onClick: () => setActiveTab(key),
+          style: {
+            padding: "0.5rem 0.85rem",
+            background: "none",
+            border: "none",
+            borderBottom: activeTab === key ? "2px solid var(--color-primary)" : "2px solid transparent",
+            fontWeight: activeTab === key ? 600 : 400,
+            cursor: "pointer"
+          },
+          children: label
+        },
+        key
+      )) }),
+      activeTab === "findings" && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "row", style: { justifyContent: "space-between", width: "100%", flexWrap: "wrap", gap: "0.5rem" }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "row", style: { gap: "0.4rem", alignItems: "center" }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Filter severity:" }),
+            ["all", "critical", "high", "medium", "low"].map((level) => /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+              "button",
+              {
+                type: "button",
+                className: `btn btn-sm ${sevFilter === level ? "btn-primary" : "btn-subtle"}`,
+                onClick: () => setSevFilter(level),
+                children: level.toUpperCase()
+              },
+              level
+            ))
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+            "input",
             {
-              className: "clickable",
-              onClick: () => setExpandedFinding(expandedFinding === f.id ? null : f.id),
-              children: [
-                /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(SevBadge, { severity: f.severity }) }),
-                /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("td", { children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: f.title }),
-                  f.scanner && /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "small muted", children: f.scanner.name || f.scanner })
-                ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { className: "small", children: f.location && (f.location.url || f.location.parameter || f.location.path) || site.targetUrl }) }),
-                /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { className: "small", children: f.remediation && (f.remediation.advice || f.remediation.fixedIn) || "Review configuration" }),
-                /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("button", { type: "button", className: "btn btn-sm btn-subtle", children: expandedFinding === f.id ? "Hide" : "View" }) })
-              ]
+              type: "search",
+              placeholder: "Search findings...",
+              value: searchQuery,
+              onChange: (e) => setSearchQuery(e.target.value),
+              style: { minWidth: "220px" }
             }
-          ),
-          expandedFinding === f.id && /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("tr", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { colSpan: 5, style: { background: "var(--color-bg)", padding: "1rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { style: { display: "grid", gap: "0.5rem" }, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: "Description:" }),
-              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("p", { style: { margin: "0.25rem 0" }, children: f.description || "No extended description available." })
-            ] }),
-            f.evidence && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: "Technical Evidence:" }),
-              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("pre", { style: { background: "var(--color-surface)", padding: "0.5rem", borderRadius: "4px", overflowX: "auto", fontSize: "0.8rem" }, children: typeof f.evidence === "object" ? JSON.stringify(f.evidence, null, 2) : String(f.evidence) })
-            ] }),
-            f.remediation && f.remediation.advice && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: "Remediation Steps:" }),
-              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("p", { style: { margin: "0.25rem 0" }, children: f.remediation.advice })
-            ] })
-          ] }) }) })
-        ] }, f.id)) })
-      ] }) })
-    ] }),
-    activeTab === "headers" && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { style: { display: "grid", gap: "1.5rem" }, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("h2", { className: "m-0", children: "HTTP Security Headers Assessment" }) }),
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("table", { children: [
+          )
+        ] }) }),
+        !filteredFindings.length ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "empty", children: "No security findings match the selected filters." }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("table", { children: [
           /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("thead", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("tr", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Security Header" }),
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Status" }),
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Value" }),
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Impact / Guidance" })
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", style: { width: "100px" }, children: "Severity" }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Vulnerability" }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Affected Location" }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Recommended Remediation" }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", style: { width: "80px" }, children: "Details" })
           ] }) }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("tbody", { children: [
-            ["Strict-Transport-Security (HSTS)", headersData["strict-transport-security"], "Enforces encrypted HTTPS connections"],
-            ["Content-Security-Policy (CSP)", headersData["content-security-policy"], "Restricts script, stylesheet, and object origins against XSS"],
-            ["X-Frame-Options (XFO)", headersData["x-frame-options"], "Defends against Clickjacking UI redress attacks"],
-            ["X-Content-Type-Options", headersData["x-content-type-options"], "Blocks MIME-sniffing vulnerabilities (nosniff)"],
-            ["Referrer-Policy", headersData["referrer-policy"], "Prevents leaking private query paths to external origins"],
-            ["Permissions-Policy", headersData["permissions-policy"], "Disables unused browser hardware APIs (camera, geolocation)"]
-          ].map(([headerName, val, guidance], idx) => {
-            const isPresent = Boolean(val);
-            return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("tr", { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: headerName }) }),
-              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: `badge ${isPresent ? "sev-low" : "sev-high"}`, children: isPresent ? "Configured" : "Missing" }) }),
-              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: isPresent ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { className: "small", children: String(val).slice(0, 80) }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "muted", children: "Not returned by server" }) }),
-              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { className: "small muted", children: guidance })
-            ] }, idx);
-          }) })
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("tbody", { children: filteredFindings.map((f) => /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(import_react12.default.Fragment, { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(
+              "tr",
+              {
+                className: "clickable",
+                onClick: () => setExpandedFinding(expandedFinding === f.id ? null : f.id),
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(SevBadge, { severity: f.severity }) }),
+                  /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("td", { children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: f.title }),
+                    f.scanner && /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "small muted", children: f.scanner.name || f.scanner })
+                  ] }),
+                  /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { className: "small", children: f.location && (f.location.url || f.location.parameter || f.location.path) || site.targetUrl }) }),
+                  /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { className: "small", children: f.remediation && (f.remediation.advice || f.remediation.fixedIn) || "Review configuration" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("button", { type: "button", className: "btn btn-sm btn-subtle", children: expandedFinding === f.id ? "Hide" : "View" }) })
+                ]
+              }
+            ),
+            expandedFinding === f.id && /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("tr", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { colSpan: 5, style: { background: "var(--color-bg)", padding: "1rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { style: { display: "grid", gap: "0.5rem" }, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: "Description:" }),
+                /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("p", { style: { margin: "0.25rem 0" }, children: f.description || "No extended description available." })
+              ] }),
+              f.evidence && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: "Technical Evidence:" }),
+                /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("pre", { style: { background: "var(--color-surface)", padding: "0.5rem", borderRadius: "4px", overflowX: "auto", fontSize: "0.8rem" }, children: typeof f.evidence === "object" ? JSON.stringify(f.evidence, null, 2) : String(f.evidence) })
+              ] }),
+              f.remediation && f.remediation.advice && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: "Remediation Steps:" }),
+                /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("p", { style: { margin: "0.25rem 0" }, children: f.remediation.advice })
+              ] })
+            ] }) }) })
+          ] }, f.id)) })
         ] }) })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("h2", { className: "m-0", children: "CORS Policy Configuration" }) }),
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "1rem", padding: "0.5rem 0" }, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Access-Control-Allow-Origin:" }),
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginTop: "0.25rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { children: corsData.allowOrigin || "Not set (restricted)" }) })
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Access-Control-Allow-Credentials:" }),
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginTop: "0.25rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { children: corsData.allowCredentials ? "true" : "false / not set" }) })
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Arbitrary Origin Reflection:" }),
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginTop: "0.25rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: `badge ${corsData.arbitraryOriginReflected ? "sev-critical" : "sev-low"}`, children: corsData.arbitraryOriginReflected ? "Vulnerable (Reflected)" : "Safe (Rejected)" }) })
-          ] })
-        ] })
-      ] })
-    ] }),
-    activeTab === "cookies" && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("h2", { className: "m-0", children: "Cookie Security Audit" }) }),
-      !cookiesList.length ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "empty", children: "No cookies were set by the web server during inspection." }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("table", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("thead", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("tr", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Cookie Name" }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Secure Flag" }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "HttpOnly Flag" }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "SameSite Policy" }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Path" })
-        ] }) }),
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("tbody", { children: cookiesList.map((c, i) => /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("tr", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: c.name }) }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: `badge ${c.secure ? "sev-low" : "sev-high"}`, children: c.secure ? "Secure" : "Missing Secure" }) }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: `badge ${c.httpOnly ? "sev-low" : "sev-medium"}`, children: c.httpOnly ? "HttpOnly" : "Missing HttpOnly" }) }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: `badge ${c.sameSite ? "sev-low" : "sev-medium"}`, children: c.sameSite ? `SameSite=${c.sameSite}` : "None specified" }) }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { className: "small", children: c.path || "/" })
-        ] }, i)) })
-      ] }) })
-    ] }),
-    activeTab === "tls" && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("h2", { className: "m-0", children: "TLS / SSL Configuration & Certificate Status" }) }),
-      !tls ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "empty", children: "Target was accessed over HTTP or TLS data is unavailable." }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "1.25rem" }, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Certificate Authority Trust:" }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginTop: "0.25rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: `badge ${tls.authorized ? "sev-low" : "sev-critical"}`, children: tls.authorized ? "Trusted &amp; Valid" : `Untrusted: ${tls.authorizationError || "Untrusted"}` }) })
+      activeTab === "headers" && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { style: { display: "grid", gap: "1.5rem" }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("h2", { className: "m-0", children: "HTTP Security Headers Assessment" }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("table", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("thead", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("tr", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Security Header" }),
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Status" }),
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Value" }),
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Impact / Guidance" })
+            ] }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("tbody", { children: [
+              ["Strict-Transport-Security (HSTS)", headersData["strict-transport-security"], "Enforces encrypted HTTPS connections"],
+              ["Content-Security-Policy (CSP)", headersData["content-security-policy"], "Restricts script, stylesheet, and object origins against XSS"],
+              ["X-Frame-Options (XFO)", headersData["x-frame-options"], "Defends against Clickjacking UI redress attacks"],
+              ["X-Content-Type-Options", headersData["x-content-type-options"], "Blocks MIME-sniffing vulnerabilities (nosniff)"],
+              ["Referrer-Policy", headersData["referrer-policy"], "Prevents leaking private query paths to external origins"],
+              ["Permissions-Policy", headersData["permissions-policy"], "Disables unused browser hardware APIs (camera, geolocation)"]
+            ].map(([headerName, val, guidance], idx) => {
+              const isPresent = Boolean(val);
+              return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("tr", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: headerName }) }),
+                /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: `badge ${isPresent ? "sev-low" : "sev-high"}`, children: isPresent ? "Configured" : "Missing" }) }),
+                /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: isPresent ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { className: "small", children: String(val).slice(0, 80) }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "muted", children: "Not returned by server" }) }),
+                /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { className: "small muted", children: guidance })
+              ] }, idx);
+            }) })
+          ] }) })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Negotiated TLS Protocol:" }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginTop: "0.25rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: tls.protocol || "Unknown" }) })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Cipher Suite:" }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginTop: "0.25rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { children: tls.cipher ? tls.cipher.name || JSON.stringify(tls.cipher) : "Unknown" }) })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Certificate Expiry:" }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { style: { marginTop: "0.25rem" }, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: tls.validTo ? fmtDate(tls.validTo) : "N/A" }),
-            tls.daysRemaining != null && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("span", { className: "small muted", children: [
-              " (",
-              tls.daysRemaining,
-              " days remaining)"
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("h2", { className: "m-0", children: "CORS Policy Configuration" }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "1rem", padding: "0.5rem 0" }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Access-Control-Allow-Origin:" }),
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginTop: "0.25rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { children: corsData.allowOrigin || "Not set (restricted)" }) })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Access-Control-Allow-Credentials:" }),
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginTop: "0.25rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { children: corsData.allowCredentials ? "true" : "false / not set" }) })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Arbitrary Origin Reflection:" }),
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginTop: "0.25rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: `badge ${corsData.arbitraryOriginReflected ? "sev-critical" : "sev-low"}`, children: corsData.arbitraryOriginReflected ? "Vulnerable (Reflected)" : "Safe (Rejected)" }) })
             ] })
           ] })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Certificate Issuer:" }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginTop: "0.25rem" }, className: "small", children: typeof tls.issuer === "object" ? tls.issuer.O || tls.issuer.CN || JSON.stringify(tls.issuer) : String(tls.issuer || "N/A") })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Subject Domain (CN):" }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginTop: "0.25rem" }, className: "small", children: typeof tls.subject === "object" ? tls.subject.CN || JSON.stringify(tls.subject) : String(tls.subject || "N/A") })
         ] })
-      ] })
-    ] }),
-    activeTab === "crawl" && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { style: { display: "grid", gap: "1.5rem" }, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("h2", { className: "m-0", children: [
-          "Discovered Endpoints (",
-          endpoints.length,
-          ")"
-        ] }) }),
-        !endpoints.length ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "empty", children: "Only root target was inspected. Run an Active Crawl to map endpoints." }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("ul", { style: { margin: 0, paddingLeft: "1.25rem", display: "grid", gap: "0.35rem" }, children: endpoints.map((ep, i) => /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("li", { className: "small", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("a", { href: ep, target: "_blank", rel: "noopener noreferrer", children: ep }) }, i)) })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("h2", { className: "m-0", children: [
-          "Discovered HTML Forms & Inputs (",
-          forms.length,
-          ")"
-        ] }) }),
-        !forms.length ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "empty", children: "No HTML forms were detected on the crawled pages." }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("table", { children: [
+      activeTab === "cookies" && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("h2", { className: "m-0", children: "Cookie Security Audit" }) }),
+        !cookiesList.length ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "empty", children: "No cookies were set by the web server during inspection." }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("table", { children: [
           /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("thead", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("tr", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Page URL" }),
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Form Action" }),
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Method" }),
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Detected Input Parameters" })
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Cookie Name" }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Secure Flag" }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "HttpOnly Flag" }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "SameSite Policy" }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Path" })
           ] }) }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("tbody", { children: forms.map((f, i) => /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("tr", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { className: "small", children: f.pageUrl }),
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { className: "small", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { children: f.action || "(self)" }) }),
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "badge", children: f.method || "GET" }) }),
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: Array.isArray(f.inputs) && f.inputs.length ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "row", style: { gap: "0.25rem", flexWrap: "wrap" }, children: f.inputs.map((inp, idx) => /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { className: "small", children: inp.name || inp.type }, idx)) }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "muted", children: "None" }) })
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("tbody", { children: cookiesList.map((c, i) => /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("tr", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: c.name }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: `badge ${c.secure ? "sev-low" : "sev-high"}`, children: c.secure ? "Secure" : "Missing Secure" }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: `badge ${c.httpOnly ? "sev-low" : "sev-medium"}`, children: c.httpOnly ? "HttpOnly" : "Missing HttpOnly" }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: `badge ${c.sameSite ? "sev-low" : "sev-medium"}`, children: c.sameSite ? `SameSite=${c.sameSite}` : "None specified" }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { className: "small", children: c.path || "/" })
           ] }, i)) })
         ] }) })
       ] }),
-      exposedFiles.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", style: { borderColor: "var(--color-critical)" }, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("h2", { className: "m-0", style: { color: "var(--color-critical)" }, children: [
-          "Potentially Exposed Sensitive Files (",
-          exposedFiles.length,
-          ")"
-        ] }) }),
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("ul", { style: { margin: 0, paddingLeft: "1.25rem", display: "grid", gap: "0.35rem" }, children: exposedFiles.map((ef, i) => /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("li", { className: "small", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("strong", { children: [
-            ef.path,
-            ":"
+      activeTab === "tls" && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("h2", { className: "m-0", children: "TLS / SSL Configuration & Certificate Status" }) }),
+        !tls ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "empty", children: "Target was accessed over HTTP or TLS data is unavailable." }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "1.25rem" }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Certificate Authority Trust:" }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginTop: "0.25rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: `badge ${tls.authorized ? "sev-low" : "sev-critical"}`, children: tls.authorized ? "Trusted &amp; Valid" : `Untrusted: ${tls.authorizationError || "Untrusted"}` }) })
           ] }),
-          " status ",
-          ef.status,
-          " (",
-          ef.reason || "Exposed",
-          ")"
-        ] }, i)) })
-      ] })
-    ] }),
-    activeTab === "technologies" && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("h2", { className: "m-0", children: [
-        "Technology Stack & Fingerprints (",
-        tech.length,
-        ")"
-      ] }) }),
-      !tech.length ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "empty", children: "No specific technology signatures detected." }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("table", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("thead", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("tr", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Technology" }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Category" }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Detected Version" }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Confidence" })
-        ] }) }),
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("tbody", { children: tech.map((t, i) => /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("tr", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: t.name }) }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "badge", children: t.category }) }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: t.version ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { children: t.version }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "muted", children: "Undetermined" }) }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("td", { children: [
-            t.confidence || 100,
-            "%"
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Negotiated TLS Protocol:" }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginTop: "0.25rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: tls.protocol || "Unknown" }) })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Cipher Suite:" }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginTop: "0.25rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { children: tls.cipher ? tls.cipher.name || JSON.stringify(tls.cipher) : "Unknown" }) })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Certificate Expiry:" }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { style: { marginTop: "0.25rem" }, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: tls.validTo ? fmtDate(tls.validTo) : "N/A" }),
+              tls.daysRemaining != null && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("span", { className: "small muted", children: [
+                " (",
+                tls.daysRemaining,
+                " days remaining)"
+              ] })
+            ] })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Certificate Issuer:" }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginTop: "0.25rem" }, className: "small", children: typeof tls.issuer === "object" ? tls.issuer.O || tls.issuer.CN || JSON.stringify(tls.issuer) : String(tls.issuer || "N/A") })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "small muted", children: "Subject Domain (CN):" }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginTop: "0.25rem" }, className: "small", children: typeof tls.subject === "object" ? tls.subject.CN || JSON.stringify(tls.subject) : String(tls.subject || "N/A") })
           ] })
-        ] }, i)) })
-      ] }) })
+        ] })
+      ] }),
+      activeTab === "crawl" && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { style: { display: "grid", gap: "1.5rem" }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("h2", { className: "m-0", children: [
+            "Discovered Endpoints (",
+            endpoints.length,
+            ")"
+          ] }) }),
+          !endpoints.length ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "empty", children: "Only root target was inspected. Run an Active Crawl to map endpoints." }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("ul", { style: { margin: 0, paddingLeft: "1.25rem", display: "grid", gap: "0.35rem" }, children: endpoints.map((ep, i) => /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("li", { className: "small", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("a", { href: ep, target: "_blank", rel: "noopener noreferrer", children: ep }) }, i)) })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("h2", { className: "m-0", children: [
+            "Discovered HTML Forms & Inputs (",
+            forms.length,
+            ")"
+          ] }) }),
+          !forms.length ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "empty", children: "No HTML forms were detected on the crawled pages." }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("table", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("thead", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("tr", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Page URL" }),
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Form Action" }),
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Method" }),
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Detected Input Parameters" })
+            ] }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("tbody", { children: forms.map((f, i) => /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("tr", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { className: "small", children: f.pageUrl }),
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { className: "small", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { children: f.action || "(self)" }) }),
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "badge", children: f.method || "GET" }) }),
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: Array.isArray(f.inputs) && f.inputs.length ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "row", style: { gap: "0.25rem", flexWrap: "wrap" }, children: f.inputs.map((inp, idx) => /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { className: "small", children: inp.name || inp.type }, idx)) }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "muted", children: "None" }) })
+            ] }, i)) })
+          ] }) })
+        ] }),
+        exposedFiles.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", style: { borderColor: "var(--color-critical)" }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("h2", { className: "m-0", style: { color: "var(--color-critical)" }, children: [
+            "Potentially Exposed Sensitive Files (",
+            exposedFiles.length,
+            ")"
+          ] }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("ul", { style: { margin: 0, paddingLeft: "1.25rem", display: "grid", gap: "0.35rem" }, children: exposedFiles.map((ef, i) => /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("li", { className: "small", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("strong", { children: [
+              ef.path,
+              ":"
+            ] }),
+            " status ",
+            ef.status,
+            " (",
+            ef.reason || "Exposed",
+            ")"
+          ] }, i)) })
+        ] })
+      ] }),
+      activeTab === "technologies" && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("h2", { className: "m-0", children: [
+          "Technology Stack & Fingerprints (",
+          tech.length,
+          ")"
+        ] }) }),
+        !tech.length ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "empty", children: "No specific technology signatures detected." }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("table", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("thead", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("tr", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Technology" }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Category" }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Detected Version" }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("th", { scope: "col", children: "Confidence" })
+          ] }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("tbody", { children: tech.map((t, i) => /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("tr", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: t.name }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "badge", children: t.category }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("td", { children: t.version ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("code", { children: t.version }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "muted", children: "Undetermined" }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("td", { children: [
+              t.confidence || 100,
+              "%"
+            ] })
+          ] }, i)) })
+        ] }) })
+      ] })
     ] })
   ] });
 }

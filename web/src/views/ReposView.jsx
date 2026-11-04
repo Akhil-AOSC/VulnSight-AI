@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, session, hasPermission, toast, fmtDate, pad } from '../api.js';
-import { PageHead, DataTable, StatusBadge } from '../components/Common.jsx';
+import { PageHead, DataTable, StatusBadge, ScanSkeletonLoader } from '../components/Common.jsx';
 
 const SCANNERS = [
   ['sca', 'Dependencies (OSV)'],
@@ -129,7 +129,7 @@ export function ReposListView() {
     }
   }
 
-  if (loading && !repos.length) return <p className="muted">Loading...</p>;
+  if (loading && !repos.length) return <ScanSkeletonLoader cards={4} hasTabs={false} rows={4} />;
 
   return (
     <>
@@ -410,7 +410,7 @@ export function RepoDetailView({ repoId }) {
     });
   }
 
-  if (loading && !repo) return <p className="muted">Loading...</p>;
+  if (loading && !repo) return <ScanSkeletonLoader cards={5} hasTabs={false} rows={5} />;
   if (!repo) return null;
 
   return (

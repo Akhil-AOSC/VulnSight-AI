@@ -287,3 +287,66 @@ export function ToastContainer() {
     </div>
   );
 }
+
+
+export function Skeleton({ width = '100%', height = '1rem', className = '', style = {}, radius = '4px' }) {
+  return (
+    <span
+      className={`skeleton-loader ${className}`.trim()}
+      style={{
+        display: 'inline-block',
+        width,
+        height,
+        borderRadius: radius,
+        ...style,
+      }}
+      aria-hidden="true"
+    />
+  );
+}
+
+export function ScanSkeletonLoader({ cards = 5, hasTabs = true, rows = 5 }) {
+  return (
+    <div className="skeleton-container fade-in">
+      <div className="skeleton-head">
+        <Skeleton width="240px" height="1.8rem" radius="6px" />
+        <Skeleton width="360px" height="1rem" style={{ marginTop: '0.4rem' }} radius="4px" />
+      </div>
+
+      <div className="skeleton-stats-grid">
+        {Array.from({ length: cards }).map((_, i) => (
+          <div key={i} className="card skeleton-stat-card">
+            <Skeleton width="54px" height="2rem" style={{ marginBottom: '0.5rem' }} radius="4px" />
+            <Skeleton width="75%" height="0.85rem" radius="4px" />
+          </div>
+        ))}
+      </div>
+
+      {hasTabs && (
+        <div className="skeleton-tab-nav">
+          {[130, 160, 100, 170, 140, 110].map((w, i) => (
+            <Skeleton key={i} width={`${w}px`} height="2.2rem" radius="6px" />
+          ))}
+        </div>
+      )}
+
+      <div className="card skeleton-table-card">
+        <div className="skeleton-table-header">
+          <Skeleton width="180px" height="1.25rem" radius="4px" />
+          <Skeleton width="220px" height="2rem" radius="6px" />
+        </div>
+        <div className="skeleton-table-rows">
+          {Array.from({ length: rows }).map((_, i) => (
+            <div key={i} className="skeleton-table-row">
+              <Skeleton width="60px" height="1.2rem" radius="10px" />
+              <Skeleton width="45%" height="1rem" radius="4px" />
+              <Skeleton width="75px" height="1rem" radius="4px" />
+              <Skeleton width="18%" height="1rem" radius="4px" />
+              <Skeleton width="55px" height="1.5rem" radius="4px" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}

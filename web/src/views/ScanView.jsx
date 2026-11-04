@@ -7,6 +7,8 @@ import {
   AiBriefingCard,
   AiAnswer,
   DataTable,
+  Skeleton,
+  ScanSkeletonLoader,
 } from '../components/Common.jsx';
 
 const GRADE_LABELS = {
@@ -464,6 +466,22 @@ function AiPromptModal({ scan, repo, initialFindings = [], onClose }) {
   }, [scan.id]);
 
   useEffect(() => {
+    // Prevent background scrolling while modal dialog is open
+    const prevOverflow = document.body.style.overflow;
+    const prevPaddingRight = document.body.style.paddingRight;
+    const scrollBarWidth = window.innerWidth - document.documentElement.clientWidth;
+    if (scrollBarWidth > 0) {
+      document.body.style.paddingRight = `${scrollBarWidth}px`;
+    }
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.body.style.paddingRight = prevPaddingRight;
+    };
+  }, []);
+
+  useEffect(() => {
     function handleKeyDown(e) {
       if (e.key === 'Escape') onClose();
     }
@@ -696,7 +714,7 @@ export function ScanView({ scanId }) {
     });
   }
 
-  if (loading && !scan) return <p className="muted">Loading...</p>;
+  if (loading && !scan) return <ScanSkeletonLoader cards={6} hasTabs={false} rows={6} />;
   if (!scan || !repo) return null;
 
   const sum = scan.summary;
@@ -734,15 +752,50 @@ export function ScanView({ scanId }) {
       </PageHead>
 
       {(scan.status === 'queued' || scan.status === 'running') && (
-        <div className="card empty">
-          This scan is {scan.status}. The page refreshes automatically.
-          {scan.status === 'queued' && canScan && (
-            <p>
-              <button type="button" onClick={handleCancelScan}>
-                Cancel scan
-              </button>
+        <div className="fade-in">
+          <div className="card scan-progress-banner">
+            <div className="scan-progress-top">
+              <div className="scan-progress-title">
+                <span className="scan-radar-dot" aria-hidden="true" />
+                <span>
+                  {scan.status === 'queued'
+                    ? 'Repository scan queued · Preparing sandbox worker'
+                    : 'Repository security scan in progress'}
+                </span>
+              </div>
+              <div className="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
+                <span className="badge st-running">Live Scanner Active</span>
+                {scan.status === 'queued' && canScan && (
+                  <button type="button" className="btn btn-sm btn-subtle" onClick={handleCancelScan}>
+                    Cancel scan
+                  </button>
+                )}
+              </div>
+            </div>
+            <p className="muted small" style={{ margin: 0 }}>
+              {scan.status === 'queued'
+                ? 'The scan is queued in the platform worker queue. Analysis will begin momentarily...'
+                : 'Inspecting dependencies, static code analysis (SAST), and secret scanning. The page updates automatically.'}
             </p>
-          )}
+            <div className="scan-progress-bar-wrap">
+              <div className="scan-progress-bar-indeterminate" />
+            </div>
+          </div>
+
+          <div className="stats skeleton-stats-grid" style={{ marginBottom: '1.5rem' }}>
+            {['Total Findings', 'Critical', 'High', 'Medium', 'Low', 'Security Posture'].map((label, idx) => (
+              <div key={idx} className="card skeleton-stat-card">
+                <Skeleton width="48px" height="2rem" style={{ marginBottom: '0.4rem' }} radius="4px" />
+                <span className="muted small">{label}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="card" style={{ padding: '2rem 1.5rem', textAlign: 'center' }}>
+            <p className="muted" style={{ margin: 0 }}>
+              Security findings, triage status, and fix recommendations will populate here as soon as scan finishes.
+            </p>
+          </div>
         </div>
       )}
 
@@ -796,67 +849,82 @@ export function ScanView({ scanId }) {
           )}
 
           {Array.isArray(scan.projects) && scan.projects.length > 0 && (
-            <div className="grid cols-2 scan-projects-grid">
-              <section className="card">
-                <h2>Projects</h2>
-                <ul className="projects-list">
-                  {scan.projects.map((p, i) => {
-                    const pName = p.projectName || p.name || p.file;
-                    const pMeta = [
-                      p.packageManager || p.type,
-                      p.file,
-                      `${p.dependencyCount || (p.dependencies ? p.dependencies.length : 0)} dependencies`,
-                    ]
-                      .filter(Boolean)
-                      .join(' · ');
-                    const pSum = p.summary || {};
-                    const counts =
-                      ['critical', 'high', 'medium', 'low']
-                        .filter((l) => pSum[l] > 0)
-                        .map((l) => `${pSum[l]} ${l}`)
-                        .join(', ') || 'No issues';
-                    return (
-                      <li key={i}>
-                        <div>
-                          <div className="project-name">{pName}</div>
-                          <div className="project-meta muted small">{pMeta}</div>
-                        </div>
-                        <span className="small muted">{counts}</span>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </section>
-
-              <section className="card">
-                <h2>Fix plan (One upgrade per vulnerable package)</h2>
-                <ul className="plan-list">
-                  {planSteps.length ? (
-                    planSteps.map((step, i) => {
-                      const label = `${step.package}@${step.version}`;
-                      if (!step.target) {
-                        return (
-                          <li key={i}>
-                            <span className="mono">{label}</span>
-                            <span className="muted small">
-                              No fix yet for {step.unfixed} issue(s)
-                            </span>
-                          </li>
-                        );
-                      }
+            <div className="grid cols-2 scan-subgrid">
+              <section className="card scan-projects-card">
+                <div className="card-head">
+                  <h2>Projects</h2>
+                  <span className="badge">{scan.projects.length} scanned</span>
+                </div>
+                <div className="projects-list-wrap">
+                  <ul className="projects-list">
+                    {scan.projects.map((p, i) => {
+                      const pName = p.projectName || p.name || p.file;
+                      const pMeta = [
+                        p.packageManager || p.type,
+                        p.file,
+                        `${p.dependencyCount || (p.dependencies ? p.dependencies.length : 0)} dependencies`,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ');
+                      const pSum = p.summary || {};
+                      const counts =
+                        ['critical', 'high', 'medium', 'low']
+                          .filter((l) => pSum[l] > 0)
+                          .map((l) => `${pSum[l]} ${l}`)
+                          .join(', ') || 'No issues';
                       return (
                         <li key={i}>
-                          <span className="mono">
-                            {label} → <strong className="plan-target">{step.target}</strong>
-                          </span>
-                          <span className="muted small">Fixes {step.fixes} issue(s)</span>
+                          <div>
+                            <div className="project-name">{pName}</div>
+                            <div className="project-meta muted small">{pMeta}</div>
+                          </div>
+                          <span className="small muted">{counts}</span>
                         </li>
                       );
-                    })
-                  ) : (
-                    <li className="muted small">Nothing to upgrade.</li>
-                  )}
-                </ul>
+                    })}
+                  </ul>
+                </div>
+              </section>
+
+              <section className="card scan-plan-card">
+                <div className="card-head">
+                  <div>
+                    <h2>Fix plan</h2>
+                    <span className="muted small">One upgrade per vulnerable package</span>
+                  </div>
+                  <span className="badge">
+                    {planSteps.length ? `${planSteps.length} upgrade${planSteps.length === 1 ? '' : 's'}` : 'Clean'}
+                  </span>
+                </div>
+                <div className="plan-list-wrap">
+                  <ul className="plan-list">
+                    {planSteps.length ? (
+                      planSteps.map((step, i) => {
+                        const label = `${step.package}@${step.version}`;
+                        if (!step.target) {
+                          return (
+                            <li key={i}>
+                              <span className="mono">{label}</span>
+                              <span className="muted small">
+                                No fix yet for {step.unfixed} issue(s)
+                              </span>
+                            </li>
+                          );
+                        }
+                        return (
+                          <li key={i}>
+                            <span className="mono">
+                              {label} → <strong className="plan-target">{step.target}</strong>
+                            </span>
+                            <span className="plan-fix-pill">Fixes {step.fixes} issue(s)</span>
+                          </li>
+                        );
+                      })
+                    ) : (
+                      <li className="muted small">Nothing to upgrade.</li>
+                    )}
+                  </ul>
+                </div>
               </section>
             </div>
           )}
@@ -881,9 +949,14 @@ export function ScanView({ scanId }) {
           )}
 
           <section className="card scan-findings-card">
-            <div className="card-head">
-              <h2 className="grow">Findings</h2>
-              <div className="row">
+            <div className="card-head findings-card-header">
+              <div className="findings-title-group">
+                <h2>Findings</h2>
+                <span className="findings-count-badge">
+                  {findingsData.total != null ? `${findingsData.total} issues` : ''}
+                </span>
+              </div>
+              <div className="findings-header-actions">
                 <button
                   type="button"
                   className="primary btn-ai-prompt"
@@ -892,82 +965,116 @@ export function ScanView({ scanId }) {
                 >
                   ⚡ Generate AI Fix Prompt
                 </button>
-                {[
-                  ['csv', 'CSV', 'csv'],
-                  ['markdown', 'Markdown', 'md'],
-                  ['cyclonedx', 'SBOM (CycloneDX)', 'cdx.json'],
-                  ['json', 'JSON', 'json'],
-                ].map(([fmt, label, ext]) => (
-                  <button
-                    key={fmt}
-                    type="button"
-                    onClick={() =>
-                      api
-                        .download(
-                          api.org(`/scans/${scanId}/report?format=${fmt}`),
-                          `${repo.fullName.replace('/', '-')}-${scanId.slice(0, 8)}.${ext}`
-                        )
-                        .catch((err) => toast(err.message, 'error'))
-                    }
-                  >
-                    {label}
-                  </button>
-                ))}
+                <div className="findings-export-group" role="group" aria-label="Export findings">
+                  {[
+                    ['csv', 'CSV', 'csv'],
+                    ['markdown', 'Markdown', 'md'],
+                    ['cyclonedx', 'SBOM (CycloneDX)', 'cdx.json'],
+                    ['json', 'JSON', 'json'],
+                  ].map(([fmt, label, ext]) => (
+                    <button
+                      key={fmt}
+                      type="button"
+                      className="btn-export-item"
+                      onClick={() =>
+                        api
+                          .download(
+                            api.org(`/scans/${scanId}/report?format=${fmt}`),
+                            `${repo.fullName.replace('/', '-')}-${scanId.slice(0, 8)}.${ext}`
+                          )
+                          .catch((err) => toast(err.message, 'error'))
+                      }
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
-            <div className="row findings-filter-bar">
-              <input
-                type="search"
-                placeholder="Search title, CVE, package, file"
-                size={30}
-                aria-label="Search findings"
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-              />
-              <select
-                aria-label="Severity"
-                value={severity}
-                onChange={(e) => {
-                  setSeverity(e.target.value);
-                  setPage(1);
-                }}
-              >
-                <option value="">All severities</option>
-                <option value="critical">Critical</option>
-                <option value="high">High</option>
-                <option value="medium">Medium</option>
-                <option value="low">Low</option>
-              </select>
-              <select
-                aria-label="Category"
-                value={category}
-                onChange={(e) => {
-                  setCategory(e.target.value);
-                  setPage(1);
-                }}
-              >
-                <option value="">All types</option>
-                <option value="sca">Dependencies</option>
-                <option value="sast">Code</option>
-                <option value="secret">Secrets</option>
-                <option value="container">Containers</option>
-                <option value="iac">Infrastructure</option>
-              </select>
-              <select
-                aria-label="Status"
-                value={status}
-                onChange={(e) => {
-                  setStatus(e.target.value);
-                  setPage(1);
-                }}
-              >
-                <option value="">Any status</option>
-                <option value="open">Open</option>
-                <option value="acknowledged">Acknowledged</option>
-                <option value="suppressed">Suppressed</option>
-                <option value="fixed">Fixed</option>
-              </select>
+            <div className="findings-filter-bar">
+              <div className="findings-search-wrapper">
+                <span className="findings-search-icon" aria-hidden="true">🔍</span>
+                <input
+                  type="search"
+                  className="findings-search-input"
+                  placeholder="Search title, CVE, package, file..."
+                  aria-label="Search findings"
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                />
+                {q && (
+                  <button
+                    type="button"
+                    className="btn-clear-search"
+                    onClick={() => setQ('')}
+                    title="Clear search"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              <div className="findings-filter-controls">
+                <select
+                  aria-label="Severity"
+                  value={severity}
+                  onChange={(e) => {
+                    setSeverity(e.target.value);
+                    setPage(1);
+                  }}
+                >
+                  <option value="">All severities</option>
+                  <option value="critical">🚨 Critical</option>
+                  <option value="high">⚠️ High</option>
+                  <option value="medium">🟡 Medium</option>
+                  <option value="low">🔵 Low</option>
+                </select>
+                <select
+                  aria-label="Category"
+                  value={category}
+                  onChange={(e) => {
+                    setCategory(e.target.value);
+                    setPage(1);
+                  }}
+                >
+                  <option value="">All types</option>
+                  <option value="sca">Dependencies</option>
+                  <option value="sast">Code</option>
+                  <option value="secret">Secrets</option>
+                  <option value="container">Containers</option>
+                  <option value="iac">Infrastructure</option>
+                </select>
+                <select
+                  aria-label="Status"
+                  value={status}
+                  onChange={(e) => {
+                    setStatus(e.target.value);
+                    setPage(1);
+                  }}
+                >
+                  <option value="">Any status</option>
+                  <option value="open">Open</option>
+                  <option value="acknowledged">Acknowledged</option>
+                  <option value="suppressed">Suppressed</option>
+                  <option value="fixed">Fixed</option>
+                </select>
+                {(q || severity || category || status) && (
+                  <button
+                    type="button"
+                    className="btn-reset-filters"
+                    onClick={() => {
+                      setQ('');
+                      setSeverity('');
+                      setCategory('');
+                      setStatus('');
+                      setPage(1);
+                    }}
+                    title="Reset all filters"
+                  >
+                    Reset
+                  </button>
+                )}
+              </div>
             </div>
 
             {!findingsData.items.length ? (
@@ -979,8 +1086,7 @@ export function ScanView({ scanId }) {
                     <tr>
                       <th scope="col" style={{ width: '90px' }}>Severity</th>
                       <th scope="col">Finding</th>
-                      <th scope="col" style={{ width: '90px' }}>Type</th>
-                      <th scope="col">Location</th>
+                      <th scope="col" style={{ width: '130px' }}>Type</th>
                       <th scope="col" style={{ width: '100px' }}>Status</th>
                       <th scope="col" style={{ width: '95px', textAlign: 'center' }}>Details</th>
                     </tr>
@@ -1014,11 +1120,13 @@ export function ScanView({ scanId }) {
                                 <span className={`finding-chevron ${isOpen ? 'open' : ''}`} aria-hidden="true">
                                   {isOpen ? '▼' : '▶'}
                                 </span>
-                                <span className="finding-title-text">{f.title}</span>
+                                <div className="finding-title-content">
+                                  <span className="finding-title-text">{f.title}</span>
+                                  {where && <div className="finding-loc-sub mono">{where}</div>}
+                                </div>
                               </div>
                             </td>
                             <td>{typeLabel}</td>
-                            <td className="mono">{where}</td>
                             <td>
                               <StatusBadge status={f.status} />
                             </td>
@@ -1040,7 +1148,7 @@ export function ScanView({ scanId }) {
                           </tr>
                           {isOpen && (
                             <tr className="finding-detail-row">
-                              <td colSpan={6}>
+                              <td colSpan={5}>
                                 <FindingDetail
                                   finding={f}
                                   repo={repo}

@@ -111,6 +111,9 @@ async function validateTargetUrl(rawUrl) {
   }
 
   const hostname = parsed.hostname;
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
+    throw new Error(`Target ${hostname} is a private/internal IP address. Scanning blocked for security.`);
+  }
   if (net.isIP(hostname)) {
     if (isPrivateIp(hostname)) {
       throw new Error(`Target ${hostname} is a private/internal IP address. Scanning blocked for security.`);

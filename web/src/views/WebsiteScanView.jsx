@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, fmtDate, pad, toast } from '../api.js';
-import { PageHead, StatCard, SevBadge, StatusBadge, AiBriefingCard, DataTable } from '../components/Common.jsx';
+import { PageHead, StatCard, SevBadge, StatusBadge, AiBriefingCard, DataTable, Skeleton, ScanSkeletonLoader } from '../components/Common.jsx';
 
 export function WebsiteScanView({ websiteId, scanId }) {
   const [scan, setScan] = useState(null);
@@ -30,6 +30,22 @@ export function WebsiteScanView({ websiteId, scanId }) {
     loadData();
   }, [websiteId, scanId]);
 
+  useEffect(() => {
+    if (!scan || (scan.status !== 'queued' && scan.status !== 'running')) return;
+    const timer = setInterval(async () => {
+      try {
+        const scanData = await api.get(api.org(`/websites/${websiteId}/scans/${scanId}`));
+        if (scanData) {
+          setScan(scanData);
+          if (scanData.status !== 'queued' && scanData.status !== 'running') {
+            toast('Website security scan complete');
+          }
+        }
+      } catch {}
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [scan, websiteId, scanId]);
+
   async function handleDownloadReport(format) {
     try {
       const res = await api.get(api.org(`/websites/${websiteId}/scans/${scanId}/report?format=${format}`));
@@ -50,11 +66,10 @@ export function WebsiteScanView({ websiteId, scanId }) {
     }
   }
 
-  if (loading) {
+  if (loading && !scan) {
     return (
       <div className="view">
-        <PageHead title="Website Security Scan" subtitle="Loading scan results..." />
-        <div className="empty">Loading vulnerability report and security telemetry...</div>
+        <ScanSkeletonLoader cards={5} hasTabs={true} rows={5} />
       </div>
     );
   }
@@ -138,31 +153,72 @@ export function WebsiteScanView({ websiteId, scanId }) {
         </div>
       </div>
 
-      <div className="stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
-        <StatCard
-          num={scan.postureScore != null ? `${scan.postureScore}/100` : 'N/A'}
-          label={`Security Posture (Grade ${s.grade || 'N/A'})`}
-        />
-        <StatCard
-          className="stat-critical"
-          num={pad(s.critical || 0)}
-          label="Critical Severity"
-        />
-        <StatCard
-          className="stat-high"
-          num={pad(s.high || 0)}
-          label="High Severity"
-        />
-        <StatCard
-          className="stat-medium"
-          num={pad((s.medium || 0) + (s.low || 0))}
-          label="Medium &amp; Low"
-        />
-        <StatCard
-          num={pad(endpoints.length || 1)}
-          label="Endpoints Inspected"
-        />
-      </div>
+      {(scan.status === 'queued' || scan.status === 'running') ? (
+        <div className="fade-in">
+          <div className="card scan-progress-banner">
+            <div className="scan-progress-top">
+              <div className="scan-progress-title">
+                <span className="scan-radar-dot" aria-hidden="true" />
+                <span>
+                  {scan.status === 'queued'
+                    ? 'Website scan queued · Preparing inspection worker'
+                    : 'Website security scan in progress'}
+                </span>
+              </div>
+              <span className="badge st-running">Live Scanner Active</span>
+            </div>
+            <p className="muted small" style={{ margin: 0 }}>
+              {scan.status === 'queued'
+                ? 'The scan is queued in the platform worker queue. Analysis will begin momentarily...'
+                : 'Inspecting HTTP security headers, CORS policies, cookies, TLS/SSL configuration, endpoints, and web vulnerabilities. Results stream in automatically.'}
+            </p>
+            <div className="scan-progress-bar-wrap">
+              <div className="scan-progress-bar-indeterminate" />
+            </div>
+          </div>
+
+          <div className="stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+            {['Security Posture', 'Critical Severity', 'High Severity', 'Medium & Low', 'Endpoints Inspected'].map((label, idx) => (
+              <div key={idx} className="card skeleton-stat-card">
+                <Skeleton width="48px" height="2rem" style={{ marginBottom: '0.4rem' }} radius="4px" />
+                <span className="muted small">{label}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="card" style={{ padding: '2rem 1.5rem', textAlign: 'center' }}>
+            <p className="muted" style={{ margin: 0 }}>
+              Security telemetry and vulnerability findings will populate here once inspection completes.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+            <StatCard
+              num={scan.postureScore != null ? `${scan.postureScore}/100` : 'N/A'}
+              label={`Security Posture (Grade ${s.grade || 'N/A'})`}
+            />
+            <StatCard
+              className="stat-critical"
+              num={pad(s.critical || 0)}
+              label="Critical Severity"
+            />
+            <StatCard
+              className="stat-high"
+              num={pad(s.high || 0)}
+              label="High Severity"
+            />
+            <StatCard
+              className="stat-medium"
+              num={pad((s.medium || 0) + (s.low || 0))}
+              label="Medium &amp; Low"
+            />
+            <StatCard
+              num={pad(endpoints.length || 1)}
+              label="Endpoints Inspected"
+            />
+          </div>
 
       {scan.aiAnalysis && (
         <div style={{ marginBottom: '1.5rem' }}>
@@ -601,6 +657,8 @@ export function WebsiteScanView({ websiteId, scanId }) {
             </div>
           )}
         </section>
+      )}
+        </>
       )}
     </div>
   );

@@ -2022,8 +2022,42 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
           return { at: s.at, ...sum };
         });
 
+      function calcScanRemediation(orgId, repoId, scanId, summaryTotal) {
+        const rows = db.prepare(`
+          SELECT COALESCE(fs.status, 'open') AS status, COUNT(*) AS count
+          FROM findings f
+          LEFT JOIN finding_states fs ON fs.org_id = f.org_id AND fs.repo_id = f.repo_id AND fs.fingerprint = f.fingerprint
+          WHERE f.org_id = ? AND f.scan_id = ?
+          GROUP BY COALESCE(fs.status, 'open')
+        `).all(orgId, scanId);
+
+        const counts = { open: 0, acknowledged: 0, fixed: 0, suppressed: 0 };
+        let total = 0;
+        for (const r of rows) {
+          if (counts[r.status] != null) counts[r.status] = r.count;
+          total += r.count;
+        }
+        if (total === 0 && summaryTotal > 0) {
+          counts.open = summaryTotal;
+          total = summaryTotal;
+        }
+        const fixRate = total > 0 ? Math.round((counts.fixed / total) * 100) : null;
+        return { ...counts, total, fixRate };
+      }
+
       const stateCounts = Object.fromEntries(STATUSES.map((s) => [s, 0]));
       for (const row of db.prepare('SELECT status, COUNT(*) AS n FROM finding_states WHERE org_id = ? GROUP BY status').all(ctx.orgId)) stateCounts[row.status] = row.n;
+      const knownTriaged = (stateCounts.acknowledged || 0) + (stateCounts.fixed || 0) + (stateCounts.suppressed || 0);
+      const effectiveOpen = Math.max(stateCounts.open || 0, totals.total - knownTriaged);
+      stateCounts.open = effectiveOpen;
+      const totalTracked = stateCounts.open + knownTriaged;
+      const totalFixRate = totalTracked > 0 ? Math.round(100 * (stateCounts.fixed || 0) / totalTracked) : null;
+
+      const recentScans = db.prepare('SELECT * FROM scans WHERE org_id = ? ORDER BY created_at DESC LIMIT 15').all(ctx.orgId).map((s) => {
+        const p = publicScan(s);
+        p.remediation = calcScanRemediation(ctx.orgId, s.repo_id, s.id, p.summary && p.summary.total);
+        return p;
+      });
 
       return {
         totals,
@@ -2032,9 +2066,9 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         repositories,
         websites: websitesOverview,
         trend,
-        recentScans: db.prepare('SELECT * FROM scans WHERE org_id = ? ORDER BY created_at DESC LIMIT 10').all(ctx.orgId).map(publicScan),
+        recentScans,
         failedScans: db.prepare("SELECT * FROM scans WHERE org_id = ? AND status = 'failed' ORDER BY created_at DESC LIMIT 5").all(ctx.orgId).map(publicScan),
-        remediation: { ...stateCounts, fixRate: (stateCounts.fixed + stateCounts.open + stateCounts.acknowledged) ? Math.round(100 * stateCounts.fixed / (stateCounts.fixed + stateCounts.open + stateCounts.acknowledged)) : null },
+        remediation: { ...stateCounts, total: totalTracked, fixRate: totalFixRate },
         mongo: getMongoStatus(),
         aiEnabled: Boolean(process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY),
       };

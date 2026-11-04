@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, session, hasPermission, toast, fmtDate, pad } from '../api.js';
-import { PageHead, DataTable, StatusBadge, SevBadge, SeverityBar } from '../components/Common.jsx';
+import { PageHead, DataTable, StatusBadge, SevBadge, SeverityBar, ScanSkeletonLoader } from '../components/Common.jsx';
 
 export function WebsitesView({ onSelectScan }) {
   const [websites, setWebsites] = useState([]);
@@ -296,7 +296,9 @@ export function WebsitesView({ onSelectScan }) {
         </div>
 
         {loading && !websites.length ? (
-          <div className="empty">Loading website targets...</div>
+          <div style={{ padding: '1rem 0' }}>
+            <ScanSkeletonLoader cards={4} hasTabs={false} rows={4} />
+          </div>
         ) : (
           <DataTable
             headers={headers}
