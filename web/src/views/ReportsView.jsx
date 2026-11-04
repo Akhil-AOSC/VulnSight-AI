@@ -151,16 +151,41 @@ export function ReportsView() {
       </section>
 
       <div className="grid cols-2">
-        <section className="card">
-          <h2>Remediation metrics</h2>
-          <dl className="kv">
-            <dt>Scans completed</dt>
-            <dd>{done.length}</dd>
-            <dt>Findings introduced</dt>
-            <dd>{added}</dd>
-            <dt>Findings fixed</dt>
-            <dd>{fixed}</dd>
-          </dl>
+        <section className="card remediation-card">
+          <div className="card-head">
+            <h2>Remediation metrics</h2>
+            <span className="muted small">Resolution overview</span>
+          </div>
+          <div className="remediation-stats-grid">
+            <div className="remediation-stat-item">
+              <span className="remediation-stat-num">{done.length}</span>
+              <span className="remediation-stat-label">Scans completed</span>
+            </div>
+            <div className="remediation-stat-item rem-item-added">
+              <span className="remediation-stat-num">{added > 0 ? `+${added}` : added}</span>
+              <span className="remediation-stat-label">Findings introduced</span>
+            </div>
+            <div className="remediation-stat-item rem-item-fixed">
+              <span className="remediation-stat-num">{fixed > 0 ? `-${fixed}` : fixed}</span>
+              <span className="remediation-stat-label">Findings fixed</span>
+            </div>
+          </div>
+          <div className="remediation-progress-box">
+            <div className="remediation-progress-header">
+              <span className="muted small">Overall fix progress</span>
+              <span className="remediation-rate-badge">
+                {added > 0 ? `${Math.round((fixed / added) * 100)}% resolved` : 'No new issues'}
+              </span>
+            </div>
+            <div className="remediation-progress-track">
+              <div
+                className="remediation-progress-fill"
+                style={{
+                  width: `${added > 0 ? Math.min(100, Math.max(0, Math.round((fixed / added) * 100))) : 100}%`,
+                }}
+              />
+            </div>
+          </div>
         </section>
 
         <section className="card">

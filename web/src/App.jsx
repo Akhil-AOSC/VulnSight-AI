@@ -161,24 +161,77 @@ export function App() {
             ))}
           </nav>
           <div className="sidebar-foot">
-            <select
-              aria-label="Organisation"
-              value={orgId}
-              onChange={(e) => handleOrgChange(e.target.value)}
-            >
-              {me.orgs.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.name} ({o.role})
-                </option>
-              ))}
-            </select>
-            <button type="button" onClick={handleToggleTheme}>
-              {isDark ? 'Light mode' : 'Dark mode'}
-            </button>
-            <div className="small muted">{me.email}</div>
-            <button type="button" onClick={handleLogout}>
-              Sign out
-            </button>
+            <div className="sidebar-user-card">
+              <div className="user-avatar" aria-hidden="true">
+                {(me.name || me.email || 'U')[0].toUpperCase()}
+              </div>
+              <div className="user-info">
+                <span className="user-name" title={me.name || me.email}>
+                  {me.name || me.email.split('@')[0]}
+                </span>
+                <span className="user-email" title={me.email}>
+                  {me.email}
+                </span>
+              </div>
+            </div>
+
+            <div className="sidebar-org-group">
+              <label htmlFor="sidebar-org-select" className="sidebar-section-label">
+                <svg className="sidebar-icon" width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M1.75 2.5a.25.25 0 0 0-.25.25v10.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25V2.75a.25.25 0 0 0-.25-.25H1.75ZM0 2.75C0 1.784.784 1 1.75 1h12.5c.966 0 1.75.784 1.75 1.75v10.5A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25V2.75ZM4.5 4a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 4.5 4Zm0 4.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 4.5 8.5ZM8 4a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 4Zm0 4.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 8.5Zm3.5-4.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 11.5 4Zm0 4.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5a.75.75 0 0 1 .75-.75Z" />
+                </svg>
+                <span>Organisation</span>
+              </label>
+              <select
+                id="sidebar-org-select"
+                aria-label="Organisation"
+                value={orgId}
+                onChange={(e) => handleOrgChange(e.target.value)}
+                className="sidebar-org-select"
+              >
+                {me.orgs.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name} ({o.role})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="sidebar-actions-row">
+              <button
+                type="button"
+                className="sidebar-action-btn theme-toggle-btn"
+                onClick={handleToggleTheme}
+                title={isDark ? 'Switch to Light mode' : 'Switch to Dark mode'}
+              >
+                {isDark ? (
+                  <>
+                    <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M8 11a3 3 0 1 1 0-6 3 3 0 0 1 0 6Zm0 1.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9ZM8 0a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13ZM2.343 2.343a.75.75 0 0 1 1.061 0l1.06 1.061a.75.75 0 0 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.061Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.061l-1.061-1.06a.75.75 0 0 1 0-1.061ZM0 8a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5H.75A.75.75 0 0 1 0 8Zm13 0a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5h-1.5A.75.75 0 0 1 13 8ZM2.343 13.657a.75.75 0 0 1 0-1.06l1.06-1.061a.75.75 0 1 1 1.061 1.06l-1.06 1.061a.75.75 0 0 1-1.061 0Zm9.193-9.193a.75.75 0 0 1 0-1.06l1.061-1.061a.75.75 0 1 1 1.06 1.06l-1.06 1.061a.75.75 0 0 1-1.061 0Z"/>
+                    </svg>
+                    <span>Light</span>
+                  </>
+                ) : (
+                  <>
+                    <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M9.598 1.591a.749.749 0 0 1 .785-.175 7.001 7.001 0 1 1-8.967 8.967.75.75 0 0 1 .961-.96 5.5 5.5 0 0 0 7.046-7.046.75.75 0 0 1 .175-.786Zm1.616 1.945a7 7 0 0 1-7.678 7.678A5.499 5.499 0 1 0 11.214 3.536Z"/>
+                    </svg>
+                    <span>Dark</span>
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                className="sidebar-action-btn logout-btn"
+                onClick={handleLogout}
+                title="Sign out of VulnSight AI"
+              >
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M2 2.75C2 1.784 2.784 1 3.75 1h2.5a.75.75 0 0 1 0 1.5h-2.5a.25.25 0 0 0-.25.25v10.5c0 .138.112.25.25.25h2.5a.75.75 0 0 1 0 1.5h-2.5A1.75 1.75 0 0 1 2 13.25V2.75Zm10.44 4.5-1.97-1.97a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l3.25 3.25a.75.75 0 0 1 0 1.06l-3.25 3.25a.749.749 0 0 1-1.275-.326.749.749 0 0 1 .215-.734l1.97-1.97H6.75a.75.75 0 0 1 0-1.5h5.69Z"/>
+                </svg>
+                <span>Sign out</span>
+              </button>
+            </div>
           </div>
         </aside>
 

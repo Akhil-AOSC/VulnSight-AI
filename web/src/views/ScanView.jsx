@@ -9,7 +9,15 @@ import {
   DataTable,
 } from '../components/Common.jsx';
 
-function FindingDetail({ finding: f, repo, onReload }) {
+const GRADE_LABELS = {
+  A: 'Clean',
+  B: 'Good',
+  C: 'Fair',
+  D: 'Poor',
+  F: 'Critical Risk',
+};
+
+function FindingDetail({ finding: f, repo, onReload, onClose }) {
   const [status, setStatus] = useState(f.status || 'open');
   const [note, setNote] = useState(f.note || '');
   const [saveBusy, setSaveBusy] = useState(false);
@@ -65,6 +73,23 @@ function FindingDetail({ finding: f, repo, onReload }) {
 
   return (
     <div className="detail">
+      <div className="detail-banner">
+        <div className="detail-banner-info">
+          <span className="detail-tag">Finding Details</span>
+          <span className="muted small">Vulnerability analysis, code location, and triage state</span>
+        </div>
+        {onClose && (
+          <button
+            type="button"
+            className="btn-collapse"
+            onClick={onClose}
+            title="Collapse this details view"
+          >
+            <span>▲ Collapse</span>
+          </button>
+        )}
+      </div>
+
       <div>
         <h3>Details</h3>
         {f.description && <p>{f.description}</p>}
@@ -172,7 +197,7 @@ function FindingDetail({ finding: f, repo, onReload }) {
         )}
       </div>
 
-      <div>
+      <div className="triage-pane">
         <div className="row triage-head">
           <h3 className="m-0">Triage</h3>
           {canUseAi && (
@@ -197,12 +222,17 @@ function FindingDetail({ finding: f, repo, onReload }) {
           )}
         </div>
         {canWriteFindings ? (
-          <>
-            <div className="row">
+          <div className="triage-form">
+            <div className="triage-field">
+              <label htmlFor={`status-${f.id || f.rowId}`} className="triage-label">
+                Triage Status
+              </label>
               <select
+                id={`status-${f.id || f.rowId}`}
                 aria-label="Status"
                 value={status}
                 onChange={(e) => setStatus(e.target.value)}
+                className="triage-select"
               >
                 {['open', 'acknowledged', 'suppressed', 'fixed'].map((s) => (
                   <option key={s} value={s}>
@@ -211,35 +241,43 @@ function FindingDetail({ finding: f, repo, onReload }) {
                 ))}
               </select>
             </div>
-            <textarea
-              aria-label="Note"
-              placeholder="Note (required to suppress)"
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-            />
-            <div className="row">
+            <div className="triage-field">
+              <label htmlFor={`note-${f.id || f.rowId}`} className="triage-label">
+                Triage Note
+              </label>
+              <textarea
+                id={`note-${f.id || f.rowId}`}
+                aria-label="Note"
+                placeholder="Note (required to suppress)"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                className="triage-textarea"
+                rows={3}
+              />
+            </div>
+            <div className="triage-actions">
               <button
                 type="button"
-                className="primary"
+                className="primary triage-save-btn"
                 onClick={handleSaveTriage}
                 disabled={saveBusy}
               >
-                Save
+                {saveBusy ? 'Saving...' : 'Save'}
+              </button>
+              <button className="link triage-history-btn" type="button" onClick={handleShowHistory}>
+                Show review history
               </button>
             </div>
-          </>
+          </div>
         ) : (
           <p className="muted">Status: {f.status}</p>
         )}
-        <button className="link" type="button" onClick={handleShowHistory}>
-          Show review history
-        </button>
         {history && (
-          <div className="small muted">
+          <div className="triage-history-box small muted">
             {history.length ? (
               history.map((r, i) => (
-                <div key={i}>
-                  {fmtDate(r.createdAt)} - {r.user || 'system'}: {r.action}
+                <div key={i} className="history-entry">
+                  <span className="history-date">{fmtDate(r.createdAt)}</span> - <strong>{r.user || 'system'}</strong>: {r.action}
                   {r.detail ? ` (${r.detail})` : ''}
                 </div>
               ))
@@ -257,6 +295,19 @@ function FindingDetail({ finding: f, repo, onReload }) {
           aiKind === 'remediation' ? 'Writing a suggested fix...' : 'Explaining this finding...'
         }
       />
+
+      {onClose && (
+        <div className="detail-footer">
+          <button
+            type="button"
+            className="btn-collapse"
+            onClick={onClose}
+            title="Collapse finding details"
+          >
+            <span>▲ Collapse details</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -415,7 +466,7 @@ export function ScanView({ scanId }) {
           {scan.ai && <AiBriefingCard ai={scan.ai} />}
 
           {sum && (
-            <div className="grid stats">
+            <div className="grid stats scan-stats-grid">
               <div className="card stat">
                 <div className="num">{totalIssues}</div>
                 <div className="label">{depsText}</div>
@@ -427,9 +478,36 @@ export function ScanView({ scanId }) {
                 </div>
               ))}
               {sum.posture && (
-                <div className="card stat">
-                  <div className="num">{sum.posture.grade}</div>
-                  <div className="label">Posture {sum.posture.score}/100</div>
+                <div
+                  className={`card stat stat-posture grade-${(sum.posture.grade || 'unknown').toLowerCase()}`}
+                  title={`Security Posture Score: ${sum.posture.score}/100 (Grade ${sum.posture.grade} - ${GRADE_LABELS[sum.posture.grade] || 'Rating'})`}
+                >
+                  <div className="num posture-val">
+                    <span className="posture-grade">{sum.posture.grade}</span>
+                    <span className="posture-score">({sum.posture.score}/100)</span>
+                  </div>
+                  <div className="label">
+                    Posture · {GRADE_LABELS[sum.posture.grade] || 'Rating'}
+                  </div>
+                </div>
+              )}
+              {sum.new != null && (
+                <div
+                  className="card stat stat-delta"
+                  title={`${sum.new} new finding(s) introduced, ${sum.fixed || 0} finding(s) fixed since previous scan`}
+                >
+                  <div className="stat-delta-row">
+                    <span className={`delta-item delta-new ${sum.new > 0 ? 'has-new' : ''}`}>
+                      +{sum.new}
+                      <span className="delta-subtext">new</span>
+                    </span>
+                    <span className="delta-divider">/</span>
+                    <span className={`delta-item delta-fixed ${(sum.fixed || 0) > 0 ? 'has-fixed' : ''}`}>
+                      -{sum.fixed || 0}
+                      <span className="delta-subtext">fixed</span>
+                    </span>
+                  </div>
+                  <div className="label">Since Last Scan</div>
                 </div>
               )}
             </div>
@@ -446,7 +524,7 @@ export function ScanView({ scanId }) {
           )}
 
           {Array.isArray(scan.projects) && scan.projects.length > 0 && (
-            <div className="grid cols-2">
+            <div className="grid cols-2 scan-projects-grid">
               <section className="card">
                 <h2>Projects</h2>
                 <ul className="projects-list">
@@ -512,7 +590,7 @@ export function ScanView({ scanId }) {
           )}
 
           {Array.isArray(scan.scanners) && scan.scanners.length > 0 && (
-            <section className="card">
+            <section className="card scan-scanners-card">
               <h2>Scanners</h2>
               <DataTable
                 headers={['Scanner', 'Status', 'Version', 'Findings', 'Time', 'Message']}
@@ -531,8 +609,8 @@ export function ScanView({ scanId }) {
             </section>
           )}
 
-          <section className="card">
-            <div className="row">
+          <section className="card scan-findings-card">
+            <div className="card-head">
               <h2 className="grow">Findings</h2>
               <div className="row">
                 {[
@@ -559,7 +637,7 @@ export function ScanView({ scanId }) {
               </div>
             </div>
 
-            <div className="row">
+            <div className="row findings-filter-bar">
               <input
                 type="search"
                 placeholder="Search title, CVE, package, file"
@@ -620,12 +698,12 @@ export function ScanView({ scanId }) {
                 <table>
                   <thead>
                     <tr>
-                      <th scope="col">Severity</th>
+                      <th scope="col" style={{ width: '90px' }}>Severity</th>
                       <th scope="col">Finding</th>
-                      <th scope="col">Type</th>
+                      <th scope="col" style={{ width: '90px' }}>Type</th>
                       <th scope="col">Location</th>
-                      <th scope="col">Fix</th>
-                      <th scope="col">Status</th>
+                      <th scope="col" style={{ width: '100px' }}>Status</th>
+                      <th scope="col" style={{ width: '95px', textAlign: 'center' }}>Details</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -644,37 +722,52 @@ export function ScanView({ scanId }) {
                         : `${f.location.file || ''}${f.location.line ? `:${f.location.line}` : ''}`;
                       return (
                         <React.Fragment key={rowKey}>
-                          <tr>
+                          <tr
+                            className={`finding-row ${isOpen ? 'is-expanded' : ''}`}
+                            onClick={() => toggleExpand(rowKey)}
+                            title={isOpen ? 'Click to collapse finding details' : 'Click to expand finding details & triage'}
+                          >
                             <td>
                               <SevBadge severity={f.severity} />
                             </td>
                             <td>
-                              <button
-                                className="link"
-                                type="button"
-                                aria-expanded={String(isOpen)}
-                                onClick={() => toggleExpand(rowKey)}
-                              >
-                                {f.title}
-                              </button>
+                              <div className="finding-title-cell">
+                                <span className={`finding-chevron ${isOpen ? 'open' : ''}`} aria-hidden="true">
+                                  {isOpen ? '▼' : '▶'}
+                                </span>
+                                <span className="finding-title-text">{f.title}</span>
+                              </div>
                             </td>
                             <td>{typeLabel}</td>
                             <td className="mono">{where}</td>
                             <td>
-                              {f.remediation && f.remediation.fixedIn
-                                ? `Upgrade to ${f.remediation.fixedIn}`
-                                : f.remediation && f.remediation.advice
-                                ? 'See details'
-                                : '-'}
-                            </td>
-                            <td>
                               <StatusBadge status={f.status} />
+                            </td>
+                            <td style={{ textAlign: 'center' }}>
+                              <button
+                                type="button"
+                                className={`btn-details-toggle ${isOpen ? 'open' : ''}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleExpand(rowKey);
+                                }}
+                                aria-expanded={isOpen}
+                                title={isOpen ? 'Collapse details' : 'Expand details'}
+                              >
+                                <span>{isOpen ? 'Hide' : 'Details'}</span>
+                                <span className="toggle-chevron-icon">{isOpen ? '▲' : '▼'}</span>
+                              </button>
                             </td>
                           </tr>
                           {isOpen && (
-                            <tr>
+                            <tr className="finding-detail-row">
                               <td colSpan={6}>
-                                <FindingDetail finding={f} repo={repo} onReload={loadFindings} />
+                                <FindingDetail
+                                  finding={f}
+                                  repo={repo}
+                                  onReload={loadFindings}
+                                  onClose={() => toggleExpand(rowKey)}
+                                />
                               </td>
                             </tr>
                           )}

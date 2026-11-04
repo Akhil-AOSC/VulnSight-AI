@@ -10,6 +10,11 @@ export function StatusBadge({ status }) {
   return <span className={`badge st-${status || 'unknown'}`}>{status || 'unknown'}</span>;
 }
 
+export function RoleBadge({ role }) {
+  const r = (role || 'viewer').toLowerCase();
+  return <span className={`badge role-badge role-${r}`}>{r}</span>;
+}
+
 export function PageHead({ title, subtitle, children }) {
   return (
     <div className="page-head">
@@ -32,6 +37,7 @@ export function StatCard({ className = '', num, label }) {
 }
 
 const SEV_LEVELS = ['critical', 'high', 'medium', 'low'];
+const SEV_SHORT = { critical: 'C', high: 'H', medium: 'M', low: 'L' };
 
 export function SeverityBar({ counts }) {
   if (!counts) return <span>-</span>;
@@ -39,19 +45,18 @@ export function SeverityBar({ counts }) {
   if (!total) return <span className="muted">0 findings</span>;
   const label = SEV_LEVELS.map((s) => `${counts[s] || 0} ${s}`).join(', ');
   return (
-    <svg className="sev-bar-svg" viewBox="0 0 100 8" preserveAspectRatio="none" role="img" aria-label={label}>
-      {(() => {
-        let offset = 0;
-        return SEV_LEVELS.map((s) => {
-          const val = counts[s] || 0;
-          if (!val) return null;
-          const w = (100 * val) / total;
-          const rect = <rect key={s} x={offset} y="0" width={w} height="8" className={`s-fill-${s}`} />;
-          offset += w;
-          return rect;
-        });
-      })()}
-    </svg>
+    <div className="sev-bar-inline" role="img" aria-label={label}>
+      {SEV_LEVELS.map((s) => {
+        const val = counts[s] || 0;
+        if (!val) return null;
+        return (
+          <span key={s} className={`sev-chip sev-chip-${s}`}>
+            <span className={`sev-dot sev-dot-${s}`} />
+            {val}{SEV_SHORT[s]}
+          </span>
+        );
+      })}
+    </div>
   );
 }
 

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, session, hasPermission, themeStore, toast, fmtDate, ago } from '../api.js';
-import { PageHead, DataTable } from '../components/Common.jsx';
+import { PageHead, DataTable, RoleBadge } from '../components/Common.jsx';
 
 const TABS = [
   ['profile', 'Profile'],
@@ -23,9 +23,9 @@ function ProfileTab({ onThemeChange }) {
   }
 
   return (
-    <section className="card">
+    <section className="card card-compact">
       <h2>Your profile</h2>
-      <dl className="kv">
+      <dl className="kv profile-info">
         <dt>Name</dt>
         <dd>{me.name}</dd>
         <dt>Email</dt>
@@ -33,19 +33,22 @@ function ProfileTab({ onThemeChange }) {
         <dt>Member since</dt>
         <dd>{fmtDate(me.created_at)}</dd>
       </dl>
-      <div className="row">
-        <label>
+      <div className="profile-setting-group">
+        <label htmlFor="theme-select" className="setting-label">
           Appearance
-          <select
-            aria-label="Theme"
-            value={currentTheme}
-            onChange={(e) => handleTheme(e.target.value)}
-          >
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-            <option value="auto">Match system</option>
-          </select>
         </label>
+        <span className="muted small setting-hint">Choose how VulnSight AI appears on your screen</span>
+        <select
+          id="theme-select"
+          aria-label="Theme"
+          value={currentTheme}
+          onChange={(e) => handleTheme(e.target.value)}
+          className="setting-select"
+        >
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+          <option value="auto">Match system</option>
+        </select>
       </div>
     </section>
   );
@@ -114,7 +117,7 @@ function OrganisationTab({ onMeUpdated }) {
 
   return (
     <>
-      <section className="card">
+      <section className="card card-compact">
         <h2>Organisation</h2>
         <form className="stack" onSubmit={handleSave}>
           <label>
@@ -163,7 +166,7 @@ function OrganisationTab({ onMeUpdated }) {
       </section>
 
       {org && org.role === 'owner' && (
-        <section className="card">
+        <section className="card card-compact danger-zone-card">
           <h2>Danger zone</h2>
           <button className="danger" type="button" onClick={handleDeleteOrg} disabled={busy}>
             Delete organisation
@@ -242,19 +245,23 @@ function MembersTab() {
               m.name,
               m.email,
               manage ? (
-                <select
-                  aria-label={`Role for ${m.email}`}
-                  value={m.role}
-                  onChange={(e) => handleRoleChange(m.id, e.target.value)}
-                >
-                  {roles.map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                    </option>
-                  ))}
-                </select>
+                <div className="row" style={{ gap: '0.45rem', flexWrap: 'nowrap' }}>
+                  <RoleBadge role={m.role} />
+                  <select
+                    aria-label={`Role for ${m.email}`}
+                    value={m.role}
+                    onChange={(e) => handleRoleChange(m.id, e.target.value)}
+                    className="role-select"
+                  >
+                    {roles.map((r) => (
+                      <option key={r} value={r}>
+                        {r}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               ) : (
-                m.role
+                <RoleBadge role={m.role} />
               ),
               manage && m.id !== session.me.id ? (
                 <button className="danger" type="button" onClick={() => handleRemove(m)}>
@@ -294,14 +301,22 @@ function MembersTab() {
               Add member
             </button>
           </form>
-          <dl className="kv small">
-            <dt>Viewer</dt>
+          <dl className="kv small role-list">
+            <dt>
+              <RoleBadge role="viewer" />
+            </dt>
             <dd>Read findings and reports</dd>
-            <dt>Developer</dt>
+            <dt>
+              <RoleBadge role="developer" />
+            </dt>
             <dd>Run scans, triage findings, use the AI assistant</dd>
-            <dt>Admin</dt>
+            <dt>
+              <RoleBadge role="admin" />
+            </dt>
             <dd>Manage repositories, members, Git providers and settings</dd>
-            <dt>Owner</dt>
+            <dt>
+              <RoleBadge role="owner" />
+            </dt>
             <dd>Everything, including deleting the organisation</dd>
           </dl>
         </section>
