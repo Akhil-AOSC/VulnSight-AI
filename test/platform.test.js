@@ -416,7 +416,7 @@ test('provider tokens are validated, stored encrypted, never returned, and used 
 
   const stored = f.db.prepare('SELECT token_enc FROM provider_connections').get().token_enc;
   assert.ok(!stored.includes('ghp_'));
-  assert.ok(!JSON.stringify(f.platform.connections.list(o.ctx)).includes('ghp_'));
+  assert.ok(!JSON.stringify(await f.platform.connections.list(o.ctx)).includes('ghp_'));
 
   const remote = await f.platform.connections.listRemoteRepos(o.ctx, conn.id);
   assert.equal(remote[0].fullName, 'acme/private-app');

@@ -107,7 +107,7 @@ test('connections.connect stores expires_at and scopes in DB and returns them', 
   assert.equal(row.scopes, 'repo');
 
   // Verify list returns expiration status
-  const list = platform.connections.list(o.ctx);
+  const list = await platform.connections.list(o.ctx);
   assert.equal(list[0].isExpired, false);
   assert.ok(list[0].daysLeft > 100);
 });
@@ -130,7 +130,7 @@ test('connections.list correctly identifies expired tokens', async () => {
     token: 'ghp_pastpat123456',
   });
 
-  const list = platform.connections.list(o.ctx);
+  const list = await platform.connections.list(o.ctx);
   assert.equal(list[0].isExpired, true);
   assert.equal(list[0].daysLeft, null);
 });

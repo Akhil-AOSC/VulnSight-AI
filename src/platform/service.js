@@ -6,6 +6,7 @@ const path = require('path');
 const { uuid, now, transaction } = require('./db');
 const {
   hashPassword, hashPasswordAsync, verifyPasswordAsync, checkPasswordPolicy, newToken, sha256, safeEqual,
+  createSecretBox, generateMasterKey,
 } = require('./crypto');
 const {
   ROLES, can, assertCan, ForbiddenError, NotFoundError, ValidationError, AuthError,
@@ -31,6 +32,7 @@ const {
   listFullScansFromMongo,
   saveGitConnectionToMongo,
   getGitConnectionFromMongo,
+  listGitConnectionsFromMongo,
   deleteGitConnectionFromMongo,
   saveUserToMongo,
   getUserFromMongoByEmail,
@@ -165,9 +167,18 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
     };
   }
 
+  const orgWrapKeys = new Map();
+
   async function persistUser(userId) {
     const doc = userDocument(userId);
     if (!doc) return false;
+    const previous = await loadUserByEmail(doc.email);
+    const prevOrgs = new Map((previous && previous.orgs ? previous.orgs : []).map((o) => [o.id, o]));
+    doc.orgs = doc.orgs.map((o) => {
+      const wrapKey = (prevOrgs.get(o.id) && prevOrgs.get(o.id).wrapKey) || orgWrapKeys.get(o.id) || generateMasterKey();
+      orgWrapKeys.set(o.id, wrapKey);
+      return { ...o, wrapKey };
+    });
     if (userStore) { await userStore.save(doc); return true; }
     if (enableMongo && isMongoConfigured()) return saveUserToMongo(doc);
     return false;
@@ -198,6 +209,9 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         }
       }
     });
+    for (const org of doc.orgs || []) {
+      if (org.id && org.wrapKey) orgWrapKeys.set(org.id, org.wrapKey);
+    }
     return db.prepare('SELECT * FROM users WHERE email = ?').get(doc.email);
   }
 
@@ -235,11 +249,9 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
 
     async login({ email, password }, ctx = {}) {
       email = String(email || '').trim().toLowerCase();
+      const remote = await loadUserByEmail(email);
       let user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
-      if (!user) {
-        const remote = await loadUserByEmail(email);
-        if (remote) user = hydrateUserFromRemote(remote);
-      }
+      if (remote) user = hydrateUserFromRemote(remote) || user;
       // Always run a hash comparison so response time doesn't reveal whether the email exists.
       const ok = await verifyPasswordAsync(String(password || ''), user ? user.password_hash : DUMMY_HASH);
       if (!user || !ok || user.disabled) {
@@ -247,6 +259,8 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         throw new AuthError('Incorrect email or password');
       }
       await persistUser(user.id);
+      const orgIds = db.prepare('SELECT org_id AS id FROM memberships WHERE user_id = ?').all(user.id).map((o) => o.id);
+      for (const orgId of orgIds) await hydrateConnectionsFromMongo(orgId);
       audit({ ...ctx, userId: user.id }, 'user.login', user.id);
       return { ...auth.createSession(user.id), user: { id: user.id, email: user.email, name: user.name } };
     },
@@ -429,6 +443,24 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
     return c;
   }
 
+  function usesPortableWrap() {
+    return Boolean(gitPatStore || (enableMongo && isMongoConfigured()));
+  }
+
+  function patBox(orgId) {
+    const key = orgWrapKeys.get(orgId);
+    return usesPortableWrap() && key ? createSecretBox(key) : secretBox;
+  }
+
+  function decryptPatEnvelope(orgId, envelope) {
+    if (!envelope) throw new Error('missing token');
+    const key = orgWrapKeys.get(orgId);
+    if (key) {
+      try { return createSecretBox(key).decrypt(envelope); } catch { /* try process key */ }
+    }
+    return secretBox.decrypt(envelope);
+  }
+
   function patDocument(c, tokenEnc) {
     return {
       id: c.id,
@@ -444,7 +476,8 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
     };
   }
 
-  async function persistPat(c, tokenEnc) {
+  async function persistPat(c, tokenPlain) {
+    const tokenEnc = patBox(c.org_id).encrypt(tokenPlain);
     const doc = patDocument(c, tokenEnc);
     if (gitPatStore) {
       await gitPatStore.save(doc);
@@ -466,16 +499,38 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
     return false;
   }
 
+  async function listRemotePats(orgId) {
+    if (gitPatStore && typeof gitPatStore.list === 'function') return gitPatStore.list(orgId);
+    if (enableMongo && isMongoConfigured()) return listGitConnectionsFromMongo(orgId);
+    return null;
+  }
+
+  async function hydrateConnectionsFromMongo(orgId) {
+    const remote = await listRemotePats(orgId);
+    if (!remote || !remote.length) return;
+    for (const doc of remote) {
+      if (!doc.id || doc.orgId !== orgId) continue;
+      const existing = db.prepare('SELECT id FROM provider_connections WHERE id = ? AND org_id = ?').get(doc.id, orgId);
+      if (existing) {
+        db.prepare('UPDATE provider_connections SET provider = ?, label = ?, account = ?, expires_at = ?, scopes = ?, token_enc = ? WHERE id = ? AND org_id = ?')
+          .run(doc.provider, doc.label || doc.account, doc.account, doc.expiresAt || null, doc.scopes || null, doc.tokenEnc, doc.id, orgId);
+      } else {
+        db.prepare('INSERT INTO provider_connections (id, org_id, provider, label, token_enc, account, expires_at, scopes, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(doc.id, orgId, doc.provider, doc.label || doc.account || doc.provider, doc.tokenEnc, doc.account, doc.expiresAt || null, doc.scopes || null, doc.createdBy || null, doc.createdAt || nowIso());
+      }
+    }
+  }
+
   async function connectionToken(orgId, connectionId) {
     const c = sqliteConnection(orgId, connectionId);
     const remote = await loadPatDoc(orgId, connectionId);
     if (remote && remote.tokenEnc) {
       try {
-        return { connection: c, token: secretBox.decrypt(remote.tokenEnc), source: 'mongodb' };
-      } catch { /* different key or corrupt blob: use local copy */ }
+        return { connection: c, token: decryptPatEnvelope(orgId, remote.tokenEnc), source: 'mongodb' };
+      } catch { /* try local copy */ }
     }
-    const token = secretBox.decrypt(c.token_enc);
-    await persistPat(c, c.token_enc);
+    const token = decryptPatEnvelope(orgId, c.token_enc);
+    await persistPat(c, token);
     return { connection: c, token, source: 'local' };
   }
 
@@ -487,7 +542,8 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       if (typeof token !== 'string' || token.length < 8 || token.length > 500) throw new ValidationError('Enter a valid access token');
       const { account, expiresAt = null, scopes = null } = await impl.validate(token, fetchImpl);
       const id = uuid();
-      const tokenEnc = secretBox.encrypt(token);
+      await persistUser(ctx.userId);
+      const tokenEnc = patBox(ctx.orgId).encrypt(token);
       const createdAt = nowIso();
       const rowLabel = String(label || account || provider).slice(0, 100);
       db.prepare('INSERT INTO provider_connections (id, org_id, provider, label, token_enc, account, expires_at, scopes, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
@@ -495,12 +551,18 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       await persistPat({
         id, org_id: ctx.orgId, provider, label: rowLabel, account,
         expires_at: expiresAt, scopes, created_by: ctx.userId, created_at: createdAt,
-      }, tokenEnc);
+      }, token);
       audit(ctx, 'provider.connect', id, { provider, account, expiresAt });
       return { id, provider, account, expiresAt, scopes };
     },
-    list(ctx) {
+    async list(ctx) {
       authorize(ctx, 'repos:read');
+      await persistUser(ctx.userId);
+      await hydrateConnectionsFromMongo(ctx.orgId);
+      const locals = db.prepare('SELECT * FROM provider_connections WHERE org_id = ?').all(ctx.orgId);
+      for (const row of locals) {
+        try { await persistPat(row, decryptPatEnvelope(ctx.orgId, row.token_enc)); } catch { /* leave as-is */ }
+      }
       // Tokens are never returned.
       const rows = db.prepare('SELECT id, provider, label, account, expires_at AS expiresAt, scopes, created_at AS createdAt FROM provider_connections WHERE org_id = ? ORDER BY created_at').all(ctx.orgId);
       const now = new Date();
@@ -521,7 +583,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         db.prepare('UPDATE provider_connections SET account = ?, expires_at = ?, scopes = ? WHERE id = ? AND org_id = ?')
           .run(account, expiresAt, scopes, connectionId, ctx.orgId);
         const updated = db.prepare('SELECT * FROM provider_connections WHERE id = ? AND org_id = ?').get(connectionId, ctx.orgId);
-        await persistPat(updated, updated.token_enc);
+        await persistPat(updated, token);
         const now = new Date();
         const exp = expiresAt ? new Date(expiresAt) : null;
         const isExpired = exp ? exp <= now : false;
