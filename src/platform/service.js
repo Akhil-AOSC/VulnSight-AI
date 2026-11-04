@@ -32,6 +32,8 @@ const {
   saveGitConnectionToMongo,
   getGitConnectionFromMongo,
   deleteGitConnectionFromMongo,
+  saveUserToMongo,
+  getUserFromMongoByEmail,
 } = require('../db');
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -59,6 +61,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
   enableMongo = false,
   enableAutoAi = false,
   gitPatStore = null,
+  userStore = null,
 } = {}) {
   const nowIso = () => new Date(clock()).toISOString();
 
@@ -144,6 +147,60 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
     });
   }
 
+  function userDocument(userId) {
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+    if (!user) return null;
+    const orgs = db.prepare(`SELECT o.id, o.name, o.settings, o.created_at AS createdAt, m.role, m.created_at AS joinedAt
+      FROM memberships m JOIN orgs o ON o.id = m.org_id WHERE m.user_id = ?`).all(userId);
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      passwordHash: user.password_hash,
+      disabled: !!user.disabled,
+      createdAt: user.created_at,
+      orgs: orgs.map((o) => ({
+        id: o.id, name: o.name, role: o.role, settings: o.settings, createdAt: o.createdAt, joinedAt: o.joinedAt,
+      })),
+    };
+  }
+
+  async function persistUser(userId) {
+    const doc = userDocument(userId);
+    if (!doc) return false;
+    if (userStore) { await userStore.save(doc); return true; }
+    if (enableMongo && isMongoConfigured()) return saveUserToMongo(doc);
+    return false;
+  }
+
+  async function loadUserByEmail(email) {
+    if (userStore) return userStore.getByEmail(email);
+    if (enableMongo && isMongoConfigured()) return getUserFromMongoByEmail(email);
+    return null;
+  }
+
+  function hydrateUserFromRemote(doc) {
+    if (!doc || !doc.id || !doc.email || !doc.passwordHash) return null;
+    transaction(db, () => {
+      if (!db.prepare('SELECT 1 FROM users WHERE id = ? OR email = ?').get(doc.id, doc.email)) {
+        db.prepare('INSERT INTO users (id, email, name, password_hash, created_at, disabled) VALUES (?, ?, ?, ?, ?, ?)')
+          .run(doc.id, doc.email, doc.name || doc.email.split('@')[0], doc.passwordHash, doc.createdAt || nowIso(), doc.disabled ? 1 : 0);
+      }
+      for (const org of doc.orgs || []) {
+        if (!org.id) continue;
+        if (!db.prepare('SELECT 1 FROM orgs WHERE id = ?').get(org.id)) {
+          db.prepare('INSERT INTO orgs (id, name, created_at, settings) VALUES (?, ?, ?, ?)')
+            .run(org.id, org.name || 'Organisation', org.createdAt || nowIso(), org.settings || '{}');
+        }
+        if (!db.prepare('SELECT 1 FROM memberships WHERE org_id = ? AND user_id = ?').get(org.id, doc.id)) {
+          db.prepare('INSERT INTO memberships (org_id, user_id, role, created_at) VALUES (?, ?, ?, ?)')
+            .run(org.id, doc.id, org.role || 'developer', org.joinedAt || nowIso());
+        }
+      }
+    });
+    return db.prepare('SELECT * FROM users WHERE email = ?').get(doc.email);
+  }
+
   // ---------- auth ------------------------------------------------------------------------
   const auth = {
     async signup({ email, name, password, orgName }, ctx = {}) {
@@ -154,6 +211,8 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       const cleanName = String(name || '').trim().slice(0, 100) || email.split('@')[0];
       const cleanOrg = String(orgName || '').trim().slice(0, 100) || `${cleanName}'s organisation`;
       if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) throw new ValidationError('Unable to create an account with those details');
+      const remoteExisting = await loadUserByEmail(email);
+      if (remoteExisting) throw new ValidationError('Unable to create an account with those details');
 
       const passwordHash = await hashPasswordAsync(password); // off the event loop
       // Re-check after the await: a concurrent signup with the same email may have won the race.
@@ -165,6 +224,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         db.prepare('INSERT INTO orgs (id, name, created_at, settings) VALUES (?, ?, ?, ?)').run(orgId, cleanOrg, nowIso(), '{}');
         db.prepare('INSERT INTO memberships (org_id, user_id, role, created_at) VALUES (?, ?, ?, ?)').run(orgId, userId, 'owner', nowIso());
       });
+      await persistUser(userId);
       if (enableMongo && !mongoSyncedOrgs.has(orgId)) {
         mongoSyncedOrgs.add(orgId);
         try { await dashboard.syncMongo(orgId); } catch { /* best effort */ }
@@ -175,13 +235,18 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
 
     async login({ email, password }, ctx = {}) {
       email = String(email || '').trim().toLowerCase();
-      const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+      let user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+      if (!user) {
+        const remote = await loadUserByEmail(email);
+        if (remote) user = hydrateUserFromRemote(remote);
+      }
       // Always run a hash comparison so response time doesn't reveal whether the email exists.
       const ok = await verifyPasswordAsync(String(password || ''), user ? user.password_hash : DUMMY_HASH);
       if (!user || !ok || user.disabled) {
         audit({ ...ctx }, 'user.login_failed', null, { email });
         throw new AuthError('Incorrect email or password');
       }
+      await persistUser(user.id);
       audit({ ...ctx, userId: user.id }, 'user.login', user.id);
       return { ...auth.createSession(user.id), user: { id: user.id, email: user.email, name: user.name } };
     },
@@ -224,6 +289,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         db.prepare('INSERT INTO memberships (org_id, user_id, role, created_at) VALUES (?, ?, ?, ?)').run(orgId, userId, 'owner', nowIso());
       });
       audit({ userId, orgId }, 'org.create', orgId);
+      persistUser(userId).catch(() => {});
       return { id: orgId, name: clean, role: 'owner' };
     },
 

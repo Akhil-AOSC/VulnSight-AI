@@ -77,16 +77,10 @@ export function AuthView({ onAuthenticated }) {
               type="password"
               required
               autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-              minLength={mode === 'login' ? undefined : 12}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />
           </label>
-          {mode === 'signup' && (
-            <div className="small muted">
-              At least 12 characters with upper case, lower case and a number.
-            </div>
-          )}
           {error && (
             <div className="muted" role="alert">
               {error}

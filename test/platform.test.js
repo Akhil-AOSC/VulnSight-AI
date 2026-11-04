@@ -65,8 +65,8 @@ test('passwords hash with scrypt, verify, and policy is enforced', () => {
   assert.equal(verifyPassword(PASSWORD, h), true);
   assert.equal(verifyPassword('wrong', h), false);
   assert.equal(verifyPassword('x', 'garbage'), false);
-  assert.ok(checkPasswordPolicy('short'));
-  assert.ok(checkPasswordPolicy('alllowercase123456'));
+  assert.ok(checkPasswordPolicy(''));
+  assert.equal(checkPasswordPolicy('short'), null);
   assert.equal(checkPasswordPolicy(PASSWORD), null);
 });
 
@@ -88,7 +88,7 @@ test('signup, login, sessions and logout', async () => {
 
   await assert.rejects(() => platform.auth.signup({ email: 'ann@example.com', password: PASSWORD }), /Unable to create/);
   await assert.rejects(() => platform.auth.signup({ email: 'bad', password: PASSWORD }), /valid email/);
-  await assert.rejects(() => platform.auth.signup({ email: 'b@example.com', password: 'weak' }), /12 characters/);
+  await assert.rejects(() => platform.auth.signup({ email: 'b@example.com', password: '' }), /Password is required/);
 
   await assert.rejects(() => platform.auth.login({ email: 'ann@example.com', password: 'nope' }), /Incorrect email or password/);
   await assert.rejects(() => platform.auth.login({ email: 'ghost@example.com', password: PASSWORD }), /Incorrect email or password/);

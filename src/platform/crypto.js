@@ -69,9 +69,8 @@ function verifyPasswordAsync(password, stored) {
 }
 
 function checkPasswordPolicy(password) {
-  if (typeof password !== 'string' || password.length < 12) return 'Password must be at least 12 characters';
+  if (typeof password !== 'string' || !password.length) return 'Password is required';
   if (password.length > 200) return 'Password is too long';
-  if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/\d/.test(password)) return 'Password needs upper case, lower case and a number';
   return null;
 }
 

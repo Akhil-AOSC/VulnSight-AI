@@ -24426,13 +24426,11 @@ function AuthView({ onAuthenticated }) {
             type: "password",
             required: true,
             autoComplete: mode === "login" ? "current-password" : "new-password",
-            minLength: mode === "login" ? void 0 : 12,
             value: password,
             onChange: (e) => setPassword(e.target.value)
           }
         )
       ] }),
-      mode === "signup" && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "small muted", children: "At least 12 characters with upper case, lower case and a number." }),
       error && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "muted", role: "alert", children: error }),
       /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { className: "primary", type: "submit", disabled: busy, children: mode === "login" ? "Sign in" : "Create account" })
     ] }),

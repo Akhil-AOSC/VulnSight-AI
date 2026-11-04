@@ -112,6 +112,39 @@ async function listGitConnectionsFromMongo(orgId) {
   }
 }
 
+async function getUsersCollection() {
+  const client = await getClient();
+  if (!client) return null;
+  return client.db(mongoDbName()).collection(process.env.MONGODB_USERS_COLLECTION || 'users');
+}
+
+async function saveUserToMongo(doc) {
+  try {
+    const coll = await getUsersCollection();
+    if (!coll) return false;
+    await coll.replaceOne(
+      { email: doc.email },
+      { ...doc, updatedAt: new Date().toISOString() },
+      { upsert: true }
+    );
+    return true;
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not save user:', err.message);
+    return false;
+  }
+}
+
+async function getUserFromMongoByEmail(email) {
+  try {
+    const coll = await getUsersCollection();
+    if (!coll) return null;
+    return await coll.findOne({ email: String(email || '').trim().toLowerCase() });
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not load user:', err.message);
+    return null;
+  }
+}
+
 async function deleteGitConnectionFromMongo(orgId, id) {
   try {
     const coll = await getGitConnectionsCollection();
@@ -194,4 +227,6 @@ module.exports = {
   getGitConnectionFromMongo,
   listGitConnectionsFromMongo,
   deleteGitConnectionFromMongo,
+  saveUserToMongo,
+  getUserFromMongoByEmail,
 };
