@@ -25360,6 +25360,7 @@ function RepoDetailView({ repoId }) {
   const [branches, setBranches] = (0, import_react6.useState)([]);
   const [selectedBranch, setSelectedBranch] = (0, import_react6.useState)("main");
   const [webhook, setWebhook] = (0, import_react6.useState)(null);
+  const [showSecret, setShowSecret] = (0, import_react6.useState)(false);
   const [loading, setLoading] = (0, import_react6.useState)(true);
   const [activeScanners, setActiveScanners] = (0, import_react6.useState)(/* @__PURE__ */ new Set(["sca", "semgrep", "gitleaks"]));
   const [threshold, setThreshold] = (0, import_react6.useState)("low");
@@ -25552,7 +25553,34 @@ function RepoDetailView({ repoId }) {
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("dt", { children: "Payload URL" }),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("code", { children: `${location.origin}${webhook.url}` }) }),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("dt", { children: "Secret" }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("code", { children: webhook.secret }) })
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("dd", { className: "secret-field-wrap", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("code", { children: showSecret ? webhook.secret : (webhook.secret || "").replace(/./g, "\u2022") }),
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+              "button",
+              {
+                type: "button",
+                className: "btn-icon-toggle",
+                "aria-label": showSecret ? "Hide secret" : "Show secret",
+                title: showSecret ? "Hide secret" : "Show secret",
+                onClick: () => setShowSecret((v) => !v),
+                children: showSecret ? "\u{1F648}" : "\u{1F441}\uFE0F"
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+              "button",
+              {
+                type: "button",
+                className: "btn-icon-toggle",
+                "aria-label": "Copy secret",
+                title: "Copy secret",
+                onClick: () => {
+                  navigator.clipboard.writeText(webhook.secret);
+                  toast("Secret copied to clipboard");
+                },
+                children: "\u{1F4CB}"
+              }
+            )
+          ] })
         ] }) : /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { className: "muted small", children: "Loading webhook details..." }),
         /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { className: "muted small", children: "Add this webhook to your Git provider (push events, content type JSON) to scan on every push to a monitored branch. The secret signs each delivery." })
       ] }),
@@ -25811,10 +25839,337 @@ function FindingDetail({ finding: f, repo, onReload, onClose }) {
     ) })
   ] });
 }
+function generateRemediationPrompt({ repo, scan, findings, severityFilter = "all" }) {
+  const bySeverity = { critical: [], high: [], medium: [], low: [] };
+  (findings || []).forEach((f) => {
+    const s = (f.severity || "low").toLowerCase();
+    if (bySeverity[s]) bySeverity[s].push(f);
+    else bySeverity.low.push(f);
+  });
+  const planSteps = Array.isArray(scan.projects) ? scan.projects.flatMap((p) => (p.upgradePlan || []).map((step) => ({ ...step, project: p }))) : [];
+  const pkgManager = scan.projects?.[0]?.packageManager || scan.projects?.[0]?.type || "npm";
+  let prompt2 = "";
+  if (severityFilter === "all") {
+    prompt2 += `# \u{1F6E1}\uFE0F Complete Security Remediation Plan for ${repo.fullName}
+`;
+    prompt2 += `**Repository**: ${repo.fullName} (branch: \`${scan.branch}\`)
+`;
+    prompt2 += `**Total Vulnerabilities Identified**: ${findings.length}
+`;
+    prompt2 += `**Severity Breakdown**: ${bySeverity.critical.length} Critical | ${bySeverity.high.length} High | ${bySeverity.medium.length} Medium | ${bySeverity.low.length} Low
+
+`;
+    prompt2 += `## \u{1F3AF} Objective:
+`;
+    prompt2 += `Act as an expert DevSecOps and Application Security Engineer. You are tasked with resolving all ${findings.length} security vulnerabilities listed below in a single, safe, and backwards-compatible remediation pass.
+
+`;
+    if (planSteps.length > 0) {
+      prompt2 += `## \u{1F4E6} Step 1: Package Upgrades (${pkgManager})
+`;
+      prompt2 += `Execute the following package upgrades in terminal to resolve dependency advisories:
+
+\`\`\`bash
+`;
+      if (pkgManager === "npm") {
+        const upgradeArgs = planSteps.filter((s) => s.target).map((s) => `${s.package}@${s.target}`).join(" ");
+        prompt2 += `npm install ${upgradeArgs}
+`;
+      } else if (pkgManager === "yarn") {
+        const upgradeArgs = planSteps.filter((s) => s.target).map((s) => `${s.package}@${s.target}`).join(" ");
+        prompt2 += `yarn upgrade ${upgradeArgs}
+`;
+      } else if (pkgManager === "pip" || pkgManager === "requirements.txt") {
+        planSteps.filter((s) => s.target).forEach((s) => {
+          prompt2 += `pip install --upgrade ${s.package}==${s.target}
+`;
+        });
+      } else {
+        planSteps.filter((s) => s.target).forEach((s) => {
+          prompt2 += `# Upgrade ${s.package} to ${s.target}
+`;
+        });
+      }
+      prompt2 += `\`\`\`
+
+`;
+    }
+    if (bySeverity.critical.length > 0) {
+      prompt2 += `## \u{1F6A8} Step 2: Critical Severity Remediation (${bySeverity.critical.length} issues - Urgent P0)
+`;
+      bySeverity.critical.forEach((f, idx) => {
+        const id = f.identifiers?.primary || f.id;
+        const loc = f.location?.package ? `${f.location.package}@${f.location.version || ""}` : `${f.location?.file || ""}:${f.location?.line || ""}`;
+        const fix = f.remediation?.target ? `Upgrade ${f.location?.package || "component"} to >= ${f.remediation.target}` : "Inspect and patch";
+        prompt2 += `${idx + 1}. **[${id}]** ${f.title}
+`;
+        prompt2 += `   - Location: \`${loc}\`
+`;
+        prompt2 += `   - Type: \`${f.category || "sca"}\`
+`;
+        prompt2 += `   - Fix: ${fix}
+
+`;
+      });
+    }
+    if (bySeverity.high.length > 0) {
+      prompt2 += `## \u26A0\uFE0F Step 3: High Severity Remediation (${bySeverity.high.length} issues - P1)
+`;
+      bySeverity.high.forEach((f, idx) => {
+        const id = f.identifiers?.primary || f.id;
+        const loc = f.location?.package ? `${f.location.package}@${f.location.version || ""}` : `${f.location?.file || ""}:${f.location?.line || ""}`;
+        const fix = f.remediation?.target ? `Upgrade to >= ${f.remediation.target}` : "Inspect and patch";
+        prompt2 += `${idx + 1}. **[${id}]** ${f.title}
+`;
+        prompt2 += `   - Location: \`${loc}\`
+`;
+        prompt2 += `   - Fix: ${fix}
+
+`;
+      });
+    }
+    if (bySeverity.medium.length > 0) {
+      prompt2 += `## \u{1F7E1} Step 4: Medium Severity Remediation (${bySeverity.medium.length} issues - P2)
+`;
+      bySeverity.medium.forEach((f, idx) => {
+        const id = f.identifiers?.primary || f.id;
+        const loc = f.location?.package ? `${f.location.package}@${f.location.version || ""}` : `${f.location?.file || ""}:${f.location?.line || ""}`;
+        const fix = f.remediation?.target ? `Upgrade to >= ${f.remediation.target}` : "Apply patch";
+        prompt2 += `${idx + 1}. **[${id}]** ${f.title} (\`${loc}\`) -> ${fix}
+`;
+      });
+      prompt2 += `
+`;
+    }
+    if (bySeverity.low.length > 0) {
+      prompt2 += `## \u2139\uFE0F Step 5: Low Severity Issues (${bySeverity.low.length} issues - P3)
+`;
+      bySeverity.low.forEach((f, idx) => {
+        const id = f.identifiers?.primary || f.id;
+        const loc = f.location?.package ? `${f.location.package}@${f.location.version || ""}` : `${f.location?.file || ""}:${f.location?.line || ""}`;
+        prompt2 += `${idx + 1}. **[${id}]** ${f.title} (\`${loc}\`)
+`;
+      });
+      prompt2 += `
+`;
+    }
+    prompt2 += `## \u{1F50D} Step 6: Verification & Validation
+`;
+    prompt2 += `1. Verify that all dependencies compile cleanly and all lockfiles are in sync.
+`;
+    prompt2 += `2. Run unit and integration tests to ensure no regressions were introduced by upgraded APIs.
+`;
+    prompt2 += `3. Confirm that the security posture score is restored to 100/100.
+`;
+  } else {
+    const sevList = bySeverity[severityFilter] || [];
+    const sevUpper = severityFilter.toUpperCase();
+    prompt2 += `# \u{1F6E1}\uFE0F ${sevUpper} Severity Security Remediation for ${repo.fullName}
+`;
+    prompt2 += `**Target**: ${repo.fullName} | **Severity**: ${sevUpper} (${sevList.length} issues)
+
+`;
+    prompt2 += `Please provide exact terminal commands and code patches to eliminate these ${severityFilter} vulnerabilities:
+
+`;
+    sevList.forEach((f, idx) => {
+      const id = f.identifiers?.primary || f.id;
+      const loc = f.location?.package ? `${f.location.package}@${f.location.version || ""}` : `${f.location?.file || ""}:${f.location?.line || ""}`;
+      const fix = f.remediation?.target ? `Upgrade to >= ${f.remediation.target}` : "Inspect and patch";
+      prompt2 += `${idx + 1}. **[${id}]** ${f.title}
+`;
+      prompt2 += `   - Target: \`${loc}\`
+`;
+      prompt2 += `   - Action: ${fix}
+
+`;
+    });
+    prompt2 += `Provide step-by-step instructions and code diffs to verify the fix.
+`;
+  }
+  return prompt2;
+}
+function AiPromptModal({ scan, repo, initialFindings = [], onClose }) {
+  const [severityFilter, setSeverityFilter] = (0, import_react7.useState)("all");
+  const [copied, setCopied] = (0, import_react7.useState)(false);
+  const [allFindings, setAllFindings] = (0, import_react7.useState)(initialFindings);
+  const [loading, setLoading] = (0, import_react7.useState)(false);
+  (0, import_react7.useEffect)(() => {
+    let mounted = true;
+    async function fetchAll() {
+      try {
+        setLoading(true);
+        const res = await api.get(api.org(`/scans/${scan.id}/findings?page=1&pageSize=200`));
+        if (mounted && res && Array.isArray(res.items)) {
+          setAllFindings(res.items);
+        }
+      } catch {
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    }
+    fetchAll();
+    return () => {
+      mounted = false;
+    };
+  }, [scan.id]);
+  (0, import_react7.useEffect)(() => {
+    function handleKeyDown(e) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+  const findings = allFindings.length ? allFindings : initialFindings;
+  const promptText = generateRemediationPrompt({
+    repo,
+    scan,
+    findings,
+    severityFilter
+  });
+  const counts = {
+    critical: findings.filter((f) => (f.severity || "").toLowerCase() === "critical").length,
+    high: findings.filter((f) => (f.severity || "").toLowerCase() === "high").length,
+    medium: findings.filter((f) => (f.severity || "").toLowerCase() === "medium").length,
+    low: findings.filter((f) => (f.severity || "").toLowerCase() === "low").length
+  };
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(promptText);
+      setCopied(true);
+      toast("Remediation prompt copied to clipboard!");
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      toast("Failed to copy to clipboard", "error");
+    }
+  }
+  function handleDownload() {
+    const blob = new Blob([promptText], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${repo.fullName.replace("/", "-")}-ai-remediation-prompt.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast("Prompt downloaded");
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "modal-backdrop", onClick: onClose, role: "dialog", "aria-modal": "true", "aria-label": "AI Remediation Prompt Generator", children: /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "modal-dialog", onClick: (e) => e.stopPropagation(), children: [
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "modal-header", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "modal-title-group", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { children: "\u26A1 AI Remediation Master Prompt" }),
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "modal-subtitle", children: [
+          "Universal prompt to fix all ",
+          findings.length,
+          " detected vulnerabilities in ",
+          repo.fullName,
+          " in 1 or 2 passes."
+        ] })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+        "button",
+        {
+          type: "button",
+          className: "btn-modal-close",
+          onClick: onClose,
+          "aria-label": "Close dialog",
+          title: "Close (Esc)",
+          children: "\u2715"
+        }
+      )
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "modal-body", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "modal-tabs", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
+          "button",
+          {
+            type: "button",
+            className: `modal-tab-btn ${severityFilter === "all" ? "active" : ""}`,
+            onClick: () => setSeverityFilter("all"),
+            children: [
+              "All Issues (",
+              findings.length,
+              ")"
+            ]
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
+          "button",
+          {
+            type: "button",
+            className: `modal-tab-btn ${severityFilter === "critical" ? "active" : ""}`,
+            onClick: () => setSeverityFilter("critical"),
+            children: [
+              "\u{1F534} Critical (",
+              counts.critical,
+              ")"
+            ]
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
+          "button",
+          {
+            type: "button",
+            className: `modal-tab-btn ${severityFilter === "high" ? "active" : ""}`,
+            onClick: () => setSeverityFilter("high"),
+            children: [
+              "\u{1F7E0} High (",
+              counts.high,
+              ")"
+            ]
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
+          "button",
+          {
+            type: "button",
+            className: `modal-tab-btn ${severityFilter === "medium" ? "active" : ""}`,
+            onClick: () => setSeverityFilter("medium"),
+            children: [
+              "\u{1F7E1} Medium (",
+              counts.medium,
+              ")"
+            ]
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
+          "button",
+          {
+            type: "button",
+            className: `modal-tab-btn ${severityFilter === "low" ? "active" : ""}`,
+            onClick: () => setSeverityFilter("low"),
+            children: [
+              "\u{1F535} Low (",
+              counts.low,
+              ")"
+            ]
+          }
+        )
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "prompt-preview-wrap", children: loading ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "muted small", style: { padding: "1.5rem", textAlign: "center" }, children: "Analyzing findings and synthesizing remediation instructions..." }) : /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("pre", { className: "prompt-pre", children: promptText }) })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "modal-footer", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "modal-footer-left muted small", children: "Paste this prompt into Cursor, ChatGPT, Claude, or GitHub Copilot to fix all issues." }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { type: "button", onClick: handleDownload, title: "Download prompt as markdown", children: "Download .md" }),
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          "button",
+          {
+            type: "button",
+            className: "primary btn-ai-prompt",
+            onClick: handleCopy,
+            title: "Copy prompt to clipboard",
+            children: copied ? "\u2713 Copied to Clipboard!" : "\u{1F4CB} Copy Fix Prompt"
+          }
+        )
+      ] })
+    ] })
+  ] }) });
+}
 function ScanView({ scanId }) {
   const [scan, setScan] = (0, import_react7.useState)(null);
   const [repo, setRepo] = (0, import_react7.useState)(null);
   const [loading, setLoading] = (0, import_react7.useState)(true);
+  const [showPromptModal, setShowPromptModal] = (0, import_react7.useState)(false);
   const [q, setQ] = (0, import_react7.useState)("");
   const [debouncedQ, setDebouncedQ] = (0, import_react7.useState)("");
   const [severity, setSeverity] = (0, import_react7.useState)("");
@@ -25956,29 +26311,6 @@ function ScanView({ scanId }) {
               ] })
             ]
           }
-        ),
-        sum.new != null && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
-          "div",
-          {
-            className: "card stat stat-delta",
-            title: `${sum.new} new finding(s) introduced, ${sum.fixed || 0} finding(s) fixed since previous scan`,
-            children: [
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "stat-delta-row", children: [
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("span", { className: `delta-item delta-new ${sum.new > 0 ? "has-new" : ""}`, children: [
-                  "+",
-                  sum.new,
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "delta-subtext", children: "new" })
-                ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "delta-divider", children: "/" }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("span", { className: `delta-item delta-fixed ${(sum.fixed || 0) > 0 ? "has-fixed" : ""}`, children: [
-                  "-",
-                  sum.fixed || 0,
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "delta-subtext", children: "fixed" })
-                ] })
-              ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "label", children: "Since Last Scan" })
-            ]
-          }
         )
       ] }),
       Array.isArray(scan.warnings) && scan.warnings.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "warnings", children: scan.warnings.map((w, i) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "warning", children: w }, i)) }),
@@ -26037,7 +26369,7 @@ function ScanView({ scanId }) {
         /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
           DataTable,
           {
-            headers: ["Scanner", "Status", "Version", "Findings", "Time", "Message"],
+            headers: ["Scanner", "Status", "Version", "Findings", "Time"],
             rows: scan.scanners.map((s, i) => ({
               id: `${s.scanner}-${i}`,
               cells: [
@@ -26045,8 +26377,7 @@ function ScanView({ scanId }) {
                 /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(StatusBadge, { status: s.status }),
                 s.version || "-",
                 pad(s.findingCount),
-                `${s.durationMs} ms`,
-                s.error || ""
+                `${s.durationMs} ms`
               ]
             }))
           }
@@ -26055,23 +26386,35 @@ function ScanView({ scanId }) {
       /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("section", { className: "card scan-findings-card", children: [
         /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "card-head", children: [
           /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "grow", children: "Findings" }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "row", children: [
-            ["csv", "CSV", "csv"],
-            ["markdown", "Markdown", "md"],
-            ["cyclonedx", "SBOM (CycloneDX)", "cdx.json"],
-            ["json", "JSON", "json"]
-          ].map(([fmt, label, ext]) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
-            "button",
-            {
-              type: "button",
-              onClick: () => api.download(
-                api.org(`/scans/${scanId}/report?format=${fmt}`),
-                `${repo.fullName.replace("/", "-")}-${scanId.slice(0, 8)}.${ext}`
-              ).catch((err) => toast(err.message, "error")),
-              children: label
-            },
-            fmt
-          )) })
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "row", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+              "button",
+              {
+                type: "button",
+                className: "primary btn-ai-prompt",
+                onClick: () => setShowPromptModal(true),
+                title: "Generate a master prompt to fix all vulnerabilities in one go",
+                children: "\u26A1 Generate AI Fix Prompt"
+              }
+            ),
+            [
+              ["csv", "CSV", "csv"],
+              ["markdown", "Markdown", "md"],
+              ["cyclonedx", "SBOM (CycloneDX)", "cdx.json"],
+              ["json", "JSON", "json"]
+            ].map(([fmt, label, ext]) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+              "button",
+              {
+                type: "button",
+                onClick: () => api.download(
+                  api.org(`/scans/${scanId}/report?format=${fmt}`),
+                  `${repo.fullName.replace("/", "-")}-${scanId.slice(0, 8)}.${ext}`
+                ).catch((err) => toast(err.message, "error")),
+                children: label
+              },
+              fmt
+            ))
+          ] })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "row findings-filter-bar", children: [
           /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
@@ -26236,7 +26579,16 @@ function ScanView({ scanId }) {
             }
           )
         ] })
-      ] })
+      ] }),
+      showPromptModal && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+        AiPromptModal,
+        {
+          scan,
+          repo,
+          initialFindings: findingsData.items || [],
+          onClose: () => setShowPromptModal(false)
+        }
+      )
     ] })
   ] });
 }

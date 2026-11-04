@@ -300,6 +300,7 @@ export function RepoDetailView({ repoId }) {
   const [branches, setBranches] = useState([]);
   const [selectedBranch, setSelectedBranch] = useState('main');
   const [webhook, setWebhook] = useState(null);
+  const [showSecret, setShowSecret] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const [activeScanners, setActiveScanners] = useState(new Set(['sca', 'semgrep', 'gitleaks']));
@@ -524,8 +525,33 @@ export function RepoDetailView({ repoId }) {
                   <code>{`${location.origin}${webhook.url}`}</code>
                 </dd>
                 <dt>Secret</dt>
-                <dd>
-                  <code>{webhook.secret}</code>
+                <dd className="secret-field-wrap">
+                  <code>
+                    {showSecret
+                      ? webhook.secret
+                      : (webhook.secret || '').replace(/./g, '•')}
+                  </code>
+                  <button
+                    type="button"
+                    className="btn-icon-toggle"
+                    aria-label={showSecret ? 'Hide secret' : 'Show secret'}
+                    title={showSecret ? 'Hide secret' : 'Show secret'}
+                    onClick={() => setShowSecret((v) => !v)}
+                  >
+                    {showSecret ? '🙈' : '👁️'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-icon-toggle"
+                    aria-label="Copy secret"
+                    title="Copy secret"
+                    onClick={() => {
+                      navigator.clipboard.writeText(webhook.secret);
+                      toast('Secret copied to clipboard');
+                    }}
+                  >
+                    📋
+                  </button>
                 </dd>
               </dl>
             ) : (

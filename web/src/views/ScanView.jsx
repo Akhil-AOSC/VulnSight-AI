@@ -312,10 +312,301 @@ function FindingDetail({ finding: f, repo, onReload, onClose }) {
   );
 }
 
+function generateRemediationPrompt({ repo, scan, findings, severityFilter = 'all' }) {
+  const bySeverity = { critical: [], high: [], medium: [], low: [] };
+  (findings || []).forEach((f) => {
+    const s = (f.severity || 'low').toLowerCase();
+    if (bySeverity[s]) bySeverity[s].push(f);
+    else bySeverity.low.push(f);
+  });
+
+  const planSteps = Array.isArray(scan.projects)
+    ? scan.projects.flatMap((p) => (p.upgradePlan || []).map((step) => ({ ...step, project: p })))
+    : [];
+
+  const pkgManager = scan.projects?.[0]?.packageManager || scan.projects?.[0]?.type || 'npm';
+
+  let prompt = '';
+
+  if (severityFilter === 'all') {
+    prompt += `# 🛡️ Complete Security Remediation Plan for ${repo.fullName}\n`;
+    prompt += `**Repository**: ${repo.fullName} (branch: \`${scan.branch}\`)\n`;
+    prompt += `**Total Vulnerabilities Identified**: ${findings.length}\n`;
+    prompt += `**Severity Breakdown**: ${bySeverity.critical.length} Critical | ${bySeverity.high.length} High | ${bySeverity.medium.length} Medium | ${bySeverity.low.length} Low\n\n`;
+
+    prompt += `## 🎯 Objective:\n`;
+    prompt += `Act as an expert DevSecOps and Application Security Engineer. You are tasked with resolving all ${findings.length} security vulnerabilities listed below in a single, safe, and backwards-compatible remediation pass.\n\n`;
+
+    if (planSteps.length > 0) {
+      prompt += `## 📦 Step 1: Package Upgrades (${pkgManager})\n`;
+      prompt += `Execute the following package upgrades in terminal to resolve dependency advisories:\n\n\`\`\`bash\n`;
+      if (pkgManager === 'npm') {
+        const upgradeArgs = planSteps
+          .filter((s) => s.target)
+          .map((s) => `${s.package}@${s.target}`)
+          .join(' ');
+        prompt += `npm install ${upgradeArgs}\n`;
+      } else if (pkgManager === 'yarn') {
+        const upgradeArgs = planSteps
+          .filter((s) => s.target)
+          .map((s) => `${s.package}@${s.target}`)
+          .join(' ');
+        prompt += `yarn upgrade ${upgradeArgs}\n`;
+      } else if (pkgManager === 'pip' || pkgManager === 'requirements.txt') {
+        planSteps.filter((s) => s.target).forEach((s) => {
+          prompt += `pip install --upgrade ${s.package}==${s.target}\n`;
+        });
+      } else {
+        planSteps.filter((s) => s.target).forEach((s) => {
+          prompt += `# Upgrade ${s.package} to ${s.target}\n`;
+        });
+      }
+      prompt += `\`\`\`\n\n`;
+    }
+
+    if (bySeverity.critical.length > 0) {
+      prompt += `## 🚨 Step 2: Critical Severity Remediation (${bySeverity.critical.length} issues - Urgent P0)\n`;
+      bySeverity.critical.forEach((f, idx) => {
+        const id = f.identifiers?.primary || f.id;
+        const loc = f.location?.package ? `${f.location.package}@${f.location.version || ''}` : `${f.location?.file || ''}:${f.location?.line || ''}`;
+        const fix = f.remediation?.target ? `Upgrade ${f.location?.package || 'component'} to >= ${f.remediation.target}` : 'Inspect and patch';
+        prompt += `${idx + 1}. **[${id}]** ${f.title}\n`;
+        prompt += `   - Location: \`${loc}\`\n`;
+        prompt += `   - Type: \`${f.category || 'sca'}\`\n`;
+        prompt += `   - Fix: ${fix}\n\n`;
+      });
+    }
+
+    if (bySeverity.high.length > 0) {
+      prompt += `## ⚠️ Step 3: High Severity Remediation (${bySeverity.high.length} issues - P1)\n`;
+      bySeverity.high.forEach((f, idx) => {
+        const id = f.identifiers?.primary || f.id;
+        const loc = f.location?.package ? `${f.location.package}@${f.location.version || ''}` : `${f.location?.file || ''}:${f.location?.line || ''}`;
+        const fix = f.remediation?.target ? `Upgrade to >= ${f.remediation.target}` : 'Inspect and patch';
+        prompt += `${idx + 1}. **[${id}]** ${f.title}\n`;
+        prompt += `   - Location: \`${loc}\`\n`;
+        prompt += `   - Fix: ${fix}\n\n`;
+      });
+    }
+
+    if (bySeverity.medium.length > 0) {
+      prompt += `## 🟡 Step 4: Medium Severity Remediation (${bySeverity.medium.length} issues - P2)\n`;
+      bySeverity.medium.forEach((f, idx) => {
+        const id = f.identifiers?.primary || f.id;
+        const loc = f.location?.package ? `${f.location.package}@${f.location.version || ''}` : `${f.location?.file || ''}:${f.location?.line || ''}`;
+        const fix = f.remediation?.target ? `Upgrade to >= ${f.remediation.target}` : 'Apply patch';
+        prompt += `${idx + 1}. **[${id}]** ${f.title} (\`${loc}\`) -> ${fix}\n`;
+      });
+      prompt += `\n`;
+    }
+
+    if (bySeverity.low.length > 0) {
+      prompt += `## ℹ️ Step 5: Low Severity Issues (${bySeverity.low.length} issues - P3)\n`;
+      bySeverity.low.forEach((f, idx) => {
+        const id = f.identifiers?.primary || f.id;
+        const loc = f.location?.package ? `${f.location.package}@${f.location.version || ''}` : `${f.location?.file || ''}:${f.location?.line || ''}`;
+        prompt += `${idx + 1}. **[${id}]** ${f.title} (\`${loc}\`)\n`;
+      });
+      prompt += `\n`;
+    }
+
+    prompt += `## 🔍 Step 6: Verification & Validation\n`;
+    prompt += `1. Verify that all dependencies compile cleanly and all lockfiles are in sync.\n`;
+    prompt += `2. Run unit and integration tests to ensure no regressions were introduced by upgraded APIs.\n`;
+    prompt += `3. Confirm that the security posture score is restored to 100/100.\n`;
+  } else {
+    const sevList = bySeverity[severityFilter] || [];
+    const sevUpper = severityFilter.toUpperCase();
+    prompt += `# 🛡️ ${sevUpper} Severity Security Remediation for ${repo.fullName}\n`;
+    prompt += `**Target**: ${repo.fullName} | **Severity**: ${sevUpper} (${sevList.length} issues)\n\n`;
+    prompt += `Please provide exact terminal commands and code patches to eliminate these ${severityFilter} vulnerabilities:\n\n`;
+
+    sevList.forEach((f, idx) => {
+      const id = f.identifiers?.primary || f.id;
+      const loc = f.location?.package ? `${f.location.package}@${f.location.version || ''}` : `${f.location?.file || ''}:${f.location?.line || ''}`;
+      const fix = f.remediation?.target ? `Upgrade to >= ${f.remediation.target}` : 'Inspect and patch';
+      prompt += `${idx + 1}. **[${id}]** ${f.title}\n`;
+      prompt += `   - Target: \`${loc}\`\n`;
+      prompt += `   - Action: ${fix}\n\n`;
+    });
+
+    prompt += `Provide step-by-step instructions and code diffs to verify the fix.\n`;
+  }
+
+  return prompt;
+}
+
+function AiPromptModal({ scan, repo, initialFindings = [], onClose }) {
+  const [severityFilter, setSeverityFilter] = useState('all');
+  const [copied, setCopied] = useState(false);
+  const [allFindings, setAllFindings] = useState(initialFindings);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    async function fetchAll() {
+      try {
+        setLoading(true);
+        const res = await api.get(api.org(`/scans/${scan.id}/findings?page=1&pageSize=200`));
+        if (mounted && res && Array.isArray(res.items)) {
+          setAllFindings(res.items);
+        }
+      } catch {
+        // Fallback to initialFindings
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    }
+    fetchAll();
+    return () => {
+      mounted = false;
+    };
+  }, [scan.id]);
+
+  useEffect(() => {
+    function handleKeyDown(e) {
+      if (e.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  const findings = allFindings.length ? allFindings : initialFindings;
+  const promptText = generateRemediationPrompt({
+    repo,
+    scan,
+    findings,
+    severityFilter,
+  });
+
+  const counts = {
+    critical: findings.filter((f) => (f.severity || '').toLowerCase() === 'critical').length,
+    high: findings.filter((f) => (f.severity || '').toLowerCase() === 'high').length,
+    medium: findings.filter((f) => (f.severity || '').toLowerCase() === 'medium').length,
+    low: findings.filter((f) => (f.severity || '').toLowerCase() === 'low').length,
+  };
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(promptText);
+      setCopied(true);
+      toast('Remediation prompt copied to clipboard!');
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      toast('Failed to copy to clipboard', 'error');
+    }
+  }
+
+  function handleDownload() {
+    const blob = new Blob([promptText], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${repo.fullName.replace('/', '-')}-ai-remediation-prompt.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('Prompt downloaded');
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose} role="dialog" aria-modal="true" aria-label="AI Remediation Prompt Generator">
+      <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title-group">
+            <h2>⚡ AI Remediation Master Prompt</h2>
+            <div className="modal-subtitle">
+              Universal prompt to fix all {findings.length} detected vulnerabilities in {repo.fullName} in 1 or 2 passes.
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn-modal-close"
+            onClick={onClose}
+            aria-label="Close dialog"
+            title="Close (Esc)"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="modal-body">
+          <div className="modal-tabs">
+            <button
+              type="button"
+              className={`modal-tab-btn ${severityFilter === 'all' ? 'active' : ''}`}
+              onClick={() => setSeverityFilter('all')}
+            >
+              All Issues ({findings.length})
+            </button>
+            <button
+              type="button"
+              className={`modal-tab-btn ${severityFilter === 'critical' ? 'active' : ''}`}
+              onClick={() => setSeverityFilter('critical')}
+            >
+              🔴 Critical ({counts.critical})
+            </button>
+            <button
+              type="button"
+              className={`modal-tab-btn ${severityFilter === 'high' ? 'active' : ''}`}
+              onClick={() => setSeverityFilter('high')}
+            >
+              🟠 High ({counts.high})
+            </button>
+            <button
+              type="button"
+              className={`modal-tab-btn ${severityFilter === 'medium' ? 'active' : ''}`}
+              onClick={() => setSeverityFilter('medium')}
+            >
+              🟡 Medium ({counts.medium})
+            </button>
+            <button
+              type="button"
+              className={`modal-tab-btn ${severityFilter === 'low' ? 'active' : ''}`}
+              onClick={() => setSeverityFilter('low')}
+            >
+              🔵 Low ({counts.low})
+            </button>
+          </div>
+
+          <div className="prompt-preview-wrap">
+            {loading ? (
+              <div className="muted small" style={{ padding: '1.5rem', textAlign: 'center' }}>
+                Analyzing findings and synthesizing remediation instructions...
+              </div>
+            ) : (
+              <pre className="prompt-pre">{promptText}</pre>
+            )}
+          </div>
+        </div>
+
+        <div className="modal-footer">
+          <div className="modal-footer-left muted small">
+            Paste this prompt into Cursor, ChatGPT, Claude, or GitHub Copilot to fix all issues.
+          </div>
+          <div className="row">
+            <button type="button" onClick={handleDownload} title="Download prompt as markdown">
+              Download .md
+            </button>
+            <button
+              type="button"
+              className="primary btn-ai-prompt"
+              onClick={handleCopy}
+              title="Copy prompt to clipboard"
+            >
+              {copied ? '✓ Copied to Clipboard!' : '📋 Copy Fix Prompt'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ScanView({ scanId }) {
   const [scan, setScan] = useState(null);
   const [repo, setRepo] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [showPromptModal, setShowPromptModal] = useState(false);
 
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
@@ -491,25 +782,6 @@ export function ScanView({ scanId }) {
                   </div>
                 </div>
               )}
-              {sum.new != null && (
-                <div
-                  className="card stat stat-delta"
-                  title={`${sum.new} new finding(s) introduced, ${sum.fixed || 0} finding(s) fixed since previous scan`}
-                >
-                  <div className="stat-delta-row">
-                    <span className={`delta-item delta-new ${sum.new > 0 ? 'has-new' : ''}`}>
-                      +{sum.new}
-                      <span className="delta-subtext">new</span>
-                    </span>
-                    <span className="delta-divider">/</span>
-                    <span className={`delta-item delta-fixed ${(sum.fixed || 0) > 0 ? 'has-fixed' : ''}`}>
-                      -{sum.fixed || 0}
-                      <span className="delta-subtext">fixed</span>
-                    </span>
-                  </div>
-                  <div className="label">Since Last Scan</div>
-                </div>
-              )}
             </div>
           )}
 
@@ -593,7 +865,7 @@ export function ScanView({ scanId }) {
             <section className="card scan-scanners-card">
               <h2>Scanners</h2>
               <DataTable
-                headers={['Scanner', 'Status', 'Version', 'Findings', 'Time', 'Message']}
+                headers={['Scanner', 'Status', 'Version', 'Findings', 'Time']}
                 rows={scan.scanners.map((s, i) => ({
                   id: `${s.scanner}-${i}`,
                   cells: [
@@ -602,7 +874,6 @@ export function ScanView({ scanId }) {
                     s.version || '-',
                     pad(s.findingCount),
                     `${s.durationMs} ms`,
-                    s.error || '',
                   ],
                 }))}
               />
@@ -613,6 +884,14 @@ export function ScanView({ scanId }) {
             <div className="card-head">
               <h2 className="grow">Findings</h2>
               <div className="row">
+                <button
+                  type="button"
+                  className="primary btn-ai-prompt"
+                  onClick={() => setShowPromptModal(true)}
+                  title="Generate a master prompt to fix all vulnerabilities in one go"
+                >
+                  ⚡ Generate AI Fix Prompt
+                </button>
                 {[
                   ['csv', 'CSV', 'csv'],
                   ['markdown', 'Markdown', 'md'],
@@ -799,6 +1078,15 @@ export function ScanView({ scanId }) {
               </button>
             </div>
           </section>
+
+          {showPromptModal && (
+            <AiPromptModal
+              scan={scan}
+              repo={repo}
+              initialFindings={findingsData.items || []}
+              onClose={() => setShowPromptModal(false)}
+            />
+          )}
         </>
       )}
     </>
