@@ -57,8 +57,8 @@ test('RECOVERY DRILL: back up, destroy the database, restore, and prove the plat
   const db = openDatabase(file);
   const platform = createPlatform({ db, queue: createQueue(db), secretBox: createSecretBox(key) });
   assert.ok((await platform.auth.login({ email: 'owner@example.com', password: PASSWORD })).token);
-  assert.equal(platform.repos.list(ctx).length, 1);
-  assert.equal(platform.dashboard.overview(ctx).repositories.length, 1);
+  assert.equal((await platform.repos.list(ctx)).length, 1);
+  assert.equal((await platform.dashboard.overview(ctx)).repositories.length, 1);
   const enc = db.prepare('SELECT token_enc FROM provider_connections').get().token_enc;
   assert.equal(createSecretBox(key).decrypt(enc), 'ghp_BackupTestToken123456');
   // ...and WITHOUT the master key the backup alone cannot reveal provider tokens.

@@ -88,6 +88,15 @@ export function ReposListView() {
 
   useEffect(() => {
     loadAll();
+    function onVisible() {
+      if (document.visibilityState === 'visible') loadAll();
+    }
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
   }, [session.orgId]);
 
   async function handleAddRepo(e) {

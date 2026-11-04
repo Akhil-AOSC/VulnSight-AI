@@ -145,6 +145,51 @@ async function getUserFromMongoByEmail(email) {
   }
 }
 
+async function getReposCollection() {
+  const client = await getClient();
+  if (!client) return null;
+  return client.db(mongoDbName()).collection(process.env.MONGODB_REPOS_COLLECTION || 'repositories');
+}
+
+async function saveRepoToMongo(doc) {
+  try {
+    const coll = await getReposCollection();
+    if (!coll) return false;
+    await coll.replaceOne(
+      { id: doc.id, orgId: doc.orgId },
+      { ...doc, updatedAt: new Date().toISOString() },
+      { upsert: true }
+    );
+    return true;
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not save repository:', err.message);
+    return false;
+  }
+}
+
+async function listReposFromMongo(orgId) {
+  try {
+    const coll = await getReposCollection();
+    if (!coll) return null;
+    return await coll.find({ orgId }).sort({ createdAt: 1 }).toArray();
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not list repositories:', err.message);
+    return null;
+  }
+}
+
+async function deleteRepoFromMongo(orgId, id) {
+  try {
+    const coll = await getReposCollection();
+    if (!coll) return false;
+    await coll.deleteOne({ id, orgId });
+    return true;
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not delete repository:', err.message);
+    return false;
+  }
+}
+
 async function deleteGitConnectionFromMongo(orgId, id) {
   try {
     const coll = await getGitConnectionsCollection();
@@ -229,4 +274,7 @@ module.exports = {
   deleteGitConnectionFromMongo,
   saveUserToMongo,
   getUserFromMongoByEmail,
+  saveRepoToMongo,
+  listReposFromMongo,
+  deleteRepoFromMongo,
 };

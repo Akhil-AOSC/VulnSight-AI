@@ -25178,6 +25178,15 @@ function ReposListView() {
   }
   (0, import_react6.useEffect)(() => {
     loadAll();
+    function onVisible() {
+      if (document.visibilityState === "visible") loadAll();
+    }
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
   }, [session.orgId]);
   async function handleAddRepo(e) {
     e.preventDefault();
@@ -27016,6 +27025,15 @@ function ProvidersTab() {
   }
   (0, import_react10.useEffect)(() => {
     load();
+    function onVisible() {
+      if (document.visibilityState === "visible") load();
+    }
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
   }, [session.orgId]);
   function renderStatusBadge(c) {
     if (c.isExpired) return /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "badge sev-critical", children: "Expired" });

@@ -113,7 +113,7 @@ function createApi({ platform, trustProxy = false, hsts = false, limiter = creat
   route('POST', org('/repos'), async (req, p, b) => platform.repos.add(ctxOf(req, p), b), { status: 201 });
   route('GET', org('/repos/:repo'), async (req, p) => platform.repos.get(ctxOf(req, p), p.repo));
   route('PATCH', org('/repos/:repo'), async (req, p, b) => platform.repos.update(ctxOf(req, p), p.repo, b));
-  route('DELETE', org('/repos/:repo'), async (req, p) => { platform.repos.remove(ctxOf(req, p), p.repo); return { ok: true }; });
+  route('DELETE', org('/repos/:repo'), async (req, p) => { await platform.repos.remove(ctxOf(req, p), p.repo); return { ok: true }; });
   route('PUT', org('/repos/:repo/schedule'), async (req, p, b) => platform.repos.setSchedule(ctxOf(req, p), p.repo, b.schedule === undefined ? null : b.schedule));
   route('GET', org('/repos/:repo/branches'), async (req, p) => platform.repos.branches(ctxOf(req, p), p.repo));
   route('GET', org('/repos/:repo/webhook'), async (req, p) => ({ url: `/api/v1/webhooks/${p.repo}`, secret: platform.repos.webhookSecret(ctxOf(req, p), p.repo) }));

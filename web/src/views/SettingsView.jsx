@@ -467,6 +467,15 @@ function ProvidersTab() {
 
   useEffect(() => {
     load();
+    function onVisible() {
+      if (document.visibilityState === 'visible') load();
+    }
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
   }, [session.orgId]);
 
   function renderStatusBadge(c) {

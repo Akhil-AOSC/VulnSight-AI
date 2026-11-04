@@ -36,6 +36,9 @@ const {
   deleteGitConnectionFromMongo,
   saveUserToMongo,
   getUserFromMongoByEmail,
+  saveRepoToMongo,
+  listReposFromMongo,
+  deleteRepoFromMongo,
 } = require('../db');
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -64,6 +67,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
   enableAutoAi = false,
   gitPatStore = null,
   userStore = null,
+  repoStore = null,
 } = {}) {
   const nowIso = () => new Date(clock()).toISOString();
 
@@ -260,7 +264,10 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       }
       await persistUser(user.id);
       const orgIds = db.prepare('SELECT org_id AS id FROM memberships WHERE user_id = ?').all(user.id).map((o) => o.id);
-      for (const orgId of orgIds) await hydrateConnectionsFromMongo(orgId);
+      for (const orgId of orgIds) {
+        await applyRemoteConnections(orgId);
+        await applyRemoteRepos(orgId);
+      }
       audit({ ...ctx, userId: user.id }, 'user.login', user.id);
       return { ...auth.createSession(user.id), user: { id: user.id, email: user.email, name: user.name } };
     },
@@ -505,11 +512,39 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
     return null;
   }
 
-  async function hydrateConnectionsFromMongo(orgId) {
+  function accountKey(provider, account) {
+    return `${String(provider || '').toLowerCase()}:${String(account || '').trim().toLowerCase()}`;
+  }
+
+  function connectionByAccount(orgId, provider, account) {
+    if (!account) return null;
+    const want = accountKey(provider, account);
+    return db.prepare('SELECT * FROM provider_connections WHERE org_id = ? AND provider = ?').all(orgId, provider)
+      .find((row) => accountKey(row.provider, row.account) === want) || null;
+  }
+
+  async function collapseDuplicateAccounts(orgId) {
+    const rows = db.prepare('SELECT * FROM provider_connections WHERE org_id = ? ORDER BY created_at, id').all(orgId);
+    const seen = new Set();
+    for (const row of rows) {
+      if (!row.account) continue;
+      const key = accountKey(row.provider, row.account);
+      if (seen.has(key)) {
+        db.prepare('DELETE FROM provider_connections WHERE id = ? AND org_id = ?').run(row.id, orgId);
+        await forgetPat(orgId, row.id);
+      } else {
+        seen.add(key);
+      }
+    }
+  }
+
+  async function applyRemoteConnections(orgId) {
     const remote = await listRemotePats(orgId);
-    if (!remote || !remote.length) return;
+    if (remote == null) return null;
+    const keep = new Set();
     for (const doc of remote) {
       if (!doc.id || doc.orgId !== orgId) continue;
+      keep.add(doc.id);
       const existing = db.prepare('SELECT id FROM provider_connections WHERE id = ? AND org_id = ?').get(doc.id, orgId);
       if (existing) {
         db.prepare('UPDATE provider_connections SET provider = ?, label = ?, account = ?, expires_at = ?, scopes = ?, token_enc = ? WHERE id = ? AND org_id = ?')
@@ -519,6 +554,14 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
           .run(doc.id, orgId, doc.provider, doc.label || doc.account || doc.provider, doc.tokenEnc, doc.account, doc.expiresAt || null, doc.scopes || null, doc.createdBy || null, doc.createdAt || nowIso());
       }
     }
+    const locals = db.prepare('SELECT id FROM provider_connections WHERE org_id = ?').all(orgId);
+    for (const row of locals) {
+      if (!keep.has(row.id)) {
+        db.prepare('DELETE FROM provider_connections WHERE id = ? AND org_id = ?').run(row.id, orgId);
+      }
+    }
+    await collapseDuplicateAccounts(orgId);
+    return remote;
   }
 
   async function connectionToken(orgId, connectionId) {
@@ -541,8 +584,12 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       if (!impl) throw new ValidationError('Unsupported provider. Use github, gitlab or bitbucket');
       if (typeof token !== 'string' || token.length < 8 || token.length > 500) throw new ValidationError('Enter a valid access token');
       const { account, expiresAt = null, scopes = null } = await impl.validate(token, fetchImpl);
-      const id = uuid();
       await persistUser(ctx.userId);
+      await applyRemoteConnections(ctx.orgId);
+      if (connectionByAccount(ctx.orgId, provider, account)) {
+        throw new ValidationError(`This ${provider} account is already connected`);
+      }
+      const id = uuid();
       const tokenEnc = patBox(ctx.orgId).encrypt(token);
       const createdAt = nowIso();
       const rowLabel = String(label || account || provider).slice(0, 100);
@@ -558,9 +605,11 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
     async list(ctx) {
       authorize(ctx, 'repos:read');
       await persistUser(ctx.userId);
-      await hydrateConnectionsFromMongo(ctx.orgId);
+      const remote = await applyRemoteConnections(ctx.orgId);
       const locals = db.prepare('SELECT * FROM provider_connections WHERE org_id = ?').all(ctx.orgId);
+      const keep = remote == null ? null : new Set(remote.filter((d) => d && d.id && d.orgId === ctx.orgId).map((d) => d.id));
       for (const row of locals) {
+        if (keep && !keep.has(row.id)) continue;
         try { await persistPat(row, decryptPatEnvelope(ctx.orgId, row.token_enc)); } catch { /* leave as-is */ }
       }
       // Tokens are never returned.
@@ -630,6 +679,76 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
     return out;
   }
 
+  function repoDocument(row) {
+    return {
+      id: row.id,
+      orgId: row.org_id,
+      teamId: row.team_id || null,
+      connectionId: row.connection_id || null,
+      provider: row.provider,
+      fullName: row.full_name,
+      cloneUrl: row.clone_url,
+      defaultBranch: row.default_branch,
+      config: parse(row.config, {}),
+      schedule: row.schedule || null,
+      nextScanAt: row.next_scan_at || null,
+      createdAt: row.created_at,
+    };
+  }
+
+  async function persistRepo(row) {
+    const doc = repoDocument(row);
+    if (repoStore) { await repoStore.save(doc); return true; }
+    if (enableMongo && isMongoConfigured()) return saveRepoToMongo(doc);
+    return false;
+  }
+
+  async function forgetRepo(orgId, repoId) {
+    if (repoStore) return repoStore.remove(orgId, repoId);
+    if (enableMongo && isMongoConfigured()) return deleteRepoFromMongo(orgId, repoId);
+    return false;
+  }
+
+  async function listRemoteReposDocs(orgId) {
+    if (repoStore && typeof repoStore.list === 'function') return repoStore.list(orgId);
+    if (enableMongo && isMongoConfigured()) return listReposFromMongo(orgId);
+    return null;
+  }
+
+  async function applyRemoteRepos(orgId) {
+    const remote = await listRemoteReposDocs(orgId);
+    if (remote == null) return null;
+    const keep = new Set();
+    for (const doc of remote) {
+      if (!doc.id || doc.orgId !== orgId || !doc.cloneUrl) continue;
+      keep.add(doc.id);
+      const connOk = doc.connectionId && db.prepare('SELECT 1 FROM provider_connections WHERE id = ? AND org_id = ?').get(doc.connectionId, orgId);
+      const connectionId = connOk ? doc.connectionId : null;
+      const teamOk = doc.teamId && db.prepare('SELECT 1 FROM teams WHERE id = ? AND org_id = ?').get(doc.teamId, orgId);
+      const teamId = teamOk ? doc.teamId : null;
+      const config = typeof doc.config === 'string' ? doc.config : JSON.stringify(doc.config || {});
+      const byUrl = db.prepare('SELECT id, webhook_secret FROM repositories WHERE org_id = ? AND clone_url = ?').get(orgId, doc.cloneUrl);
+      if (byUrl && byUrl.id !== doc.id) {
+        db.prepare('DELETE FROM repositories WHERE id = ? AND org_id = ?').run(byUrl.id, orgId);
+      }
+      const existing = db.prepare('SELECT id, webhook_secret FROM repositories WHERE id = ? AND org_id = ?').get(doc.id, orgId);
+      const webhook = (existing && existing.webhook_secret) || (byUrl && byUrl.id === doc.id && byUrl.webhook_secret) || secretBox.encrypt(newToken(24));
+      if (existing) {
+        db.prepare('UPDATE repositories SET team_id = ?, connection_id = ?, provider = ?, full_name = ?, clone_url = ?, default_branch = ?, config = ?, schedule = ?, next_scan_at = ? WHERE id = ? AND org_id = ?')
+          .run(teamId, connectionId, doc.provider, doc.fullName, doc.cloneUrl, doc.defaultBranch || 'main', config, doc.schedule || null, doc.nextScanAt || null, doc.id, orgId);
+      } else {
+        db.prepare(`INSERT INTO repositories (id, org_id, team_id, connection_id, provider, full_name, clone_url, default_branch, config, webhook_secret, schedule, next_scan_at, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(doc.id, orgId, teamId, connectionId, doc.provider, doc.fullName, doc.cloneUrl, doc.defaultBranch || 'main', config, webhook, doc.schedule || null, doc.nextScanAt || null, doc.createdAt || nowIso());
+      }
+    }
+    const locals = db.prepare('SELECT id FROM repositories WHERE org_id = ?').all(orgId);
+    for (const row of locals) {
+      if (!keep.has(row.id)) db.prepare('DELETE FROM repositories WHERE id = ? AND org_id = ?').run(row.id, orgId);
+    }
+    return remote;
+  }
+
   const repos = {
     async add(ctx, { url, branch, connectionId = null, teamId = null, config }) {
       authorize(ctx, 'repos:write');
@@ -666,11 +785,13 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         throw new ValidationError('That repository is already connected');
       }
       audit(ctx, 'repo.add', id, { url: v.url });
+      await persistRepo(getRepo(ctx.orgId, id));
       return publicRepo(getRepo(ctx.orgId, id));
     },
 
-    list(ctx) {
+    async list(ctx) {
       authorize(ctx, 'repos:read');
+      await applyRemoteRepos(ctx.orgId);
       return db.prepare('SELECT * FROM repositories WHERE org_id = ? ORDER BY full_name').all(ctx.orgId).map((r) => {
         const last = db.prepare("SELECT * FROM scans WHERE org_id = ? AND repo_id = ? ORDER BY created_at DESC LIMIT 1").get(ctx.orgId, r.id);
         const lastDone = db.prepare("SELECT summary FROM scans WHERE org_id = ? AND repo_id = ? AND status = 'completed' ORDER BY created_at DESC LIMIT 1").get(ctx.orgId, r.id);
@@ -683,7 +804,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       return publicRepo(getRepo(ctx.orgId, repoId));
     },
 
-    update(ctx, repoId, patch) {
+    async update(ctx, repoId, patch) {
       authorize(ctx, 'repos:write');
       const repo = getRepo(ctx.orgId, repoId);
       const config = { ...parse(repo.config, {}), ...validateConfig(patch.config) };
@@ -695,26 +816,29 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       }
       db.prepare('UPDATE repositories SET config = ?, default_branch = ?, team_id = ? WHERE id = ?').run(JSON.stringify(config), branch, teamId, repoId);
       audit(ctx, 'repo.update', repoId);
+      await persistRepo(getRepo(ctx.orgId, repoId));
       return publicRepo(getRepo(ctx.orgId, repoId));
     },
 
-    setSchedule(ctx, repoId, schedule) {
+    async setSchedule(ctx, repoId, schedule) {
       authorize(ctx, 'repos:write');
       getRepo(ctx.orgId, repoId);
       if (schedule !== null && !SCHEDULES[schedule]) throw new ValidationError('Schedule must be hourly, daily, weekly or null');
       const next = schedule ? new Date(clock() + SCHEDULES[schedule]).toISOString() : null;
       db.prepare('UPDATE repositories SET schedule = ?, next_scan_at = ? WHERE id = ?').run(schedule, next, repoId);
       audit(ctx, 'repo.schedule', repoId, { schedule });
+      await persistRepo(getRepo(ctx.orgId, repoId));
       return { schedule, nextScanAt: next };
     },
 
-    remove(ctx, repoId) {
+    async remove(ctx, repoId) {
       authorize(ctx, 'repos:write');
       getRepo(ctx.orgId, repoId);
       transaction(db, () => {
         for (const t of ['finding_states', 'finding_reviews', 'ai_history']) db.prepare(`DELETE FROM ${t} WHERE org_id = ? AND repo_id = ?`).run(ctx.orgId, repoId);
         db.prepare('DELETE FROM repositories WHERE id = ? AND org_id = ?').run(repoId, ctx.orgId);
       });
+      await forgetRepo(ctx.orgId, repoId);
       audit(ctx, 'repo.remove', repoId);
     },
 
@@ -1168,8 +1292,10 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
   // ---------- dashboard ------------------------------------------------------------------------------
   let mongoSyncedOrgs = new Set();
   const dashboard = {
-    overview(ctx) {
+    async overview(ctx) {
       authorize(ctx, 'repos:read');
+      await applyRemoteConnections(ctx.orgId);
+      await applyRemoteRepos(ctx.orgId);
       const repoRows = db.prepare('SELECT * FROM repositories WHERE org_id = ? ORDER BY full_name').all(ctx.orgId);
       const totals = { total: 0, critical: 0, high: 0, medium: 0, low: 0 };
       let scoreSum = 0;

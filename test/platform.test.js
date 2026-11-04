@@ -119,9 +119,9 @@ test('RBAC: viewers read, developers scan, only admins manage', async () => {
   const asViewer = { userId: viewer.user.id, orgId: owner.ctx.orgId };
 
   const repo = await platform.repos.add(owner.ctx, { url: 'https://github.com/acme/app' });
-  assert.equal(platform.repos.list(asViewer).length, 1);
+  assert.equal((await platform.repos.list(asViewer)).length, 1);
   assert.throws(() => platform.scans.start(asViewer, repo.id), /permission/);
-  assert.throws(() => platform.repos.remove(asDev, repo.id), /permission/);
+  await assert.rejects(platform.repos.remove(asDev, repo.id), /permission/);
   await assert.rejects(platform.repos.add(asDev, { url: 'https://github.com/acme/other' }), /permission/);
   assert.throws(() => platform.orgs.addMember(asDev, { email: 'x@example.com' }), /permission/);
   assert.throws(() => platform.audit.list(asDev), /permission/);
@@ -140,7 +140,7 @@ test('tenant isolation: another org cannot see or touch anything', async () => {
 
   // B authenticated, but targeting A's org id: indistinguishable from a missing org.
   const intruder = { userId: b.user.id, orgId: a.ctx.orgId };
-  assert.throws(() => platform.repos.list(intruder), /not found/i);
+  await assert.rejects(platform.repos.list(intruder), /not found/i);
   // B using its own org with A's object ids: not found.
   const own = b.ctx;
   assert.throws(() => platform.repos.get(own, repo.id), /not found/i);
@@ -149,10 +149,10 @@ test('tenant isolation: another org cannot see or touch anything', async () => {
   assert.throws(() => platform.scans.report(own, scan.id, 'csv'), /not found/i);
   assert.throws(() => platform.scans.start(own, repo.id), /not found/i);
   assert.throws(() => platform.findings.update(own, repo.id, row.id, { status: 'fixed' }), /not found/i);
-  assert.throws(() => platform.repos.remove(own, repo.id), /not found/i);
+  await assert.rejects(platform.repos.remove(own, repo.id), /not found/i);
   await assert.rejects(platform.ai.explain(own, row.rowId), /AI analysis is turned off|not found/i);
-  assert.equal(platform.repos.list(own).length, 0);
-  assert.equal(platform.dashboard.overview(own).totals.total, 0);
+  assert.equal((await platform.repos.list(own)).length, 0);
+  assert.equal((await platform.dashboard.overview(own)).totals.total, 0);
   assert.equal(platform.audit.list(own).every((e) => e.target !== repo.id), true);
 });
 
@@ -327,7 +327,7 @@ test('full scan flow: queue, clone, scan, store, lifecycle, notifications', asyn
   assert.equal(platform.scans.findings(o.ctx, third.id).items[0].status, 'open');
   assert.ok(platform.findings.history(o.ctx, repo.id, fp).some((h) => h.action === 'reopened'));
 
-  const ov = platform.dashboard.overview(o.ctx);
+  const ov = await platform.dashboard.overview(o.ctx);
   assert.equal(ov.repositories.length, 1);
   assert.equal(ov.totals.high, 1);
   assert.equal(ov.trend.length, 3);
@@ -354,7 +354,7 @@ test('scan failures are classified: access errors fail fast, others retry then f
   assert.match(s.error, /access denied/);
   assert.equal(calls, 1, 'no retries for access errors');
   assert.ok(f.platform.notifications.list(o.ctx).some((n) => n.kind === 'scan.failed'));
-  assert.equal(f.platform.dashboard.overview(o.ctx).failedScans.length, 1);
+  assert.equal((await f.platform.dashboard.overview(o.ctx)).failedScans.length, 1);
 });
 
 test('transient failures are retried and the scan returns to queued', async () => {
@@ -469,15 +469,15 @@ test('schedules enqueue scans when due and reschedule', async () => {
   const o = await platform.auth.signup({ email: 'o@example.com', password: PASSWORD });
   const ctx = { userId: o.user.id, orgId: o.orgId };
   const repo = await platform.repos.add(ctx, { url: 'https://github.com/acme/app' });
-  assert.throws(() => platform.repos.setSchedule(ctx, repo.id, 'monthly'), /Schedule/);
-  platform.repos.setSchedule(ctx, repo.id, 'daily');
+  await assert.rejects(platform.repos.setSchedule(ctx, repo.id, 'monthly'), /Schedule/);
+  await platform.repos.setSchedule(ctx, repo.id, 'daily');
   assert.deepEqual(platform.automation.tickSchedules(), []);
   t += 25 * 3600e3;
   const started = platform.automation.tickSchedules();
   assert.equal(started.length, 1);
   assert.equal(platform.scans.get(ctx, started[0]).trigger, 'schedule');
   assert.deepEqual(platform.automation.tickSchedules(), [], 'rescheduled for tomorrow');
-  platform.repos.setSchedule(ctx, repo.id, null);
+  await platform.repos.setSchedule(ctx, repo.id, null);
 });
 
 test('retention purge removes old scans and their findings', async () => {
@@ -576,7 +576,7 @@ test('deleting an org or repo removes its data', async () => {
   const repo = await f.platform.repos.add(o.ctx, { url: 'https://github.com/acme/app' });
   f.platform.scans.start(o.ctx, repo.id);
   await f.drain();
-  f.platform.repos.remove(o.ctx, repo.id);
+  await f.platform.repos.remove(o.ctx, repo.id);
   for (const t of ['repositories', 'scans', 'findings', 'finding_states']) assert.equal(f.db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n, 0, t);
 
   const repo2 = await f.platform.repos.add(o.ctx, { url: 'https://github.com/acme/app2' });
@@ -600,7 +600,7 @@ test('organisation trend sums the latest result of every repository', async () =
   f.platform.scans.start(o.ctx, b.id);
   await f.drain();
 
-  const trend = f.platform.dashboard.overview(o.ctx).trend;
+  const trend = (await f.platform.dashboard.overview(o.ctx)).trend;
   assert.deepEqual(trend.map((p) => p.total), [1, 3], 'second point adds repo b to repo a');
   assert.equal(trend.at(-1).high, 3);
 });
