@@ -79,6 +79,10 @@ export const api = {
   del: (p) => request('DELETE', p),
   delete: (p) => request('DELETE', p),
   org: (p) => `/orgs/${session.orgId}${p}`,
+  async getText(path) {
+    const res = await request('GET', path, undefined, { raw: true });
+    return res.text();
+  },
   async download(path, filename) {
     const res = await request('GET', path, undefined, { raw: true });
     const url = URL.createObjectURL(await res.blob());

@@ -10,6 +10,7 @@ import {
   Skeleton,
   ScanSkeletonLoader,
 } from '../components/Common.jsx';
+import { ExportPreviewModal } from '../components/ExportPreviewModal.jsx';
 
 const GRADE_LABELS = {
   A: 'Clean',
@@ -625,6 +626,7 @@ export function ScanView({ scanId }) {
   const [repo, setRepo] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showPromptModal, setShowPromptModal] = useState(false);
+  const [exportModalState, setExportModalState] = useState({ isOpen: false, format: 'csv' });
 
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
@@ -976,14 +978,8 @@ export function ScanView({ scanId }) {
                       key={fmt}
                       type="button"
                       className="btn-export-item"
-                      onClick={() =>
-                        api
-                          .download(
-                            api.org(`/scans/${scanId}/report?format=${fmt}`),
-                            `${repo.fullName.replace('/', '-')}-${scanId.slice(0, 8)}.${ext}`
-                          )
-                          .catch((err) => toast(err.message, 'error'))
-                      }
+                      title={`Preview and generate ${label} export`}
+                      onClick={() => setExportModalState({ isOpen: true, format: fmt })}
                     >
                       {label}
                     </button>
@@ -1193,6 +1189,17 @@ export function ScanView({ scanId }) {
               repo={repo}
               initialFindings={findingsData.items || []}
               onClose={() => setShowPromptModal(false)}
+            />
+          )}
+
+          {exportModalState.isOpen && (
+            <ExportPreviewModal
+              isOpen={exportModalState.isOpen}
+              initialFormat={exportModalState.format}
+              scanId={scanId}
+              repo={repo}
+              scan={scan}
+              onClose={() => setExportModalState({ isOpen: false, format: 'csv' })}
             />
           )}
         </>
