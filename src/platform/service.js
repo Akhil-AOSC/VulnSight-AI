@@ -29,6 +29,9 @@ const {
   getMongoStatus,
   saveScanToMongo,
   listFullScansFromMongo,
+  saveGitConnectionToMongo,
+  getGitConnectionFromMongo,
+  deleteGitConnectionFromMongo,
 } = require('../db');
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -55,6 +58,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
   clock = () => Date.now(),
   enableMongo = false,
   enableAutoAi = false,
+  gitPatStore = null,
 } = {}) {
   const nowIso = () => new Date(clock()).toISOString();
 
@@ -351,10 +355,62 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
   };
 
   // ---------- git provider connections ------------------------------------------------------
-  function connectionToken(orgId, connectionId) {
+  // Encrypted PAT lives in MongoDB (one document per GitHub/GitLab/Bitbucket account) so several
+  // Git identities can be stored and loaded independently. SQLite keeps a copy for offline/FK use.
+  function sqliteConnection(orgId, connectionId) {
     const c = db.prepare('SELECT * FROM provider_connections WHERE id = ? AND org_id = ?').get(connectionId, orgId);
     if (!c) throw new NotFoundError('Connection not found');
-    return { connection: c, token: secretBox.decrypt(c.token_enc) };
+    return c;
+  }
+
+  function patDocument(c, tokenEnc) {
+    return {
+      id: c.id,
+      orgId: c.org_id,
+      provider: c.provider,
+      label: c.label,
+      account: c.account,
+      expiresAt: c.expires_at || null,
+      scopes: c.scopes || null,
+      createdBy: c.created_by,
+      createdAt: c.created_at,
+      tokenEnc,
+    };
+  }
+
+  async function persistPat(c, tokenEnc) {
+    const doc = patDocument(c, tokenEnc);
+    if (gitPatStore) {
+      await gitPatStore.save(doc);
+      return true;
+    }
+    if (enableMongo && isMongoConfigured()) return saveGitConnectionToMongo(doc);
+    return false;
+  }
+
+  async function loadPatDoc(orgId, connectionId) {
+    if (gitPatStore) return gitPatStore.get(orgId, connectionId);
+    if (enableMongo && isMongoConfigured()) return getGitConnectionFromMongo(orgId, connectionId);
+    return null;
+  }
+
+  async function forgetPat(orgId, connectionId) {
+    if (gitPatStore) return gitPatStore.remove(orgId, connectionId);
+    if (enableMongo && isMongoConfigured()) return deleteGitConnectionFromMongo(orgId, connectionId);
+    return false;
+  }
+
+  async function connectionToken(orgId, connectionId) {
+    const c = sqliteConnection(orgId, connectionId);
+    const remote = await loadPatDoc(orgId, connectionId);
+    if (remote && remote.tokenEnc) {
+      try {
+        return { connection: c, token: secretBox.decrypt(remote.tokenEnc), source: 'mongodb' };
+      } catch { /* different key or corrupt blob: use local copy */ }
+    }
+    const token = secretBox.decrypt(c.token_enc);
+    await persistPat(c, c.token_enc);
+    return { connection: c, token, source: 'local' };
   }
 
   const connections = {
@@ -365,8 +421,15 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       if (typeof token !== 'string' || token.length < 8 || token.length > 500) throw new ValidationError('Enter a valid access token');
       const { account, expiresAt = null, scopes = null } = await impl.validate(token, fetchImpl);
       const id = uuid();
+      const tokenEnc = secretBox.encrypt(token);
+      const createdAt = nowIso();
+      const rowLabel = String(label || account || provider).slice(0, 100);
       db.prepare('INSERT INTO provider_connections (id, org_id, provider, label, token_enc, account, expires_at, scopes, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, ctx.orgId, provider, String(label || account || provider).slice(0, 100), secretBox.encrypt(token), account, expiresAt, scopes, ctx.userId, nowIso());
+        .run(id, ctx.orgId, provider, rowLabel, tokenEnc, account, expiresAt, scopes, ctx.userId, createdAt);
+      await persistPat({
+        id, org_id: ctx.orgId, provider, label: rowLabel, account,
+        expires_at: expiresAt, scopes, created_by: ctx.userId, created_at: createdAt,
+      }, tokenEnc);
       audit(ctx, 'provider.connect', id, { provider, account, expiresAt });
       return { id, provider, account, expiresAt, scopes };
     },
@@ -384,13 +447,15 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
     },
     async check(ctx, connectionId) {
       authorize(ctx, 'providers:manage');
-      const { connection, token } = connectionToken(ctx.orgId, connectionId);
+      const { connection, token } = await connectionToken(ctx.orgId, connectionId);
       const impl = PROVIDERS[connection.provider];
       if (!impl) throw new ValidationError('Unsupported provider');
       try {
         const { account, expiresAt = null, scopes = null } = await impl.validate(token, fetchImpl);
         db.prepare('UPDATE provider_connections SET account = ?, expires_at = ?, scopes = ? WHERE id = ? AND org_id = ?')
           .run(account, expiresAt, scopes, connectionId, ctx.orgId);
+        const updated = db.prepare('SELECT * FROM provider_connections WHERE id = ? AND org_id = ?').get(connectionId, ctx.orgId);
+        await persistPat(updated, updated.token_enc);
         const now = new Date();
         const exp = expiresAt ? new Date(expiresAt) : null;
         const isExpired = exp ? exp <= now : false;
@@ -402,17 +467,19 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
     },
     async listRemoteRepos(ctx, connectionId) {
       authorize(ctx, 'repos:write');
-      const { connection, token } = connectionToken(ctx.orgId, connectionId);
+      const { connection, token } = await connectionToken(ctx.orgId, connectionId);
       return PROVIDERS[connection.provider].listRepos(token, fetchImpl);
     },
     async listBranches(ctx, connectionId, fullName) {
       authorize(ctx, 'repos:write');
-      const { connection, token } = connectionToken(ctx.orgId, connectionId);
+      const { connection, token } = await connectionToken(ctx.orgId, connectionId);
       return PROVIDERS[connection.provider].listBranches(token, fullName, fetchImpl);
     },
-    remove(ctx, connectionId) {
+    async remove(ctx, connectionId) {
       authorize(ctx, 'providers:manage');
+      sqliteConnection(ctx.orgId, connectionId);
       db.prepare('DELETE FROM provider_connections WHERE id = ? AND org_id = ?').run(connectionId, ctx.orgId);
+      await forgetPat(ctx.orgId, connectionId);
       audit(ctx, 'provider.disconnect', connectionId);
     },
   };
@@ -456,7 +523,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         if (!provider) throw new ValidationError('Unsupported Git host');
       }
       if (connectionId && provider !== 'local') {
-        const { connection } = connectionToken(ctx.orgId, connectionId);
+        const { connection } = await connectionToken(ctx.orgId, connectionId);
         if (connection.provider !== provider) throw new ValidationError('That connection is for a different Git provider');
       }
       if (teamId && !db.prepare('SELECT 1 FROM teams WHERE id = ? AND org_id = ?').get(teamId, ctx.orgId)) throw new NotFoundError('Team not found');
@@ -527,7 +594,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       authorize(ctx, 'repos:read');
       const repo = getRepo(ctx.orgId, repoId);
       if (!repo.connection_id) return [repo.default_branch];
-      const { token } = connectionToken(ctx.orgId, repo.connection_id);
+      const { token } = await connectionToken(ctx.orgId, repo.connection_id);
       return PROVIDERS[repo.provider].listBranches(token, repo.full_name, fetchImpl);
     },
 
@@ -719,7 +786,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         const validated = await validateUrl(repo.clone_url, { allowHosts });
         let authInfo = null;
         if (repo.connection_id) {
-          const { connection, token } = connectionToken(scan.org_id, repo.connection_id);
+          const { connection, token } = await connectionToken(scan.org_id, repo.connection_id);
           authInfo = PROVIDERS[connection.provider].cloneAuth(token);
         }
         const issueGrant = (auth) => grants.issue(scanId, scan.org_id, auth);

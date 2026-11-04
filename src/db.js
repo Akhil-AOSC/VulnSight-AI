@@ -55,12 +55,73 @@ async function getClient() {
   return clientPromise;
 }
 
+function mongoDbName() {
+  return process.env.MONGODB_DB_NAME || 'vulnsight';
+}
+
 async function getCollection() {
   const client = await getClient();
   if (!client) return null;
-  const dbName = process.env.MONGODB_DB_NAME || 'vulnsight';
   const collName = process.env.MONGODB_COLLECTION || 'scans';
-  return client.db(dbName).collection(collName);
+  return client.db(mongoDbName()).collection(collName);
+}
+
+async function getGitConnectionsCollection() {
+  const client = await getClient();
+  if (!client) return null;
+  const collName = process.env.MONGODB_GIT_COLLECTION || 'git_connections';
+  return client.db(mongoDbName()).collection(collName);
+}
+
+// Encrypted PAT + metadata. Never store the raw token. One document per Git account.
+async function saveGitConnectionToMongo(doc) {
+  try {
+    const coll = await getGitConnectionsCollection();
+    if (!coll) return false;
+    await coll.replaceOne(
+      { id: doc.id, orgId: doc.orgId },
+      { ...doc, updatedAt: new Date().toISOString() },
+      { upsert: true }
+    );
+    return true;
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not save Git connection:', err.message);
+    return false;
+  }
+}
+
+async function getGitConnectionFromMongo(orgId, id) {
+  try {
+    const coll = await getGitConnectionsCollection();
+    if (!coll) return null;
+    return await coll.findOne({ id, orgId });
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not load Git connection:', err.message);
+    return null;
+  }
+}
+
+async function listGitConnectionsFromMongo(orgId) {
+  try {
+    const coll = await getGitConnectionsCollection();
+    if (!coll) return null;
+    return await coll.find({ orgId }).sort({ createdAt: 1 }).toArray();
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not list Git connections:', err.message);
+    return null;
+  }
+}
+
+async function deleteGitConnectionFromMongo(orgId, id) {
+  try {
+    const coll = await getGitConnectionsCollection();
+    if (!coll) return false;
+    await coll.deleteOne({ id, orgId });
+    return true;
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not delete Git connection:', err.message);
+    return false;
+  }
 }
 
 async function saveScanToMongo(scanRecord) {
@@ -129,4 +190,8 @@ module.exports = {
   listFullScansFromMongo,
   getScanFromMongo,
   getClient,
+  saveGitConnectionToMongo,
+  getGitConnectionFromMongo,
+  listGitConnectionsFromMongo,
+  deleteGitConnectionFromMongo,
 };

@@ -103,7 +103,7 @@ function createApi({ platform, trustProxy = false, hsts = false, limiter = creat
   // ---- git providers ----
   route('GET', org('/connections'), async (req, p) => platform.connections.list(ctxOf(req, p)));
   route('POST', org('/connections'), async (req, p, b) => platform.connections.connect(ctxOf(req, p), b), { status: 201 });
-  route('DELETE', org('/connections/:conn'), async (req, p) => { platform.connections.remove(ctxOf(req, p), p.conn); return { ok: true }; });
+  route('DELETE', org('/connections/:conn'), async (req, p) => { await platform.connections.remove(ctxOf(req, p), p.conn); return { ok: true }; });
   route('POST', org('/connections/:conn/check'), async (req, p) => platform.connections.check(ctxOf(req, p), p.conn));
   route('GET', org('/connections/:conn/repos'), async (req, p) => platform.connections.listRemoteRepos(ctxOf(req, p), p.conn));
   route('GET', org('/connections/:conn/branches'), async (req, p, b, q) => platform.connections.listBranches(ctxOf(req, p), p.conn, q.repo));
