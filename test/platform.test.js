@@ -84,7 +84,7 @@ test('signup, login, sessions and logout', async () => {
   const { platform } = setup();
   const s = await signup(platform, 'Ann@Example.com');
   assert.equal(platform.auth.authenticate(s.token).userId, s.user.id);
-  assert.equal(platform.auth.me(s.user.id).orgs[0].role, 'owner');
+  assert.equal((await platform.auth.me(s.user.id)).orgs[0].role, 'owner');
 
   await assert.rejects(() => platform.auth.signup({ email: 'ann@example.com', password: PASSWORD }), /Unable to create/);
   await assert.rejects(() => platform.auth.signup({ email: 'bad', password: PASSWORD }), /valid email/);
@@ -124,9 +124,9 @@ test('RBAC: viewers read, developers scan, only admins manage', async () => {
   await assert.rejects(platform.repos.remove(asDev, repo.id), /permission/);
   await assert.rejects(platform.repos.add(asDev, { url: 'https://github.com/acme/other' }), /permission/);
   assert.throws(() => platform.orgs.addMember(asDev, { email: 'x@example.com' }), /permission/);
-  assert.throws(() => platform.audit.list(asDev), /permission/);
+  await assert.rejects(platform.audit.list(asDev), /permission/);
   assert.ok(platform.scans.start(asDev, repo.id).id);
-  assert.ok(platform.audit.list(owner.ctx).length > 0);
+  assert.ok((await platform.audit.list(owner.ctx)).length > 0);
 });
 
 test('tenant isolation: another org cannot see or touch anything', async () => {
@@ -153,7 +153,7 @@ test('tenant isolation: another org cannot see or touch anything', async () => {
   await assert.rejects(platform.ai.explain(own, row.rowId), /AI analysis is turned off|not found/i);
   assert.equal((await platform.repos.list(own)).length, 0);
   assert.equal((await platform.dashboard.overview(own)).totals.total, 0);
-  assert.equal(platform.audit.list(own).every((e) => e.target !== repo.id), true);
+  assert.equal((await platform.audit.list(own)).every((e) => e.target !== repo.id), true);
 });
 
 test('member management protects the last owner and owner-only changes', async () => {
@@ -170,7 +170,7 @@ test('member management protects the last owner and owner-only changes', async (
   assert.throws(() => platform.orgs.removeMember(asAdmin, owner.user.id), /Only owners/);
   platform.orgs.setMemberRole(owner.ctx, admin.user.id, 'owner');
   platform.orgs.setMemberRole(owner.ctx, owner.user.id, 'admin');
-  assert.equal(platform.orgs.listMembers(owner.ctx).find((m) => m.email === 'ad@example.com').role, 'owner');
+  assert.equal((await platform.orgs.listMembers(owner.ctx)).find((m) => m.email === 'ad@example.com').role, 'owner');
 });
 
 test('SSRF protection rejects dangerous repository URLs', async () => {
@@ -297,7 +297,7 @@ test('full scan flow: queue, clone, scan, store, lifecycle, notifications', asyn
   assert.equal(done.summary.new, 1);
   assert.equal(state.cleaned, 1, 'workspace cleaned up');
   assert.equal(state.clones[0].branch, 'main');
-  assert.ok(platform.notifications.list(o.ctx).some((n) => n.kind === 'findings.new'));
+  assert.ok((await platform.notifications.list(o.ctx)).some((n) => n.kind === 'findings.new'));
 
   // Triage: assign, acknowledge; suppression needs a reason.
   const fp = state.findings[0].id;
@@ -353,7 +353,7 @@ test('scan failures are classified: access errors fail fast, others retry then f
   assert.equal(s.status, 'failed');
   assert.match(s.error, /access denied/);
   assert.equal(calls, 1, 'no retries for access errors');
-  assert.ok(f.platform.notifications.list(o.ctx).some((n) => n.kind === 'scan.failed'));
+  assert.ok((await f.platform.notifications.list(o.ctx)).some((n) => n.kind === 'scan.failed'));
   assert.equal((await f.platform.dashboard.overview(o.ctx)).failedScans.length, 1);
 });
 
@@ -497,8 +497,8 @@ test('retention purge removes old scans and their findings', async () => {
   while (await worker.runOnce());
   assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM findings').get().n, 1);
 
-  assert.throws(() => platform.orgs.updateSettings(ctx, { retentionDays: 0 }), /between/);
-  platform.orgs.updateSettings(ctx, { retentionDays: 30 });
+  await assert.rejects(platform.orgs.updateSettings(ctx, { retentionDays: 0 }), /between/);
+  await platform.orgs.updateSettings(ctx, { retentionDays: 30 });
   t += 29 * 86400e3;
   assert.equal(platform.automation.purge().scansDeleted, 0);
   t += 2 * 86400e3;
@@ -515,7 +515,7 @@ test('AI is off by default, consent is per org, and output is saved separately',
   const row = f.platform.scans.findings(o.ctx, f.platform.scans.list(o.ctx)[0].id).items[0];
 
   await assert.rejects(f.platform.ai.explain(o.ctx, row.rowId), /turned off/);
-  f.platform.orgs.updateSettings(o.ctx, { aiEnabled: true });
+  await f.platform.orgs.updateSettings(o.ctx, { aiEnabled: true });
   await assert.rejects(f.platform.ai.explain(o.ctx, row.rowId), /No AI provider/);
 
   f.state.provider = createMockProvider('Because of X. ' + row.id);
@@ -526,12 +526,12 @@ test('AI is off by default, consent is per org, and output is saved separately',
   assert.equal(f.platform.ai.history(o.ctx, repo.id).length, 3);
   assert.equal(f.db.prepare('SELECT severity FROM findings').get().severity, 'high', 'AI never alters findings');
 
-  assert.equal(f.platform.orgs.updateSettings(o.ctx, { aiSendCode: true }).aiSendCode, true);
-  assert.equal(f.platform.orgs.updateSettings(o.ctx, { aiEnabled: false }).aiSendCode, false, 'turning AI off revokes code sharing');
+  assert.equal((await f.platform.orgs.updateSettings(o.ctx, { aiSendCode: true })).aiSendCode, true);
+  assert.equal((await f.platform.orgs.updateSettings(o.ctx, { aiEnabled: false })).aiSendCode, false, 'turning AI off revokes code sharing');
 
   const viewer = await signup(f.platform, 'v@example.com', 'V');
   f.platform.orgs.addMember(o.ctx, { email: 'v@example.com', role: 'viewer' });
-  f.platform.orgs.updateSettings(o.ctx, { aiEnabled: true });
+  await f.platform.orgs.updateSettings(o.ctx, { aiEnabled: true });
   await assert.rejects(f.platform.ai.explain({ userId: viewer.user.id, orgId: o.ctx.orgId }, row.rowId), /permission/);
 });
 
@@ -546,16 +546,16 @@ test('reports export per scan in every format', async () => {
   assert.equal(JSON.parse(f.platform.scans.report(o.ctx, scan.id, 'cyclonedx').body).bomFormat, 'CycloneDX');
   assert.equal(JSON.parse(f.platform.scans.report(o.ctx, scan.id, 'json').body).summary.total, 1);
   assert.throws(() => f.platform.scans.report(o.ctx, scan.id, 'pdf'), /Format/);
-  assert.ok(f.platform.audit.list(o.ctx, { action: 'report.export' }).length >= 4);
+  assert.ok((await f.platform.audit.list(o.ctx, { action: 'report.export' })).length >= 4);
 });
 
 test('teams, repo config validation and cancelling queued scans', async () => {
   const f = setup();
   const o = await signup(f.platform, 'o@example.com');
-  const team = f.platform.teams.create(o.ctx, { name: 'Platform' });
-  assert.throws(() => f.platform.teams.create(o.ctx, { name: 'Platform' }), /already exists/);
-  f.platform.teams.addMember(o.ctx, team.id, o.user.id);
-  assert.deepEqual(f.platform.teams.list(o.ctx)[0].members, [o.user.id]);
+  const team = await f.platform.teams.create(o.ctx, { name: 'Platform' });
+  await assert.rejects(f.platform.teams.create(o.ctx, { name: 'Platform' }), /already exists/);
+  await f.platform.teams.addMember(o.ctx, team.id, o.user.id);
+  assert.deepEqual((await f.platform.teams.list(o.ctx))[0].members, [o.user.id]);
 
   await assert.rejects(f.platform.repos.add(o.ctx, { url: 'https://github.com/acme/a', config: { scanners: ['rm -rf'] } }), /Invalid scanner/);
   await assert.rejects(f.platform.repos.add(o.ctx, { url: 'https://github.com/acme/a', config: { branches: ['--evil'] } }), /Invalid branch/);
@@ -582,7 +582,7 @@ test('deleting an org or repo removes its data', async () => {
   const repo2 = await f.platform.repos.add(o.ctx, { url: 'https://github.com/acme/app2' });
   f.platform.scans.start(o.ctx, repo2.id);
   await f.drain();
-  f.platform.orgs.delete(o.ctx);
+  await f.platform.orgs.delete(o.ctx);
   for (const t of ['orgs', 'memberships', 'repositories', 'scans', 'findings', 'scan_raw', 'jobs']) assert.equal(f.db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n, 0, t);
 });
 

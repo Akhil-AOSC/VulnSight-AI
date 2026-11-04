@@ -46,6 +46,10 @@ export function App() {
       setAuthChecking(true);
       const profile = await api.get('/me');
       session.me = profile;
+      if (profile.theme) {
+        themeStore.set(profile.theme);
+        setCurrentTheme(profile.theme);
+      }
       if (!profile.orgs.some((o) => o.id === session.orgId)) {
         session.orgId = profile.orgs[0] && profile.orgs[0].id;
       }
@@ -89,6 +93,7 @@ export function App() {
     const next = isDark ? 'light' : 'dark';
     themeStore.set(next);
     setCurrentTheme(next);
+    api.patch('/me', { theme: next }).catch(() => {});
   }
 
   async function handleLogout() {

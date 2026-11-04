@@ -12,14 +12,34 @@ const TABS = [
   ['audit', 'Audit log'],
 ];
 
-function ProfileTab({ onThemeChange }) {
+function ProfileTab({ onThemeChange, onMeUpdated }) {
   const me = session.me;
   const [currentTheme, setCurrentTheme] = useState(themeStore.get());
 
-  function handleTheme(val) {
+  useEffect(() => {
+    api
+      .get('/me')
+      .then((profile) => {
+        session.me = profile;
+        if (profile.theme) {
+          themeStore.set(profile.theme);
+          setCurrentTheme(profile.theme);
+          if (onThemeChange) onThemeChange(profile.theme);
+        }
+        if (onMeUpdated) onMeUpdated();
+      })
+      .catch((err) => toast(err.message, 'error'));
+  }, [onThemeChange, onMeUpdated]);
+
+  async function handleTheme(val) {
     setCurrentTheme(val);
     themeStore.set(val);
     if (onThemeChange) onThemeChange(val);
+    try {
+      await api.patch('/me', { theme: val });
+    } catch (err) {
+      toast(err.message, 'error');
+    }
   }
 
   return (
@@ -804,7 +824,9 @@ export function SettingsView({ tab = 'profile', onThemeChange, onMeUpdated }) {
         ))}
       </nav>
       <div className="grid">
-        {activeTab === 'profile' && <ProfileTab onThemeChange={onThemeChange} />}
+        {activeTab === 'profile' && (
+          <ProfileTab onThemeChange={onThemeChange} onMeUpdated={onMeUpdated} />
+        )}
         {activeTab === 'organisation' && <OrganisationTab onMeUpdated={onMeUpdated} />}
         {activeTab === 'members' && <MembersTab />}
         {activeTab === 'teams' && <TeamsTab />}

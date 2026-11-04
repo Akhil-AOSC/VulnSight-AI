@@ -26988,13 +26988,29 @@ var TABS = [
   ["notifications", "Notifications"],
   ["audit", "Audit log"]
 ];
-function ProfileTab({ onThemeChange }) {
+function ProfileTab({ onThemeChange, onMeUpdated }) {
   const me = session.me;
   const [currentTheme, setCurrentTheme] = (0, import_react10.useState)(themeStore.get());
-  function handleTheme(val) {
+  (0, import_react10.useEffect)(() => {
+    api.get("/me").then((profile) => {
+      session.me = profile;
+      if (profile.theme) {
+        themeStore.set(profile.theme);
+        setCurrentTheme(profile.theme);
+        if (onThemeChange) onThemeChange(profile.theme);
+      }
+      if (onMeUpdated) onMeUpdated();
+    }).catch((err) => toast(err.message, "error"));
+  }, [onThemeChange, onMeUpdated]);
+  async function handleTheme(val) {
     setCurrentTheme(val);
     themeStore.set(val);
     if (onThemeChange) onThemeChange(val);
+    try {
+      await api.patch("/me", { theme: val });
+    } catch (err) {
+      toast(err.message, "error");
+    }
   }
   return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("section", { className: "card card-compact", children: [
     /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("h2", { children: "Your profile" }),
@@ -27683,7 +27699,7 @@ function SettingsView({ tab = "profile", onThemeChange, onMeUpdated }) {
       k
     )) }),
     /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "grid", children: [
-      activeTab === "profile" && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(ProfileTab, { onThemeChange }),
+      activeTab === "profile" && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(ProfileTab, { onThemeChange, onMeUpdated }),
       activeTab === "organisation" && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(OrganisationTab, { onMeUpdated }),
       activeTab === "members" && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(MembersTab, {}),
       activeTab === "teams" && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(TeamsTab, {}),
@@ -27729,6 +27745,10 @@ function App() {
       setAuthChecking(true);
       const profile = await api.get("/me");
       session.me = profile;
+      if (profile.theme) {
+        themeStore.set(profile.theme);
+        setCurrentTheme(profile.theme);
+      }
       if (!profile.orgs.some((o) => o.id === session.orgId)) {
         session.orgId = profile.orgs[0] && profile.orgs[0].id;
       }
@@ -27766,6 +27786,8 @@ function App() {
     const next = isDark2 ? "light" : "dark";
     themeStore.set(next);
     setCurrentTheme(next);
+    api.patch("/me", { theme: next }).catch(() => {
+    });
   }
   async function handleLogout() {
     await api.post("/auth/logout").catch(() => {

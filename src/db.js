@@ -260,6 +260,148 @@ async function getScanFromMongo(id) {
   }
 }
 
+async function namedCollection(envKey, defaultName) {
+  const client = await getClient();
+  if (!client) return null;
+  return client.db(mongoDbName()).collection(process.env[envKey] || defaultName);
+}
+
+async function saveOrganisationToMongo(doc) {
+  try {
+    const coll = await namedCollection('MONGODB_ORGS_COLLECTION', 'organisations');
+    if (!coll) return false;
+    await coll.replaceOne({ id: doc.id }, { ...doc, updatedAt: new Date().toISOString() }, { upsert: true });
+    return true;
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not save organisation:', err.message);
+    return false;
+  }
+}
+
+async function getOrganisationFromMongo(id) {
+  try {
+    const coll = await namedCollection('MONGODB_ORGS_COLLECTION', 'organisations');
+    if (!coll) return null;
+    return await coll.findOne({ id });
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not load organisation:', err.message);
+    return null;
+  }
+}
+
+async function deleteOrganisationFromMongo(id) {
+  try {
+    const coll = await namedCollection('MONGODB_ORGS_COLLECTION', 'organisations');
+    if (!coll) return false;
+    await coll.deleteOne({ id });
+    return true;
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not delete organisation:', err.message);
+    return false;
+  }
+}
+
+async function saveTeamToMongo(doc) {
+  try {
+    const coll = await namedCollection('MONGODB_TEAMS_COLLECTION', 'teams');
+    if (!coll) return false;
+    await coll.replaceOne({ id: doc.id, orgId: doc.orgId }, { ...doc, updatedAt: new Date().toISOString() }, { upsert: true });
+    return true;
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not save team:', err.message);
+    return false;
+  }
+}
+
+async function listTeamsFromMongo(orgId) {
+  try {
+    const coll = await namedCollection('MONGODB_TEAMS_COLLECTION', 'teams');
+    if (!coll) return null;
+    return await coll.find({ orgId }).sort({ name: 1 }).toArray();
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not list teams:', err.message);
+    return null;
+  }
+}
+
+async function deleteTeamFromMongo(orgId, id) {
+  try {
+    const coll = await namedCollection('MONGODB_TEAMS_COLLECTION', 'teams');
+    if (!coll) return false;
+    await coll.deleteOne({ id, orgId });
+    return true;
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not delete team:', err.message);
+    return false;
+  }
+}
+
+async function saveNotificationToMongo(doc) {
+  try {
+    const coll = await namedCollection('MONGODB_NOTIFICATIONS_COLLECTION', 'notifications');
+    if (!coll) return false;
+    await coll.replaceOne({ id: doc.id, orgId: doc.orgId }, { ...doc, updatedAt: new Date().toISOString() }, { upsert: true });
+    return true;
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not save notification:', err.message);
+    return false;
+  }
+}
+
+async function listNotificationsFromMongo(orgId) {
+  try {
+    const coll = await namedCollection('MONGODB_NOTIFICATIONS_COLLECTION', 'notifications');
+    if (!coll) return null;
+    return await coll.find({ orgId }).sort({ createdAt: -1 }).limit(200).toArray();
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not list notifications:', err.message);
+    return null;
+  }
+}
+
+async function saveAuditToMongo(doc) {
+  try {
+    const coll = await namedCollection('MONGODB_AUDIT_COLLECTION', 'audit_logs');
+    if (!coll) return false;
+    await coll.replaceOne({ id: doc.id, orgId: doc.orgId }, { ...doc, updatedAt: new Date().toISOString() }, { upsert: true });
+    return true;
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not save audit log:', err.message);
+    return false;
+  }
+}
+
+async function listAuditFromMongo(orgId) {
+  try {
+    const coll = await namedCollection('MONGODB_AUDIT_COLLECTION', 'audit_logs');
+    if (!coll) return null;
+    return await coll.find({ orgId }).sort({ createdAt: -1 }).limit(500).toArray();
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not list audit logs:', err.message);
+    return null;
+  }
+}
+
+async function deleteOrgScopedFromMongo(orgId) {
+  try {
+    for (const [envKey, name] of [
+      ['MONGODB_TEAMS_COLLECTION', 'teams'],
+      ['MONGODB_NOTIFICATIONS_COLLECTION', 'notifications'],
+      ['MONGODB_AUDIT_COLLECTION', 'audit_logs'],
+      ['MONGODB_REPOS_COLLECTION', 'repositories'],
+      ['MONGODB_GIT_COLLECTION', 'git_connections'],
+    ]) {
+      const coll = await namedCollection(envKey, name);
+      if (coll) await coll.deleteMany({ orgId });
+    }
+    await deleteOrganisationFromMongo(orgId);
+    return true;
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not delete organisation data:', err.message);
+    return false;
+  }
+}
+
 module.exports = {
   isMongoConfigured,
   getMongoStatus,
@@ -277,4 +419,15 @@ module.exports = {
   saveRepoToMongo,
   listReposFromMongo,
   deleteRepoFromMongo,
+  saveOrganisationToMongo,
+  getOrganisationFromMongo,
+  deleteOrganisationFromMongo,
+  saveTeamToMongo,
+  listTeamsFromMongo,
+  deleteTeamFromMongo,
+  saveNotificationToMongo,
+  listNotificationsFromMongo,
+  saveAuditToMongo,
+  listAuditFromMongo,
+  deleteOrgScopedFromMongo,
 };

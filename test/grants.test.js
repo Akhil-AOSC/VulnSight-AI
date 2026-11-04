@@ -46,7 +46,7 @@ test('a grant yields the credential exactly once; a replay is refused and audite
   assert.ok(secret.length >= 40);
   assert.deepEqual(b.platform.grants.redeem(scan.id, secret, '10.0.0.9'), AUTH);
   assert.throws(() => b.platform.grants.redeem(scan.id, secret, '203.0.113.7'), /Invalid or expired grant/);
-  const events = b.platform.audit.list(b.ctx).map((e) => e.action);
+  const events = (await b.platform.audit.list(b.ctx)).map((e) => e.action);
   assert.ok(events.includes('scan.grant_used'));
   const denied = b.db.prepare("SELECT detail, ip FROM audit_logs WHERE action = 'scan.grant_denied'").all();
   assert.equal(denied.length, 1);

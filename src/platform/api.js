@@ -79,6 +79,7 @@ function createApi({ platform, trustProxy = false, hsts = false, limiter = creat
   // ---- session ----
   route('POST', '/api/v1/auth/logout', async (req) => { platform.auth.logout(req.token); return { ok: true }; });
   route('GET', '/api/v1/me', async (req) => platform.auth.me(req.userId));
+  route('PATCH', '/api/v1/me', async (req, p, b) => platform.auth.setTheme(req.userId, b.theme));
   route('POST', '/api/v1/orgs', async (req, p, body) => platform.orgs.create(req.userId, body), { status: 201 });
 
   // ---- organisation ----
@@ -86,19 +87,19 @@ function createApi({ platform, trustProxy = false, hsts = false, limiter = creat
   route('GET', org('/settings'), async (req, p) => platform.orgs.getSettings(ctxOf(req, p)));
   route('PATCH', org('/settings'), async (req, p, b) => platform.orgs.updateSettings(ctxOf(req, p), b));
   route('PATCH', org(''), async (req, p, b) => platform.orgs.rename(ctxOf(req, p), b.name));
-  route('DELETE', org(''), async (req, p) => { platform.orgs.delete(ctxOf(req, p)); return { ok: true }; });
+  route('DELETE', org(''), async (req, p) => { await platform.orgs.delete(ctxOf(req, p)); return { ok: true }; });
   route('GET', org('/members'), async (req, p) => platform.orgs.listMembers(ctxOf(req, p)));
   route('POST', org('/members'), async (req, p, b) => platform.orgs.addMember(ctxOf(req, p), b), { status: 201 });
   route('PATCH', org('/members/:user'), async (req, p, b) => platform.orgs.setMemberRole(ctxOf(req, p), p.user, b.role));
   route('DELETE', org('/members/:user'), async (req, p) => { platform.orgs.removeMember(ctxOf(req, p), p.user); return { ok: true }; });
   route('GET', org('/teams'), async (req, p) => platform.teams.list(ctxOf(req, p)));
   route('POST', org('/teams'), async (req, p, b) => platform.teams.create(ctxOf(req, p), b), { status: 201 });
-  route('DELETE', org('/teams/:team'), async (req, p) => { platform.teams.delete(ctxOf(req, p), p.team); return { ok: true }; });
-  route('POST', org('/teams/:team/members/:user'), async (req, p) => { platform.teams.addMember(ctxOf(req, p), p.team, p.user); return { ok: true }; });
-  route('DELETE', org('/teams/:team/members/:user'), async (req, p) => { platform.teams.removeMember(ctxOf(req, p), p.team, p.user); return { ok: true }; });
+  route('DELETE', org('/teams/:team'), async (req, p) => { await platform.teams.delete(ctxOf(req, p), p.team); return { ok: true }; });
+  route('POST', org('/teams/:team/members/:user'), async (req, p) => { await platform.teams.addMember(ctxOf(req, p), p.team, p.user); return { ok: true }; });
+  route('DELETE', org('/teams/:team/members/:user'), async (req, p) => { await platform.teams.removeMember(ctxOf(req, p), p.team, p.user); return { ok: true }; });
   route('GET', org('/audit'), async (req, p, b, q) => platform.audit.list(ctxOf(req, p), q));
   route('GET', org('/notifications'), async (req, p) => platform.notifications.list(ctxOf(req, p)));
-  route('POST', org('/notifications/read'), async (req, p, b) => { platform.notifications.markRead(ctxOf(req, p), b.id); return { ok: true }; });
+  route('POST', org('/notifications/read'), async (req, p, b) => { await platform.notifications.markRead(ctxOf(req, p), b.id); return { ok: true }; });
 
   // ---- git providers ----
   route('GET', org('/connections'), async (req, p) => platform.connections.list(ctxOf(req, p)));

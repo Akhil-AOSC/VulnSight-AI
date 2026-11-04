@@ -39,6 +39,16 @@ const {
   saveRepoToMongo,
   listReposFromMongo,
   deleteRepoFromMongo,
+  saveOrganisationToMongo,
+  getOrganisationFromMongo,
+  saveTeamToMongo,
+  listTeamsFromMongo,
+  deleteTeamFromMongo,
+  saveNotificationToMongo,
+  listNotificationsFromMongo,
+  saveAuditToMongo,
+  listAuditFromMongo,
+  deleteOrgScopedFromMongo,
 } = require('../db');
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -68,6 +78,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
   gitPatStore = null,
   userStore = null,
   repoStore = null,
+  orgSyncStore = null,
 } = {}) {
   const nowIso = () => new Date(clock()).toISOString();
 
@@ -88,14 +99,26 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
   }
 
   function audit(ctx, action, target = null, detail = null) {
+    const id = uuid();
+    const orgId = (ctx && ctx.orgId) || null;
+    const userId = (ctx && ctx.userId) || null;
+    const createdAt = nowIso();
+    const detailJson = detail ? JSON.stringify(detail) : null;
+    const ip = (ctx && ctx.ip) || null;
     db.prepare('INSERT INTO audit_logs (id, org_id, user_id, action, target, detail, ip, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(uuid(), (ctx && ctx.orgId) || null, (ctx && ctx.userId) || null, action, target, detail ? JSON.stringify(detail) : null, (ctx && ctx.ip) || null, nowIso());
+      .run(id, orgId, userId, action, target, detailJson, ip, createdAt);
+    if (orgId) persistAudit({ id, orgId, userId, action, target, detail, ip, createdAt }).catch(() => {});
   }
 
   function notify(orgId, kind, title, body, roles = ['owner', 'admin']) {
     const users = db.prepare(`SELECT user_id FROM memberships WHERE org_id = ? AND role IN (${roles.map(() => '?').join(',')})`).all(orgId, ...roles);
     const stmt = db.prepare('INSERT INTO notifications (id, org_id, user_id, kind, title, body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
-    for (const u of users) stmt.run(uuid(), orgId, u.user_id, kind, title, body, nowIso());
+    for (const u of users) {
+      const id = uuid();
+      const createdAt = nowIso();
+      stmt.run(id, orgId, u.user_id, kind, title, body, createdAt);
+      persistNotification({ id, orgId, userId: u.user_id, kind, title, body, read: false, createdAt }).catch(() => {});
+    }
   }
 
   function settingsOf(orgId) {
@@ -172,6 +195,11 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
   }
 
   const orgWrapKeys = new Map();
+  const userThemes = new Map();
+
+  function usesOrgSync() {
+    return Boolean(orgSyncStore || (enableMongo && isMongoConfigured()));
+  }
 
   async function persistUser(userId) {
     const doc = userDocument(userId);
@@ -183,6 +211,9 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       orgWrapKeys.set(o.id, wrapKey);
       return { ...o, wrapKey };
     });
+    const theme = userThemes.get(userId) || (previous && previous.theme) || 'light';
+    userThemes.set(userId, theme);
+    doc.theme = theme;
     if (userStore) { await userStore.save(doc); return true; }
     if (enableMongo && isMongoConfigured()) return saveUserToMongo(doc);
     return false;
@@ -206,16 +237,23 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         if (!db.prepare('SELECT 1 FROM orgs WHERE id = ?').get(org.id)) {
           db.prepare('INSERT INTO orgs (id, name, created_at, settings) VALUES (?, ?, ?, ?)')
             .run(org.id, org.name || 'Organisation', org.createdAt || nowIso(), org.settings || '{}');
+        } else if (org.name || org.settings) {
+          db.prepare('UPDATE orgs SET name = COALESCE(?, name), settings = COALESCE(?, settings) WHERE id = ?')
+            .run(org.name || null, org.settings || null, org.id);
         }
-        if (!db.prepare('SELECT 1 FROM memberships WHERE org_id = ? AND user_id = ?').get(org.id, doc.id)) {
+        const membership = db.prepare('SELECT role FROM memberships WHERE org_id = ? AND user_id = ?').get(org.id, doc.id);
+        if (!membership) {
           db.prepare('INSERT INTO memberships (org_id, user_id, role, created_at) VALUES (?, ?, ?, ?)')
             .run(org.id, doc.id, org.role || 'developer', org.joinedAt || nowIso());
+        } else if (org.role && membership.role !== org.role) {
+          db.prepare('UPDATE memberships SET role = ? WHERE org_id = ? AND user_id = ?').run(org.role, org.id, doc.id);
         }
       }
     });
     for (const org of doc.orgs || []) {
       if (org.id && org.wrapKey) orgWrapKeys.set(org.id, org.wrapKey);
     }
+    if (doc.id && doc.theme) userThemes.set(doc.id, doc.theme);
     return db.prepare('SELECT * FROM users WHERE email = ?').get(doc.email);
   }
 
@@ -265,8 +303,12 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       await persistUser(user.id);
       const orgIds = db.prepare('SELECT org_id AS id FROM memberships WHERE user_id = ?').all(user.id).map((o) => o.id);
       for (const orgId of orgIds) {
+        await applyRemoteOrganisation(orgId);
+        await applyRemoteTeams(orgId);
         await applyRemoteConnections(orgId);
         await applyRemoteRepos(orgId);
+        await applyRemoteNotifications(orgId);
+        await applyRemoteAudit(orgId);
       }
       audit({ ...ctx, userId: user.id }, 'user.login', user.id);
       return { ...auth.createSession(user.id), user: { id: user.id, email: user.email, name: user.name } };
@@ -290,14 +332,158 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha256(String(token || '')));
     },
 
-    me(userId) {
+    async me(userId) {
       const user = db.prepare('SELECT id, email, name, created_at FROM users WHERE id = ?').get(userId);
       if (!user) throw new AuthError();
+      await persistUser(userId);
       const orgs = db.prepare('SELECT o.id, o.name, m.role FROM memberships m JOIN orgs o ON o.id = m.org_id WHERE m.user_id = ? ORDER BY o.name').all(userId);
       const { PERMISSIONS } = require('./rbac');
-      return { ...user, orgs: orgs.map((o) => ({ ...o, permissions: PERMISSIONS[o.role] || [] })) };
+      return {
+        ...user,
+        theme: userThemes.get(userId) || 'light',
+        orgs: orgs.map((o) => ({ ...o, permissions: PERMISSIONS[o.role] || [] })),
+      };
+    },
+
+    async setTheme(userId, theme) {
+      const allowed = ['light', 'dark', 'auto'];
+      const next = allowed.includes(theme) ? theme : 'light';
+      userThemes.set(userId, next);
+      await persistUser(userId);
+      return { theme: next };
     },
   };
+
+  function organisationDocument(orgId) {
+    const org = db.prepare('SELECT * FROM orgs WHERE id = ?').get(orgId);
+    if (!org) return null;
+    const members = db.prepare('SELECT u.id AS userId, u.email, u.name, m.role, m.created_at AS joinedAt FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.org_id = ?').all(orgId);
+    return { id: org.id, name: org.name, settings: parse(org.settings, {}), createdAt: org.created_at, members };
+  }
+
+  function teamDocument(orgId, teamId) {
+    const team = db.prepare('SELECT * FROM teams WHERE id = ? AND org_id = ?').get(teamId, orgId);
+    if (!team) return null;
+    const members = db.prepare('SELECT user_id AS userId FROM team_members WHERE team_id = ?').all(teamId).map((m) => m.userId);
+    return { id: team.id, orgId, name: team.name, createdAt: team.created_at, members };
+  }
+
+  async function persistOrganisation(orgId) {
+    const doc = organisationDocument(orgId);
+    if (!doc) return false;
+    if (orgSyncStore) { await orgSyncStore.saveOrg(doc); return true; }
+    if (enableMongo && isMongoConfigured()) return saveOrganisationToMongo(doc);
+    return false;
+  }
+
+  async function persistTeam(orgId, teamId) {
+    const doc = teamDocument(orgId, teamId);
+    if (!doc) return false;
+    if (orgSyncStore) { await orgSyncStore.saveTeam(doc); return true; }
+    if (enableMongo && isMongoConfigured()) return saveTeamToMongo(doc);
+    return false;
+  }
+
+  async function forgetTeam(orgId, teamId) {
+    if (orgSyncStore) return orgSyncStore.removeTeam(orgId, teamId);
+    if (enableMongo && isMongoConfigured()) return deleteTeamFromMongo(orgId, teamId);
+    return false;
+  }
+
+  async function persistNotification(doc) {
+    if (orgSyncStore) { await orgSyncStore.saveNotification(doc); return true; }
+    if (enableMongo && isMongoConfigured()) return saveNotificationToMongo(doc);
+    return false;
+  }
+
+  async function persistAudit(doc) {
+    if (orgSyncStore) { await orgSyncStore.saveAudit(doc); return true; }
+    if (enableMongo && isMongoConfigured()) return saveAuditToMongo(doc);
+    return false;
+  }
+
+  async function applyRemoteOrganisation(orgId) {
+    if (!usesOrgSync()) return null;
+    const remote = orgSyncStore ? await orgSyncStore.getOrg(orgId) : await getOrganisationFromMongo(orgId);
+    if (!remote || !remote.id) return null;
+    if (!db.prepare('SELECT 1 FROM orgs WHERE id = ?').get(orgId)) {
+      db.prepare('INSERT INTO orgs (id, name, created_at, settings) VALUES (?, ?, ?, ?)')
+        .run(orgId, remote.name || 'Organisation', remote.createdAt || nowIso(), JSON.stringify(remote.settings || {}));
+    } else {
+      db.prepare('UPDATE orgs SET name = ?, settings = ? WHERE id = ?')
+        .run(remote.name || 'Organisation', JSON.stringify(remote.settings || {}), orgId);
+    }
+    for (const member of remote.members || []) {
+      if (!member.userId || !db.prepare('SELECT 1 FROM users WHERE id = ?').get(member.userId)) continue;
+      const existing = db.prepare('SELECT role FROM memberships WHERE org_id = ? AND user_id = ?').get(orgId, member.userId);
+      if (!existing) {
+        db.prepare('INSERT INTO memberships (org_id, user_id, role, created_at) VALUES (?, ?, ?, ?)')
+          .run(orgId, member.userId, member.role || 'developer', member.joinedAt || nowIso());
+      } else if (member.role && existing.role !== member.role) {
+        db.prepare('UPDATE memberships SET role = ? WHERE org_id = ? AND user_id = ?').run(member.role, orgId, member.userId);
+      }
+    }
+    return remote;
+  }
+
+  async function applyRemoteTeams(orgId) {
+    if (!usesOrgSync()) return null;
+    const remote = orgSyncStore ? await orgSyncStore.listTeams(orgId) : await listTeamsFromMongo(orgId);
+    if (remote == null) return null;
+    const keep = new Set();
+    for (const doc of remote) {
+      if (!doc.id || doc.orgId !== orgId) continue;
+      keep.add(doc.id);
+      if (!db.prepare('SELECT 1 FROM teams WHERE id = ? AND org_id = ?').get(doc.id, orgId)) {
+        db.prepare('INSERT INTO teams (id, org_id, name, created_at) VALUES (?, ?, ?, ?)')
+          .run(doc.id, orgId, doc.name, doc.createdAt || nowIso());
+      } else {
+        db.prepare('UPDATE teams SET name = ? WHERE id = ? AND org_id = ?').run(doc.name, doc.id, orgId);
+      }
+      db.prepare('DELETE FROM team_members WHERE team_id = ?').run(doc.id);
+      for (const userId of doc.members || []) {
+        if (db.prepare('SELECT 1 FROM users WHERE id = ?').get(userId)
+          && db.prepare('SELECT 1 FROM memberships WHERE org_id = ? AND user_id = ?').get(orgId, userId)) {
+          db.prepare('INSERT OR IGNORE INTO team_members (team_id, user_id) VALUES (?, ?)').run(doc.id, userId);
+        }
+      }
+    }
+    for (const row of db.prepare('SELECT id FROM teams WHERE org_id = ?').all(orgId)) {
+      if (!keep.has(row.id)) db.prepare('DELETE FROM teams WHERE id = ? AND org_id = ?').run(row.id, orgId);
+    }
+    return remote;
+  }
+
+  async function applyRemoteNotifications(orgId) {
+    if (!usesOrgSync()) return null;
+    const remote = orgSyncStore ? await orgSyncStore.listNotifications(orgId) : await listNotificationsFromMongo(orgId);
+    if (remote == null) return null;
+    for (const doc of remote) {
+      if (!doc.id || doc.orgId !== orgId) continue;
+      const existing = db.prepare('SELECT id FROM notifications WHERE id = ? AND org_id = ?').get(doc.id, orgId);
+      if (existing) {
+        db.prepare('UPDATE notifications SET kind = ?, title = ?, body = ?, read = ?, user_id = ? WHERE id = ? AND org_id = ?')
+          .run(doc.kind, doc.title, doc.body || null, doc.read ? 1 : 0, doc.userId || null, doc.id, orgId);
+      } else {
+        db.prepare('INSERT INTO notifications (id, org_id, user_id, kind, title, body, read, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(doc.id, orgId, doc.userId || null, doc.kind, doc.title, doc.body || null, doc.read ? 1 : 0, doc.createdAt || nowIso());
+      }
+    }
+    return remote;
+  }
+
+  async function applyRemoteAudit(orgId) {
+    if (!usesOrgSync()) return null;
+    const remote = orgSyncStore ? await orgSyncStore.listAudits(orgId) : await listAuditFromMongo(orgId);
+    if (remote == null) return null;
+    for (const doc of remote) {
+      if (!doc.id || doc.orgId !== orgId) continue;
+      if (db.prepare('SELECT 1 FROM audit_logs WHERE id = ?').get(doc.id)) continue;
+      db.prepare('INSERT INTO audit_logs (id, org_id, user_id, action, target, detail, ip, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(doc.id, orgId, doc.userId || null, doc.action, doc.target || null, doc.detail ? JSON.stringify(doc.detail) : null, doc.ip || null, doc.createdAt || nowIso());
+    }
+    return remote;
+  }
 
   // ---------- organisations, members, teams ------------------------------------------------
   const orgs = {
@@ -310,16 +496,20 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         db.prepare('INSERT INTO memberships (org_id, user_id, role, created_at) VALUES (?, ?, ?, ?)').run(orgId, userId, 'owner', nowIso());
       });
       audit({ userId, orgId }, 'org.create', orgId);
+      persistOrganisation(orgId).catch(() => {});
       persistUser(userId).catch(() => {});
       return { id: orgId, name: clean, role: 'owner' };
     },
 
-    getSettings(ctx) {
+    async getSettings(ctx) {
       authorize(ctx, 'repos:read');
+      await persistOrganisation(ctx.orgId);
+      await persistUser(ctx.userId);
+      await applyRemoteOrganisation(ctx.orgId);
       return settingsOf(ctx.orgId);
     },
 
-    updateSettings(ctx, patch) {
+    async updateSettings(ctx, patch) {
       authorize(ctx, 'org:settings');
       const next = { ...settingsOf(ctx.orgId) };
       if (typeof patch.aiEnabled === 'boolean') next.aiEnabled = patch.aiEnabled;
@@ -332,31 +522,40 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       }
       db.prepare('UPDATE orgs SET settings = ? WHERE id = ?').run(JSON.stringify(next), ctx.orgId);
       audit(ctx, 'org.settings', ctx.orgId, next);
+      await persistOrganisation(ctx.orgId);
+      await persistUser(ctx.userId);
       return next;
     },
 
-    rename(ctx, name) {
+    async rename(ctx, name) {
       authorize(ctx, 'org:settings');
       const clean = String(name || '').trim().slice(0, 100);
       if (!clean) throw new ValidationError('Organisation name is required');
       db.prepare('UPDATE orgs SET name = ? WHERE id = ?').run(clean, ctx.orgId);
       audit(ctx, 'org.rename', ctx.orgId);
+      await persistOrganisation(ctx.orgId);
+      await persistUser(ctx.userId);
       return { id: ctx.orgId, name: clean };
     },
 
-    delete(ctx) {
+    async delete(ctx) {
       authorize(ctx, 'org:delete');
+      const orgId = ctx.orgId;
       transaction(db, () => {
         for (const t of ['finding_states', 'finding_reviews', 'ai_history', 'notifications', 'jobs', 'scan_raw', 'findings']) {
-          db.prepare(`DELETE FROM ${t} WHERE org_id = ?`).run(ctx.orgId);
+          db.prepare(`DELETE FROM ${t} WHERE org_id = ?`).run(orgId);
         }
-        db.prepare('DELETE FROM orgs WHERE id = ?').run(ctx.orgId);
+        db.prepare('DELETE FROM orgs WHERE id = ?').run(orgId);
       });
-      audit({ userId: ctx.userId, ip: ctx.ip }, 'org.delete', ctx.orgId);
+      if (orgSyncStore) await orgSyncStore.removeOrg(orgId);
+      else if (enableMongo && isMongoConfigured()) await deleteOrgScopedFromMongo(orgId);
+      audit({ userId: ctx.userId, ip: ctx.ip }, 'org.delete', orgId);
     },
 
-    listMembers(ctx) {
+    async listMembers(ctx) {
       authorize(ctx, 'teams:read');
+      await persistOrganisation(ctx.orgId);
+      await applyRemoteOrganisation(ctx.orgId);
       return db.prepare('SELECT u.id, u.email, u.name, m.role, m.created_at AS joinedAt FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.org_id = ? ORDER BY u.email').all(ctx.orgId);
     },
 
@@ -369,6 +568,9 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       if (db.prepare('SELECT 1 FROM memberships WHERE org_id = ? AND user_id = ?').get(ctx.orgId, user.id)) throw new ValidationError('Already a member');
       db.prepare('INSERT INTO memberships (org_id, user_id, role, created_at) VALUES (?, ?, ?, ?)').run(ctx.orgId, user.id, role, nowIso());
       audit(ctx, 'member.add', user.id, { role });
+      persistOrganisation(ctx.orgId).catch(() => {});
+      persistUser(ctx.userId).catch(() => {});
+      persistUser(user.id).catch(() => {});
       return { userId: user.id, role };
     },
 
@@ -380,6 +582,9 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       if (current === 'owner' && role !== 'owner') assertNotLastOwner(ctx.orgId);
       db.prepare('UPDATE memberships SET role = ? WHERE org_id = ? AND user_id = ?').run(role, ctx.orgId, userId);
       audit(ctx, 'member.role', userId, { from: current, to: role });
+      persistOrganisation(ctx.orgId).catch(() => {});
+      persistUser(ctx.userId).catch(() => {});
+      persistUser(userId).catch(() => {});
       return { userId, role };
     },
 
@@ -393,6 +598,9 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       db.prepare('DELETE FROM memberships WHERE org_id = ? AND user_id = ?').run(ctx.orgId, userId);
       db.prepare('DELETE FROM team_members WHERE user_id = ? AND team_id IN (SELECT id FROM teams WHERE org_id = ?)').run(userId, ctx.orgId);
       audit(ctx, 'member.remove', userId);
+      persistOrganisation(ctx.orgId).catch(() => {});
+      persistUser(ctx.userId).catch(() => {});
+      persistUser(userId).catch(() => {});
     },
   };
 
@@ -402,13 +610,17 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
   }
 
   const teams = {
-    list(ctx) {
+    async list(ctx) {
       authorize(ctx, 'teams:read');
+      await applyRemoteTeams(ctx.orgId);
+      for (const t of db.prepare('SELECT id FROM teams WHERE org_id = ?').all(ctx.orgId)) {
+        await persistTeam(ctx.orgId, t.id);
+      }
       return db.prepare('SELECT id, name, created_at AS createdAt FROM teams WHERE org_id = ? ORDER BY name').all(ctx.orgId).map((t) => ({
         ...t, members: db.prepare('SELECT user_id AS userId FROM team_members WHERE team_id = ?').all(t.id).map((m) => m.userId),
       }));
     },
-    create(ctx, { name }) {
+    async create(ctx, { name }) {
       authorize(ctx, 'teams:manage');
       const clean = String(name || '').trim().slice(0, 100);
       if (!clean) throw new ValidationError('Team name is required');
@@ -419,24 +631,28 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         throw new ValidationError('A team with that name already exists');
       }
       audit(ctx, 'team.create', id);
+      await persistTeam(ctx.orgId, id);
       return { id, name: clean };
     },
-    addMember(ctx, teamId, userId) {
+    async addMember(ctx, teamId, userId) {
       authorize(ctx, 'teams:manage');
       if (!db.prepare('SELECT 1 FROM teams WHERE id = ? AND org_id = ?').get(teamId, ctx.orgId)) throw new NotFoundError('Team not found');
       roleOf(userId, ctx.orgId);
       db.prepare('INSERT OR IGNORE INTO team_members (team_id, user_id) VALUES (?, ?)').run(teamId, userId);
       audit(ctx, 'team.member_add', teamId, { userId });
+      await persistTeam(ctx.orgId, teamId);
     },
-    removeMember(ctx, teamId, userId) {
+    async removeMember(ctx, teamId, userId) {
       authorize(ctx, 'teams:manage');
       if (!db.prepare('SELECT 1 FROM teams WHERE id = ? AND org_id = ?').get(teamId, ctx.orgId)) throw new NotFoundError('Team not found');
       db.prepare('DELETE FROM team_members WHERE team_id = ? AND user_id = ?').run(teamId, userId);
       audit(ctx, 'team.member_remove', teamId, { userId });
+      await persistTeam(ctx.orgId, teamId);
     },
-    delete(ctx, teamId) {
+    async delete(ctx, teamId) {
       authorize(ctx, 'teams:manage');
       db.prepare('DELETE FROM teams WHERE id = ? AND org_id = ?').run(teamId, ctx.orgId);
+      await forgetTeam(ctx.orgId, teamId);
       audit(ctx, 'team.delete', teamId);
     },
   };
@@ -1568,8 +1784,16 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
 
   // ---------- audit log, notifications ---------------------------------------------------------------------
   const auditApi = {
-    list(ctx, { limit = 100, action } = {}) {
+    async list(ctx, { limit = 100, action } = {}) {
       authorize(ctx, 'audit:read');
+      await applyRemoteAudit(ctx.orgId);
+      const locals = db.prepare('SELECT * FROM audit_logs WHERE org_id = ? ORDER BY created_at DESC LIMIT 500').all(ctx.orgId);
+      for (const row of locals) {
+        await persistAudit({
+          id: row.id, orgId: row.org_id, userId: row.user_id, action: row.action, target: row.target,
+          detail: parse(row.detail), ip: row.ip, createdAt: row.created_at,
+        });
+      }
       const lim = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 500);
       const rows = action
         ? db.prepare('SELECT a.id, a.action, a.target, a.detail, a.ip, a.created_at AS createdAt, u.email AS user FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id WHERE a.org_id = ? AND a.action = ? ORDER BY a.created_at DESC LIMIT ?').all(ctx.orgId, action, lim)
@@ -1579,13 +1803,30 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
   };
 
   const notifications = {
-    list(ctx) {
+    async list(ctx) {
       authorize(ctx, 'repos:read');
+      await applyRemoteNotifications(ctx.orgId);
+      const locals = db.prepare('SELECT * FROM notifications WHERE org_id = ? ORDER BY created_at DESC LIMIT 200').all(ctx.orgId);
+      for (const row of locals) {
+        await persistNotification({
+          id: row.id, orgId: row.org_id, userId: row.user_id, kind: row.kind, title: row.title,
+          body: row.body, read: !!row.read, createdAt: row.created_at,
+        });
+      }
       return db.prepare('SELECT id, kind, title, body, read, created_at AS createdAt FROM notifications WHERE org_id = ? AND (user_id = ? OR user_id IS NULL) ORDER BY created_at DESC LIMIT 100').all(ctx.orgId, ctx.userId);
     },
-    markRead(ctx, id) {
+    async markRead(ctx, id) {
       authorize(ctx, 'repos:read');
       db.prepare('UPDATE notifications SET read = 1 WHERE org_id = ? AND user_id = ? AND (id = ? OR ? IS NULL)').run(ctx.orgId, ctx.userId, id || null, id || null);
+      const rows = id
+        ? db.prepare('SELECT * FROM notifications WHERE id = ? AND org_id = ?').all(id, ctx.orgId)
+        : db.prepare('SELECT * FROM notifications WHERE org_id = ? AND user_id = ?').all(ctx.orgId, ctx.userId);
+      for (const row of rows) {
+        await persistNotification({
+          id: row.id, orgId: row.org_id, userId: row.user_id, kind: row.kind, title: row.title,
+          body: row.body, read: !!row.read, createdAt: row.created_at,
+        });
+      }
     },
   };
 

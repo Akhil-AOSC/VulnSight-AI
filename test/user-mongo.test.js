@@ -61,7 +61,7 @@ test('login restores a user from the remote store and opens a session', async ()
   assert.equal(logged.user.email, 'dev@example.com');
   assert.ok(logged.token);
 
-  const me = second.platform.auth.me(logged.user.id);
+  const me = await second.platform.auth.me(logged.user.id);
   assert.equal(me.orgs[0].name, 'Acme');
   assert.equal(me.orgs[0].role, 'owner');
 
