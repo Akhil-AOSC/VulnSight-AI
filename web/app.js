@@ -26420,7 +26420,7 @@ function AssistantView({ initialRepoId }) {
           "textarea",
           {
             "aria-label": "Your question",
-            placeholder: "For example: What should I fix first, and why?",
+            placeholder: "Ask about urgent findings, remediation steps, or upgrade impacts...",
             value: question,
             onChange: (e) => setQuestion(e.target.value)
           }

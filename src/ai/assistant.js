@@ -77,9 +77,9 @@ function taskPrompt(kind, finding) {
   if (kind === 'explain') {
     if (sca) {
       return `Explain this dependency finding for a developer who needs the CODE, not only the package name:
-1. Vulnerable code pattern — a short example of how this issue is triggered in application code.
-2. Impact on a running app — use the usage snippets if they were provided.
-3. Safest fix — the version upgrade AND a before/after of application code if anything besides upgrading is needed.
+1. Vulnerable code pattern: a short example of how this issue is triggered in application code.
+2. Impact on a running app: use the usage snippets if they were provided.
+3. Safest fix: the version upgrade AND a before/after of application code if anything besides upgrading is needed.
 Cite the finding id.`;
     }
     return `Explain this code finding: (1) why the cited code is a problem, (2) the likely impact, (3) a before/after patch of that code. Cite the finding id.`;
