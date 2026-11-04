@@ -349,7 +349,7 @@ export function WebsiteScanView({ websiteId, scanId }) {
                     <th scope="col">Affected Location</th>
                     <th scope="col">Recommended Remediation</th>
                     <th scope="col" style={{ width: '80px' }}>Details</th>
-                    <th scope="col" style={{ width: '120px' }}>Plain English</th>
+                    <th scope="col" style={{ width: '120px' }}>Description</th>
                   </tr>
                 </thead>
                 <tbody>

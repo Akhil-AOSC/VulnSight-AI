@@ -28936,7 +28936,7 @@ function WebsiteScanView({ websiteId, scanId }) {
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", children: "Affected Location" }),
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", children: "Recommended Remediation" }),
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", style: { width: "80px" }, children: "Details" }),
-            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", style: { width: "120px" }, children: "Plain English" })
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", style: { width: "120px" }, children: "Description" })
           ] }) }),
           /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("tbody", { children: filteredFindings.map((f) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)(import_react13.default.Fragment, { children: [
             /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)(
