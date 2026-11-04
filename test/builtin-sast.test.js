@@ -63,6 +63,32 @@ test('builtin secrets finds the fixture tokens and redacts them', () => {
   assert.ok(findings.every((f) => f.category === 'secret' && f.evidence.includes('[REDACTED]')));
 });
 
+test('expanded builtin SAST finds XSS, eval, SQL concat and pickle', () => {
+  const { findings } = scanDir({
+    'web.js': `
+      el.innerHTML = name;
+      document.write(html);
+      eval(userCode);
+      db.query('SELECT * FROM users WHERE id=' + req.query.id);
+      fs.readFile(req.params.file);
+      res.redirect(req.query.next);
+      fetch(req.body.url);
+    `,
+    'app.py': `
+      eval(request.args['q'])
+      pickle.loads(body)
+      cur.execute('SELECT * FROM t WHERE id=' + user_id)
+    `,
+  });
+  const ids = findings.map((f) => f.identifiers.primary);
+  assert.ok(ids.some((id) => id.includes('innerhtml')));
+  assert.ok(ids.some((id) => id.includes('detect-eval') || id.includes('dangerous-eval')));
+  assert.ok(ids.some((id) => id.includes('sql-concat') || id.includes('sql-format')));
+  assert.ok(ids.some((id) => id.includes('pickle')));
+  assert.ok(ids.some((id) => id.includes('path-traversal')));
+  assert.ok(ids.some((id) => id.includes('ssrf')));
+});
+
 test('semgrep adapter falls back to builtin rules when the CLI is missing', async () => {
   const r = await runAdapter(createSemgrepAdapter({
     resolveEngine: () => ({ kind: 'builtin', bin: null }),

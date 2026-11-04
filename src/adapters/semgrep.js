@@ -9,6 +9,11 @@ const { scanBuiltinSast } = require('./builtin-sast');
 const { scanEslint } = require('./eslint-sast');
 
 const DEFAULT_CONFIG = path.join(__dirname, 'sast-rules', 'vulnsight.yml');
+const DEFAULT_EXCLUDES = [
+  '--exclude=node_modules', '--exclude=dist', '--exclude=build', '--exclude=vendor',
+  '--exclude=.git', '--exclude=coverage', '--exclude=.next', '--exclude=out',
+  '--exclude=.vulnsight-data', '--exclude=.vulnsight-tools',
+];
 const SEVERITY = { ERROR: 'high', WARNING: 'medium', INFO: 'low' };
 
 const asList = (v) => (Array.isArray(v) ? v : v ? [v] : []);
@@ -57,9 +62,28 @@ async function toolVersion(exec, bin) {
 }
 
 function grepArgs(kind, config, extraArgs) {
-  const args = ['scan', '--json', '--quiet', '--config', config, ...extraArgs, '.'];
+  const args = ['scan', '--json', '--quiet', '--config', config, ...DEFAULT_EXCLUDES, ...extraArgs, '.'];
   if (kind === 'semgrep') args.splice(3, 0, '--metrics=off', '--disable-version-check');
   return args;
+}
+
+function findingKey(f) {
+  const id = String((f.identifiers && f.identifiers.primary) || '').split('.').pop();
+  return `${f.location && f.location.file}:${f.location && f.location.line}:${id}`;
+}
+
+function mergeFindings(...lists) {
+  const seen = new Set();
+  const out = [];
+  for (const list of lists) {
+    for (const f of list || []) {
+      const key = findingKey(f);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(f);
+    }
+  }
+  return out;
 }
 
 function labeledVersion(kind, verRaw, labeled) {
@@ -138,10 +162,17 @@ function createSemgrepAdapter({
       const engine = await engineFor(target.path);
       if (!engine) return builtinResult(target, config);
       try {
-        if (engine.kind === 'eslint') return await runEslintEngine(exec, engine, target, signal);
-        return await runGrep(exec, engine, target, {
+        if (engine.kind === 'eslint') {
+          const eslint = await runEslintEngine(exec, engine, target, signal);
+          return { ...eslint, findings: mergeFindings(eslint.findings, scanBuiltinSast(target.path, { version: eslint.version })) };
+        }
+        const grep = await runGrep(exec, engine, target, {
           config, extraArgs, signal, labeled: engine.labeled !== false,
         });
+        return {
+          ...grep,
+          findings: mergeFindings(grep.findings, scanBuiltinSast(target.path, { version: grep.version })),
+        };
       } catch (err) {
         if (!fallback) throw err;
         return builtinResult(target, config);

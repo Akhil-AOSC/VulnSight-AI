@@ -1,4 +1,5 @@
 rules:
+  # --- JavaScript / TypeScript: injection and XSS ---------------------------------
   - id: javascript.express.security.audit.xss.direct-response-write
     message: User input written into the HTTP response (XSS)
     languages: [js, ts]
@@ -18,6 +19,60 @@ rules:
       - pattern: res.send($SINK)
       - pattern: res.write($SINK)
       - pattern: res.end($SINK)
+
+  - id: javascript.browser.security.audit.xss.innerhtml
+    message: Untrusted HTML assigned to innerHTML (DOM XSS)
+    languages: [js, ts]
+    severity: ERROR
+    metadata:
+      cwe: ["CWE-79"]
+      category: security
+    pattern-either:
+      - pattern: $EL.innerHTML = $X
+      - pattern: $EL.outerHTML = $X
+      - pattern: $EL.insertAdjacentHTML($POS, $X)
+      - pattern: document.write($X)
+      - pattern: document.writeln($X)
+
+  - id: javascript.react.security.audit.xss.dangerouslysetinnerhtml
+    message: React dangerouslySetInnerHTML can execute attacker HTML (XSS)
+    languages: [js, ts]
+    severity: ERROR
+    metadata:
+      cwe: ["CWE-79"]
+      category: security
+    pattern: dangerouslySetInnerHTML={$X}
+
+  - id: javascript.lang.security.detect-eval
+    message: Dynamic code execution via eval or Function
+    languages: [js, ts]
+    severity: ERROR
+    metadata:
+      cwe: ["CWE-95"]
+      category: security
+    pattern-either:
+      - pattern: eval($X)
+      - pattern: new Function($X)
+      - pattern: new Function($X, $Y)
+      - pattern: Function($X)
+
+  - id: javascript.lang.security.detect-eval-with-expression
+    message: Dynamic eval() of untrusted input
+    languages: [js, ts]
+    severity: ERROR
+    metadata:
+      cwe: ["CWE-95"]
+      category: security
+    mode: taint
+    pattern-sources:
+      - pattern: req.query
+      - pattern: req.body
+      - pattern: req.params
+      - pattern: req.headers
+      - pattern: req.cookies
+      - pattern: process.argv
+    pattern-sinks:
+      - pattern: eval($SINK)
 
   - id: javascript.lang.security.detect-child-process
     message: User input concatenated into a shell command
@@ -40,24 +95,132 @@ rules:
       - pattern: spawn($SINK, ...)
       - pattern: spawnSync($SINK, ...)
 
-  - id: javascript.lang.security.detect-eval-with-expression
-    message: Dynamic eval() of untrusted input
+  - id: javascript.lang.security.audit.dangerous-exec
+    message: Shell command executed with a dynamic string (command injection risk)
+    languages: [js, ts]
+    severity: WARNING
+    metadata:
+      cwe: ["CWE-78"]
+      category: security
+    pattern-either:
+      - pattern: exec($X + $Y, ...)
+      - pattern: execSync($X + $Y, ...)
+      - pattern: exec(`...${$X}...`, ...)
+      - pattern: execSync(`...${$X}...`, ...)
+      - pattern: child_process.exec($X + $Y, ...)
+      - pattern: child_process.execSync($X + $Y, ...)
+
+  - id: javascript.lang.security.audit.sql-concat
+    message: SQL built by string concatenation (injection risk)
     languages: [js, ts]
     severity: ERROR
     metadata:
-      cwe: ["CWE-95"]
+      cwe: ["CWE-89"]
+      category: security
+    pattern-either:
+      - pattern: $DB.query($X + $Y, ...)
+      - pattern: $DB.execute($X + $Y, ...)
+      - pattern: $DB.raw($X + $Y, ...)
+      - pattern: $DB.query(`...${$X}...`, ...)
+      - pattern: $DB.execute(`...${$X}...`, ...)
+      - pattern: $CONN.query($X + $Y, ...)
+
+  - id: javascript.lang.security.audit.path-traversal
+    message: File path built from request or concatenated input (path traversal)
+    languages: [js, ts]
+    severity: ERROR
+    metadata:
+      cwe: ["CWE-22"]
       category: security
     mode: taint
     pattern-sources:
       - pattern: req.query
       - pattern: req.body
       - pattern: req.params
-      - pattern: req.headers
-      - pattern: req.cookies
-      - pattern: process.argv
     pattern-sinks:
-      - pattern: eval($SINK)
+      - pattern: fs.readFile($SINK, ...)
+      - pattern: fs.readFileSync($SINK, ...)
+      - pattern: fs.writeFile($SINK, ...)
+      - pattern: fs.writeFileSync($SINK, ...)
+      - pattern: fs.createReadStream($SINK, ...)
+      - pattern: res.sendFile($SINK, ...)
 
+  - id: javascript.express.security.audit.open-redirect
+    message: Redirect target taken from the request (open redirect)
+    languages: [js, ts]
+    severity: WARNING
+    metadata:
+      cwe: ["CWE-601"]
+      category: security
+    mode: taint
+    pattern-sources:
+      - pattern: req.query
+      - pattern: req.body
+      - pattern: req.params
+    pattern-sinks:
+      - pattern: res.redirect($SINK)
+      - pattern: res.redirect($CODE, $SINK)
+
+  - id: javascript.lang.security.audit.ssrf
+    message: Outbound HTTP request uses request data (SSRF)
+    languages: [js, ts]
+    severity: ERROR
+    metadata:
+      cwe: ["CWE-918"]
+      category: security
+    mode: taint
+    pattern-sources:
+      - pattern: req.query
+      - pattern: req.body
+      - pattern: req.params
+    pattern-sinks:
+      - pattern: fetch($SINK, ...)
+      - pattern: axios($SINK)
+      - pattern: axios.get($SINK, ...)
+      - pattern: axios.post($SINK, ...)
+      - pattern: http.get($SINK, ...)
+      - pattern: https.get($SINK, ...)
+      - pattern: request($SINK, ...)
+
+  - id: javascript.lang.security.audit.proto-pollution
+    message: Object merge from user input can pollute the prototype
+    languages: [js, ts]
+    severity: WARNING
+    metadata:
+      cwe: ["CWE-1321"]
+      category: security
+    pattern-either:
+      - pattern: Object.assign($T, req.body)
+      - pattern: Object.assign($T, req.query)
+      - pattern: lodash.merge($T, req.body)
+      - pattern: _.merge($T, req.body)
+      - pattern: _.extend($T, req.body)
+
+  - id: javascript.lang.security.audit.insecure-random
+    message: Math.random used where a cryptographic value is expected
+    languages: [js, ts]
+    severity: INFO
+    metadata:
+      cwe: ["CWE-338"]
+      category: security
+    pattern-either:
+      - pattern: crypto.createHash("md5")
+      - pattern: crypto.createHash("sha1")
+      - pattern: crypto.createHash('md5')
+      - pattern: crypto.createHash('sha1')
+
+  - id: javascript.jwt.security.audit.decode-without-verify
+    message: JWT decoded without signature verification
+    languages: [js, ts]
+    severity: ERROR
+    metadata:
+      cwe: ["CWE-347"]
+      category: security
+    pattern-either:
+      - pattern: jwt.decode($T)
+      - pattern: jsonwebtoken.decode($T)
+
+  # --- Python -------------------------------------------------------------------
   - id: python.lang.security.audit.subprocess-shell-true
     message: subprocess invoked with shell=True
     languages: [python]
@@ -79,3 +242,51 @@ rules:
       cwe: ["CWE-78"]
       category: security
     pattern: os.system(...)
+
+  - id: python.lang.security.audit.dangerous-eval
+    message: Dynamic Python eval/exec
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: ["CWE-95"]
+      category: security
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: exec(...)
+
+  - id: python.lang.security.audit.pickle
+    message: Untrusted pickle/yaml deserialization
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: ["CWE-502"]
+      category: security
+    pattern-either:
+      - pattern: pickle.loads(...)
+      - pattern: pickle.load(...)
+      - pattern: yaml.load(...)
+      - pattern: marshal.loads(...)
+
+  - id: python.lang.security.audit.sql-format
+    message: SQL built with formatting or concatenation (injection risk)
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: ["CWE-89"]
+      category: security
+    pattern-either:
+      - pattern: $CUR.execute($X + $Y, ...)
+      - pattern: $CUR.execute($X % $Y, ...)
+      - pattern: $CUR.execute(f"...{$X}...", ...)
+      - pattern: $CUR.executemany($X + $Y, ...)
+
+  - id: python.flask.security.audit.debug-true
+    message: Flask or Django running with debug enabled
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: ["CWE-489"]
+      category: security
+    pattern-either:
+      - pattern: app.run(..., debug=True, ...)
+      - pattern: DEBUG = True
