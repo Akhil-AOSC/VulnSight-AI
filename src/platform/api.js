@@ -125,9 +125,18 @@ function createApi({ platform, trustProxy = false, hsts = false, limiter = creat
   route('GET', org('/websites/:site'), async (req, p) => platform.websites.get(ctxOf(req, p), p.site));
   route('DELETE', org('/websites/:site'), async (req, p) => { await platform.websites.remove(ctxOf(req, p), p.site); return { ok: true }; });
   route('POST', org('/websites/:site/verify'), async (req, p, b) => platform.websites.verify(ctxOf(req, p), p.site, b));
+  route('PATCH', org('/websites/:site'), async (req, p, b) => platform.websites.updateScope(ctxOf(req, p), p.site, b));
   route('POST', org('/websites/:site/scans'), async (req, p, b) => platform.websites.startScan(ctxOf(req, p), p.site, b), { status: 202 });
   route('GET', org('/websites/:site/scans'), async (req, p, b, q) => platform.websites.listScans(ctxOf(req, p), p.site, q));
   route('GET', org('/websites/:site/scans/:scan'), async (req, p) => platform.websites.getScan(ctxOf(req, p), p.site, p.scan));
+  route('POST', org('/websites/:site/scans/:scan/cancel'), async (req, p) => platform.websites.cancelScan(ctxOf(req, p), p.site, p.scan));
+  route('POST', org('/websites/:site/scans/:scan/pause'), async (req, p) => platform.websites.pauseScan(ctxOf(req, p), p.site, p.scan));
+  route('POST', org('/websites/:site/scans/:scan/resume'), async (req, p) => platform.websites.resumeScan(ctxOf(req, p), p.site, p.scan));
+  route('GET', org('/websites/:site/scans/:scan/pages'), async (req, p) => platform.websites.listPages(ctxOf(req, p), p.site, p.scan));
+  route('GET', org('/websites/:site/scans/:scan/endpoints'), async (req, p) => platform.websites.listEndpoints(ctxOf(req, p), p.site, p.scan));
+  route('GET', org('/websites/:site/scans/:scan/forms'), async (req, p) => platform.websites.listForms(ctxOf(req, p), p.site, p.scan));
+  route('POST', org('/websites/:site/scans/:scan/findings/:finding/explain'), async (req, p) =>
+    platform.websites.explainFinding(ctxOf(req, p), p.site, p.scan, p.finding));
   route('GET', org('/websites/:site/scans/:scan/report'), async (req, p, b, q) => ({ download: platform.websites.report(ctxOf(req, p), p.site, p.scan, q.format || 'json') }));
 
   // ---- scans and findings ----

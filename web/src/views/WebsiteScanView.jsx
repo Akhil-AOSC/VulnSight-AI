@@ -10,6 +10,11 @@ export function WebsiteScanView({ websiteId, scanId }) {
   const [sevFilter, setSevFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedFinding, setExpandedFinding] = useState(null);
+  const [crawlPages, setCrawlPages] = useState([]);
+  const [crawlEndpoints, setCrawlEndpoints] = useState([]);
+  const [crawlForms, setCrawlForms] = useState([]);
+  const [explanations, setExplanations] = useState({});
+  const [explainingId, setExplainingId] = useState(null);
 
   useEffect(() => {
     async function loadData() {
@@ -21,6 +26,16 @@ export function WebsiteScanView({ websiteId, scanId }) {
         ]);
         setSite(siteData);
         setScan(scanData);
+        if (scanData && scanData.status === 'completed') {
+          const [pages, endpointsList, formsList] = await Promise.all([
+            api.get(api.org(`/websites/${websiteId}/scans/${scanId}/pages`)).catch(() => []),
+            api.get(api.org(`/websites/${websiteId}/scans/${scanId}/endpoints`)).catch(() => []),
+            api.get(api.org(`/websites/${websiteId}/scans/${scanId}/forms`)).catch(() => []),
+          ]);
+          setCrawlPages(pages || []);
+          setCrawlEndpoints(endpointsList || []);
+          setCrawlForms(formsList || []);
+        }
       } catch (err) {
         toast(err.message || 'Failed to load website scan details', 'error');
       } finally {
@@ -31,7 +46,7 @@ export function WebsiteScanView({ websiteId, scanId }) {
   }, [websiteId, scanId]);
 
   useEffect(() => {
-    if (!scan || (scan.status !== 'queued' && scan.status !== 'running')) return;
+    if (!scan || !['queued', 'running', 'paused'].includes(scan.status)) return;
     const timer = setInterval(async () => {
       try {
         const scanData = await api.get(api.org(`/websites/${websiteId}/scans/${scanId}`));
@@ -45,6 +60,27 @@ export function WebsiteScanView({ websiteId, scanId }) {
     }, 2500);
     return () => clearInterval(timer);
   }, [scan, websiteId, scanId]);
+
+  async function handleExplain(finding, event) {
+    if (event) event.stopPropagation();
+    if (!finding || !finding.id) return;
+    if (explanations[finding.id]) {
+      setExpandedFinding(finding.id);
+      return;
+    }
+    try {
+      setExplainingId(finding.id);
+      const res = await api.post(
+        api.org(`/websites/${websiteId}/scans/${scanId}/findings/${encodeURIComponent(finding.id)}/explain`)
+      );
+      setExplanations((prev) => ({ ...prev, [finding.id]: res }));
+      setExpandedFinding(finding.id);
+    } catch (err) {
+      toast(err.message || 'Could not explain this finding', 'error');
+    } finally {
+      setExplainingId(null);
+    }
+  }
 
   async function handleDownloadReport(format) {
     try {
@@ -129,6 +165,23 @@ export function WebsiteScanView({ websiteId, scanId }) {
         </div>
 
         <div className="row" style={{ gap: '0.5rem' }}>
+          {['queued', 'running', 'paused'].includes(scan.status) && (
+            <button
+              type="button"
+              className="btn btn-sm btn-subtle"
+              onClick={async () => {
+                try {
+                  const next = await api.post(api.org(`/websites/${websiteId}/scans/${scanId}/cancel`));
+                  setScan(next);
+                  toast('Crawl cancelled');
+                } catch (err) {
+                  toast(err.message, 'error');
+                }
+              }}
+            >
+              Cancel crawl
+            </button>
+          )}
           <button
             type="button"
             className="btn btn-sm btn-subtle"
@@ -169,8 +222,10 @@ export function WebsiteScanView({ websiteId, scanId }) {
             </div>
             <p className="muted small" style={{ margin: 0 }}>
               {scan.status === 'queued'
-                ? 'The scan is queued in the platform worker queue. Analysis will begin momentarily...'
-                : 'Inspecting HTTP security headers, CORS policies, cookies, TLS/SSL configuration, endpoints, and web vulnerabilities. Results stream in automatically.'}
+                ? 'The scan is queued. GET-only crawl will start after passive inspection.'
+                : scan.progress
+                  ? `Engine ${scan.progress.engine || scan.engine || 'crawler'} · pages ${scan.progress.pages || 0} · endpoints ${scan.progress.endpoints || 0} · queue ${scan.progress.queue || 0}`
+                  : 'Passive inspection and GET-only discovery in progress. Forms are recorded but not submitted.'}
             </p>
             <div className="scan-progress-bar-wrap">
               <div className="scan-progress-bar-indeterminate" />
@@ -232,7 +287,8 @@ export function WebsiteScanView({ websiteId, scanId }) {
           ['headers', 'Security Headers & CORS'],
           ['cookies', `Cookies (${cookiesList.length})`],
           ['tls', 'TLS / SSL Configuration'],
-          ['crawl', `Endpoints & Forms (${endpoints.length})`],
+          ['crawl', `Endpoints & Forms (${crawlEndpoints.length || endpoints.length})`],
+          ['pages', `Pages (${crawlPages.length || s.pages || 0})`],
           ['technologies', `Technologies (${tech.length})`],
         ].map(([key, label]) => (
           <button
@@ -293,6 +349,7 @@ export function WebsiteScanView({ websiteId, scanId }) {
                     <th scope="col">Affected Location</th>
                     <th scope="col">Recommended Remediation</th>
                     <th scope="col" style={{ width: '80px' }}>Details</th>
+                    <th scope="col" style={{ width: '120px' }}>Plain English</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -324,11 +381,30 @@ export function WebsiteScanView({ websiteId, scanId }) {
                             {expandedFinding === f.id ? 'Hide' : 'View'}
                           </button>
                         </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-primary"
+                            disabled={explainingId === f.id}
+                            onClick={(e) => handleExplain(f, e)}
+                          >
+                            {explainingId === f.id ? 'Writing...' : explanations[f.id] ? 'Show' : 'Explain'}
+                          </button>
+                        </td>
                       </tr>
                       {expandedFinding === f.id && (
                         <tr>
-                          <td colSpan={5} style={{ background: 'var(--color-bg)', padding: '1rem' }}>
+                          <td colSpan={6} style={{ background: 'var(--color-bg)', padding: '1rem' }}>
                             <div style={{ display: 'grid', gap: '0.5rem' }}>
+                              {explanations[f.id] && (
+                                <div>
+                                  <strong>In plain English</strong>
+                                  <span className="small muted">
+                                    {' '}({explanations[f.id].source === 'ai' ? 'AI' : 'built-in explainer'})
+                                  </span>
+                                  <p style={{ margin: '0.4rem 0 0.75rem' }}>{explanations[f.id].text}</p>
+                                </div>
+                              )}
                               <div>
                                 <strong>Description:</strong>
                                 <p style={{ margin: '0.25rem 0' }}>{f.description || 'No extended description available.'}</p>
@@ -500,8 +576,10 @@ export function WebsiteScanView({ websiteId, scanId }) {
               <div>
                 <span className="small muted">Certificate Authority Trust:</span>
                 <div style={{ marginTop: '0.25rem' }}>
-                  <span className={`badge ${tls.authorized ? 'sev-low' : 'sev-critical'}`}>
-                    {tls.authorized ? 'Trusted &amp; Valid' : `Untrusted: ${tls.authorizationError || 'Untrusted'}`}
+                  <span className={`badge ${(tls.valid || tls.authorized) ? 'sev-low' : 'sev-critical'}`}>
+                    {(tls.valid || tls.authorized)
+                      ? 'Trusted and valid'
+                      : `Untrusted${tls.authError || tls.authorizationError ? `: ${tls.authError || tls.authorizationError}` : ''}`}
                   </span>
                 </div>
               </div>
@@ -514,15 +592,15 @@ export function WebsiteScanView({ websiteId, scanId }) {
               <div>
                 <span className="small muted">Cipher Suite:</span>
                 <div style={{ marginTop: '0.25rem' }}>
-                  <code>{tls.cipher ? (tls.cipher.name || JSON.stringify(tls.cipher)) : 'Unknown'}</code>
+                  <code>{typeof tls.cipher === 'string' ? tls.cipher : (tls.cipher && tls.cipher.name) || 'Unknown'}</code>
                 </div>
               </div>
               <div>
                 <span className="small muted">Certificate Expiry:</span>
                 <div style={{ marginTop: '0.25rem' }}>
                   <strong>{tls.validTo ? fmtDate(tls.validTo) : 'N/A'}</strong>
-                  {tls.daysRemaining != null && (
-                    <span className="small muted"> ({tls.daysRemaining} days remaining)</span>
+                  {(tls.daysLeft != null || tls.daysRemaining != null) && (
+                    <span className="small muted"> ({tls.daysLeft != null ? tls.daysLeft : tls.daysRemaining} days remaining)</span>
                   )}
                 </div>
               </div>
@@ -547,10 +625,20 @@ export function WebsiteScanView({ websiteId, scanId }) {
         <div style={{ display: 'grid', gap: '1.5rem' }}>
           <section className="card">
             <div className="card-head">
-              <h2 className="m-0">Discovered Endpoints ({endpoints.length})</h2>
+              <h2 className="m-0">Discovered Endpoints ({(crawlEndpoints.length || endpoints.length)})</h2>
             </div>
-            {!endpoints.length ? (
-              <div className="empty">Only root target was inspected. Run an Active Crawl to map endpoints.</div>
+            {!(crawlEndpoints.length || endpoints.length) ? (
+              <div className="empty">Only the seed URL was inspected. Run Crawl site after verification to map GET endpoints.</div>
+            ) : crawlEndpoints.length ? (
+              <ul style={{ margin: 0, paddingLeft: '1.25rem', display: 'grid', gap: '0.35rem' }}>
+                {crawlEndpoints.map((ep, i) => (
+                  <li key={i} className="small">
+                    <span className="badge">{ep.method}</span>{' '}
+                    <a href={ep.url} target="_blank" rel="noopener noreferrer">{ep.url}</a>
+                    {ep.statusCode ? ` · ${ep.statusCode}` : ''}
+                  </li>
+                ))}
+              </ul>
             ) : (
               <ul style={{ margin: 0, paddingLeft: '1.25rem', display: 'grid', gap: '0.35rem' }}>
                 {endpoints.map((ep, i) => (
@@ -566,10 +654,10 @@ export function WebsiteScanView({ websiteId, scanId }) {
 
           <section className="card">
             <div className="card-head">
-              <h2 className="m-0">Discovered HTML Forms &amp; Inputs ({forms.length})</h2>
+              <h2 className="m-0">Discovered HTML Forms ({crawlForms.length || forms.length}) — not submitted</h2>
             </div>
-            {!forms.length ? (
-              <div className="empty">No HTML forms were detected on the crawled pages.</div>
+            {!(crawlForms.length || forms.length) ? (
+              <div className="empty">No HTML forms were detected. Forms are never submitted during this crawl.</div>
             ) : (
               <div className="table-wrap">
                 <table>
@@ -623,6 +711,26 @@ export function WebsiteScanView({ websiteId, scanId }) {
             </section>
           )}
         </div>
+      )}
+
+      {activeTab === 'pages' && (
+        <section className="card">
+          <div className="card-head">
+            <h2 className="m-0">Discovered pages ({crawlPages.length})</h2>
+          </div>
+          {!crawlPages.length ? (
+            <div className="empty">No crawl pages stored. Run Crawl site after the domain is verified.</div>
+          ) : (
+            <ul style={{ margin: 0, paddingLeft: '1.25rem', display: 'grid', gap: '0.35rem' }}>
+              {crawlPages.map((page) => (
+                <li key={page.urlHash || page.url} className="small">
+                  depth {page.depth} · {page.statusCode || '-'} · {page.title || 'untitled'} ·{' '}
+                  <a href={page.url} target="_blank" rel="noopener noreferrer">{page.url}</a>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       )}
 
       {activeTab === 'technologies' && (

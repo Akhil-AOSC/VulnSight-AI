@@ -14,13 +14,14 @@ const { createPlatform } = require('../src/platform/service');
 
 const PASSWORD = 'Correct-Horse-9';
 
-function setupPlatform() {
+function setupPlatform(extra = {}) {
   const db = openDatabase(':memory:');
   const queue = createQueue(db);
   const platform = createPlatform({
     db,
     queue,
     secretBox: createSecretBox(generateMasterKey()),
+    ...extra,
   });
   const worker = createWorker({ queue, handlers: platform.handlers });
   const drain = async () => { while (await worker.runOnce()); };
@@ -109,6 +110,11 @@ test('websites platform service: create, list, verify, scan, report, and delete'
   assert.ok(finishedScan.postureScore != null);
   assert.ok(finishedScan.summary.total >= 0);
   assert.ok(Array.isArray(finishedScan.passiveResults.findings));
+  const firstFinding = finishedScan.passiveResults.findings[0];
+  assert.ok(firstFinding);
+  const explained = await platform.websites.explainFinding(ctx, site.id, scan.id, firstFinding.id);
+  assert.ok(explained.text && explained.text.length > 20);
+  assert.equal(explained.source, 'rules');
 
   // 8. Export report in JSON, Markdown, and CSV
   const jsonReport = platform.websites.report(ctx, site.id, scan.id, 'json');
@@ -205,4 +211,37 @@ test('websites HTTP API endpoints: auth, CRUD, scan trigger, report download', a
   // 7. Verify it's gone
   const afterList = await call('GET', `/api/v1/orgs/${orgId}/websites`, undefined, token);
   assert.equal(afterList.json.length, 0);
+});
+
+test('crawl profile persists GET-only inventory and rejects ascan', async () => {
+  const dastCrawl = async () => ({
+    engine: 'builtin-get',
+    pages: [{ url: 'https://example.com/', urlHash: 'abc123', statusCode: 200, contentType: 'text/html', depth: 0, title: 'Example' }],
+    endpoints: [{ url: 'https://example.com/', method: 'GET', statusCode: 200, contentType: 'text/html', paramNames: [] }],
+    forms: [{ action: 'https://example.com/login', method: 'POST', fieldNames: ['user'], submitted: false }],
+    links: [{ fromHash: 'abc123', toHash: 'def456', kind: 'a' }],
+    findings: [],
+  });
+  const { platform, drain } = setupPlatform({ dastCrawl });
+  const { ctx } = await createOrg(platform, 'crawl@example.com');
+  const site = await platform.websites.create(ctx, { url: 'https://example.com', name: 'Example' });
+  await platform.websites.verify(ctx, site.id, { manual: true });
+  assert.throws(
+    () => platform.websites.startScan(ctx, site.id, { profile: 'ascan' }),
+    (err) => err.message.includes('authorizeActiveTesting')
+  );
+  const ascan = platform.websites.startScan(ctx, site.id, { profile: 'ascan', authorizeActiveTesting: true });
+  assert.equal(ascan.profile, 'ascan');
+  const scan = platform.websites.startScan(ctx, site.id, { profile: 'crawl', limits: { maxPages: 10 } });
+  assert.equal(scan.profile, 'crawl');
+  await drain();
+  const done = platform.websites.getScan(ctx, site.id, scan.id);
+  assert.equal(done.status, 'completed');
+  assert.equal(done.summary.pages, 1);
+  assert.equal(done.summary.engine, 'builtin-get');
+  const pages = platform.websites.listPages(ctx, site.id, scan.id);
+  assert.equal(pages.length, 1);
+  const forms = platform.websites.listForms(ctx, site.id, scan.id);
+  assert.equal(forms[0].submitted, false);
+  assert.equal(forms[0].method, 'POST');
 });

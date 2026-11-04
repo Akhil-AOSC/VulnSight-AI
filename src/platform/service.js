@@ -26,7 +26,11 @@ const { fromScaIssue, createFinding } = require('../findings');
 const { upgradePlan } = require('../report');
 const { usagesForFinding } = require('../code-context');
 const { runPassiveScan, validateTargetUrl } = require('../adapters/dast/passive');
-const { crawlWebsite } = require('../adapters/dast/crawler');
+const { runWebsiteCrawl } = require('../adapters/dast/zap-spider');
+const { runZapActiveScan } = require('../adapters/dast/zap-ascan');
+const { plainEnglishForFinding } = require('../adapters/dast/plain-english');
+const { normalizeProfile, normalizeLimits, normalizeScope } = require('../adapters/dast/scope');
+const { setScanEgressHosts, clearScanEgressHosts } = require('./egress-proxy');
 const { generateVerificationToken, checkOwnership } = require('./dast-verifier');
 const {
   isMongoConfigured,
@@ -58,7 +62,9 @@ const {
   deleteWebsiteFromMongo,
   saveWebsiteScanToMongo,
   listWebsiteScansFromMongo,
-  getWebsiteScanFromMongo} = require('../db');
+  getWebsiteScanFromMongo,
+  saveCrawlInventoryToMongo,
+} = require('../db');
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const GRANT_TTL_MS = 10 * 60 * 1000;
@@ -88,6 +94,8 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
   userStore = null,
   repoStore = null,
   orgSyncStore = null,
+  dastCrawl = runWebsiteCrawl,
+  dastAscan = runZapActiveScan,
 } = {}) {
   const nowIso = () => new Date(clock()).toISOString();
 
@@ -1527,6 +1535,8 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       verificationToken: row.verification_token,
       verificationMethod: row.verification_method || null,
       config: parse(row.config, {}),
+      scope: normalizeScope(row.hostname, parse(row.config, {})),
+      limits: normalizeLimits(parse(row.config, {})),
       schedule: row.schedule || null,
       createdAt: row.created_at,
       latestScan: latestScan ? {
@@ -1554,6 +1564,9 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       aiAnalysis: parse(row.ai_analysis, null),
       error: row.error || null,
       requestedBy: row.requested_by || null,
+      progress: parse(row.progress, null),
+      limits: parse(row.limits, null),
+      engine: row.engine || null,
       createdAt: row.created_at,
       startedAt: row.started_at,
       finishedAt: row.finished_at,
@@ -1573,6 +1586,31 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
     return websiteScanDocument(row);
   }
 
+  function persistCrawlInventory(orgId, websiteId, scanId, inventory) {
+    if (!inventory) return;
+    const created = nowIso();
+    for (const page of inventory.pages || []) {
+      db.prepare(`INSERT OR IGNORE INTO crawl_pages (id, org_id, website_id, scan_id, url, url_hash, status_code, content_type, depth, title, created_at)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(uuid(), orgId, websiteId, scanId, page.url, page.urlHash, page.statusCode || 0, page.contentType || '', page.depth || 0, page.title || '', created);
+    }
+    for (const ep of inventory.endpoints || []) {
+      db.prepare(`INSERT INTO crawl_endpoints (id, org_id, website_id, scan_id, url, method, status_code, content_type, param_names, created_at)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(uuid(), orgId, websiteId, scanId, ep.url, ep.method, ep.statusCode || 0, ep.contentType || '', JSON.stringify(ep.paramNames || []), created);
+    }
+    for (const form of inventory.forms || []) {
+      db.prepare(`INSERT INTO crawl_forms (id, org_id, website_id, scan_id, action, method, field_names, submitted, created_at)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`)
+        .run(uuid(), orgId, websiteId, scanId, form.action, form.method, JSON.stringify(form.fieldNames || []), created);
+    }
+    for (const link of inventory.links || []) {
+      db.prepare(`INSERT INTO crawl_links (id, org_id, website_id, scan_id, from_hash, to_hash, kind, created_at)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(uuid(), orgId, websiteId, scanId, link.fromHash, link.toHash, link.kind || 'a', created);
+    }
+  }
+
   async function handleWebsiteScanJob({ scanId }, job = { attempts: 1, max_attempts: 1 }) {
     const scan = db.prepare('SELECT * FROM website_scans WHERE id = ?').get(scanId);
     if (!scan || scan.status === 'cancelled') return;
@@ -1589,21 +1627,75 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       const passive = await runPassiveScan(site.target_url);
       let findings = [...(passive.findings || [])];
       let crawlResult = null;
+      const profile = (() => {
+        try { return normalizeProfile(scan.profile, { allowAscan: scan.profile === 'ascan' }); } catch { return scan.profile; }
+      })();
+      const siteConfig = parse(site.config, {});
+      const limits = normalizeLimits({ ...siteConfig, ...parse(scan.limits, {}) });
+      const scope = normalizeScope(site.hostname, siteConfig);
 
-      // 2. Active crawl if requested and site is verified
-      if (scan.profile === 'standard' || scan.profile === 'deep') {
+      if (profile === 'crawl' || profile === 'crawl_js' || profile === 'ascan' || scan.profile === 'standard' || scan.profile === 'deep') {
         if (!site.is_verified) {
-          throw new ValidationError('Active scanning requires domain ownership verification');
+          throw new ValidationError('Website crawling requires domain ownership verification');
         }
-        crawlResult = await crawlWebsite(site.target_url, { maxPages: scan.profile === 'deep' ? 25 : 10 });
-        if (crawlResult && crawlResult.findings) {
-          findings = findings.concat(crawlResult.findings);
+        setScanEgressHosts(scope.allowHosts.concat(scope.extraHosts || []));
+        try {
+          crawlResult = await dastCrawl(site.target_url, {
+            scope,
+            ...limits,
+            clientSpider: profile === 'crawl_js' || scan.profile === 'deep',
+            onProgress: async (progress) => {
+              const latest = db.prepare('SELECT status FROM website_scans WHERE id = ?').get(scanId);
+              if (latest && latest.status === 'cancelled') return;
+              db.prepare('UPDATE website_scans SET progress = ?, engine = ? WHERE id = ?')
+                .run(JSON.stringify(progress), progress.engine || null, scanId);
+            },
+            shouldStop: async () => {
+              const latest = db.prepare('SELECT status FROM website_scans WHERE id = ?').get(scanId);
+              return !latest || latest.status === 'cancelled' || latest.status === 'paused';
+            },
+          });
+        } finally {
+          clearScanEgressHosts();
+        }
+        persistCrawlInventory(scan.org_id, site.id, scanId, crawlResult);
+        if (enableMongo && isMongoConfigured()) {
+          await saveCrawlInventoryToMongo({
+            orgId: scan.org_id, websiteId: site.id, scanId, ...crawlResult,
+          });
+        }
+        if (crawlResult && crawlResult.findings) findings = findings.concat(crawlResult.findings);
+      }
+
+      if (profile === 'ascan') {
+        if (!site.is_verified) {
+          throw new ValidationError('Active exploit scanning requires domain ownership verification');
+        }
+        setScanEgressHosts(scope.allowHosts.concat(scope.extraHosts || []));
+        try {
+          const ascan = await dastAscan(site.target_url, {
+            scope,
+            ...limits,
+            onProgress: async (progress) => {
+              db.prepare('UPDATE website_scans SET progress = ?, engine = ? WHERE id = ?')
+                .run(JSON.stringify(progress), progress.engine || 'zap-ascan', scanId);
+            },
+            shouldStop: async () => {
+              const latest = db.prepare('SELECT status FROM website_scans WHERE id = ?').get(scanId);
+              return !latest || latest.status === 'cancelled' || latest.status === 'paused';
+            },
+          });
+          if (ascan && ascan.findings) findings = findings.concat(ascan.findings);
+          db.prepare('UPDATE website_scans SET engine = ? WHERE id = ?').run((ascan && ascan.engine) || 'zap-ascan', scanId);
+        } finally {
+          clearScanEgressHosts();
         }
       }
 
-      // 3. Posture score & summary
       const posture = postureScore(findings);
       const sum = summarize(findings);
+      const crawledUrls = crawlResult && crawlResult.pages ? crawlResult.pages.map((p) => p.url) : [site.target_url];
+      const forms = crawlResult && crawlResult.forms ? crawlResult.forms : [];
       const summary = {
         total: findings.length,
         critical: sum.bySeverity.critical || 0,
@@ -1611,8 +1703,10 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         medium: sum.bySeverity.medium || 0,
         low: sum.bySeverity.low || 0,
         grade: posture.grade,
-        endpoints: crawlResult ? crawlResult.crawledUrls.length : 1,
-        forms: crawlResult ? crawlResult.forms.length : 0,
+        endpoints: crawlResult && crawlResult.endpoints ? crawlResult.endpoints.length : 1,
+        pages: crawlResult && crawlResult.pages ? crawlResult.pages.length : 1,
+        forms: forms.length,
+        engine: crawlResult && crawlResult.engine,
       };
 
       // 4. AI correlation
@@ -1629,9 +1723,9 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
               cookies: passive.cookies,
               cors: passive.cors,
               responseStatus: passive.responseStatus,
-              endpoints: crawlResult ? crawlResult.crawledUrls : [site.target_url],
-              forms: crawlResult ? crawlResult.forms : [],
-              exposedFiles: crawlResult ? crawlResult.exposedFiles : [],
+              endpoints: crawledUrls,
+              forms: forms.map((f) => ({ action: f.action, method: f.method, fieldNames: f.fieldNames || [] })),
+              exposedFiles: [],
             },
             findings,
           };
@@ -1644,6 +1738,11 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         }
       }
 
+      const latestStatus = db.prepare('SELECT status FROM website_scans WHERE id = ?').get(scanId);
+      if (latestStatus && (latestStatus.status === 'cancelled' || latestStatus.status === 'paused')) {
+        return;
+      }
+
       const finishedAt = nowIso();
       const passiveResultsData = {
         targetUrl: passive.targetUrl,
@@ -1654,9 +1753,10 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         cors: passive.cors,
         tls: passive.tls,
         technologies: passive.technologies,
-        crawledUrls: crawlResult ? crawlResult.crawledUrls : [site.target_url],
-        forms: crawlResult ? crawlResult.forms : [],
-        exposedFiles: crawlResult ? crawlResult.exposedFiles : [],
+        crawledUrls,
+        forms: forms.map((f) => ({ action: f.action, method: f.method, fieldNames: f.fieldNames || [], submitted: false })),
+        exposedFiles: [],
+        engine: crawlResult && crawlResult.engine,
         findings,
       };
 
@@ -1730,10 +1830,15 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       const id = uuid();
       const token = generateVerificationToken();
       const nowStr = nowIso();
+      const storedConfig = {
+        ...normalizeScope(hostname, config),
+        ...normalizeLimits(config),
+        ...config,
+      };
 
       db.prepare(`INSERT INTO websites (id, org_id, target_url, hostname, name, is_verified, verification_token, verification_method, config, created_at)
                   VALUES (?, ?, ?, ?, ?, 0, ?, NULL, ?, ?)`)
-        .run(id, ctx.orgId, targetUrl, hostname, siteName, token, JSON.stringify(config), nowStr);
+        .run(id, ctx.orgId, targetUrl, hostname, siteName, token, JSON.stringify(storedConfig), nowStr);
 
       const doc = getWebsite(ctx.orgId, id);
       if (enableMongo && isMongoConfigured()) {
@@ -1746,7 +1851,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
           verified: false,
           verificationToken: token,
           verificationMethod: null,
-          config,
+          config: storedConfig,
           createdAt: nowStr,
         });
       }
@@ -1791,6 +1896,10 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       authorize(ctx, 'repos:write');
       getWebsite(ctx.orgId, websiteId);
       transaction(db, () => {
+        db.prepare('DELETE FROM crawl_links WHERE website_id = ? AND org_id = ?').run(websiteId, ctx.orgId);
+        db.prepare('DELETE FROM crawl_forms WHERE website_id = ? AND org_id = ?').run(websiteId, ctx.orgId);
+        db.prepare('DELETE FROM crawl_endpoints WHERE website_id = ? AND org_id = ?').run(websiteId, ctx.orgId);
+        db.prepare('DELETE FROM crawl_pages WHERE website_id = ? AND org_id = ?').run(websiteId, ctx.orgId);
         db.prepare('DELETE FROM website_scans WHERE website_id = ? AND org_id = ?').run(websiteId, ctx.orgId);
         db.prepare('DELETE FROM websites WHERE id = ? AND org_id = ?').run(websiteId, ctx.orgId);
       });
@@ -1855,29 +1964,134 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       return { verified: false, error: res && res.error, dns: res && res.dns, http: res && res.http };
     },
 
-    startScan(ctx, websiteId, { profile = 'passive' } = {}) {
+    updateScope(ctx, websiteId, patch = {}) {
+      authorize(ctx, 'repos:write');
+      const site = getWebsite(ctx.orgId, websiteId);
+      const current = parse(db.prepare('SELECT config FROM websites WHERE id = ?').get(websiteId).config, {});
+      const next = {
+        ...current,
+        ...normalizeScope(site.hostname, { ...current, ...patch }),
+        ...normalizeLimits({ ...current, ...patch }),
+      };
+      db.prepare('UPDATE websites SET config = ? WHERE id = ? AND org_id = ?').run(JSON.stringify(next), websiteId, ctx.orgId);
+      audit(ctx, 'website.scope', websiteId, { allowHosts: next.allowHosts, maxPages: next.maxPages });
+      persistOrganisation(ctx.orgId).catch(() => {});
+      return getWebsite(ctx.orgId, websiteId);
+    },
+
+    startScan(ctx, websiteId, { profile = 'passive', limits: limitPatch, authorizeActiveTesting = false } = {}) {
       authorize(ctx, 'scans:run');
       const site = getWebsite(ctx.orgId, websiteId);
-      const validProfiles = ['passive', 'standard', 'deep'];
-      if (!validProfiles.includes(profile)) {
-        throw new ValidationError(`Profile must be one of: ${validProfiles.join(', ')}`);
+      let normalized;
+      try {
+        normalized = normalizeProfile(profile, { allowAscan: Boolean(authorizeActiveTesting) });
+      } catch (err) {
+        throw new ValidationError(err.message);
       }
-      if (profile !== 'passive' && !site.isVerified) {
-        throw new ValidationError('Active scanning (standard / deep) requires domain ownership verification. Please verify ownership first.');
+      if (normalized === 'ascan' && !authorizeActiveTesting) {
+        throw new ValidationError('Active exploit scanning requires authorizeActiveTesting: true');
+      }
+      if (normalized !== 'passive' && !site.isVerified) {
+        throw new ValidationError('Website crawling requires domain ownership verification. Please verify ownership first.');
       }
       const active = db.prepare("SELECT COUNT(*) AS n FROM website_scans WHERE org_id = ? AND status IN ('queued', 'running')").get(ctx.orgId).n;
       if (active >= 5) {
         throw new ValidationError('Too many website scans are currently running. Please wait for one to finish.');
       }
+      const limits = normalizeLimits({ ...site.limits, ...limitPatch });
       const scanId = uuid();
       const nowStr = nowIso();
-      db.prepare(`INSERT INTO website_scans (id, org_id, website_id, profile, status, requested_by, created_at)
-                  VALUES (?, ?, ?, ?, 'queued', ?, ?)`)
-        .run(scanId, ctx.orgId, websiteId, profile, ctx.userId || null, nowStr);
+      db.prepare(`INSERT INTO website_scans (id, org_id, website_id, profile, status, requested_by, created_at, limits)
+                  VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)`)
+        .run(scanId, ctx.orgId, websiteId, normalized, ctx.userId || null, nowStr, JSON.stringify(limits));
 
       queue.enqueue('website_scan', { scanId }, { orgId: ctx.orgId });
-      audit(ctx, 'website_scan.start', scanId, { websiteId, profile });
+      audit(ctx, 'website_scan.start', scanId, { websiteId, profile: normalized, limits, authorizeActiveTesting: Boolean(authorizeActiveTesting) });
       return websiteScanDocument(db.prepare('SELECT * FROM website_scans WHERE id = ?').get(scanId));
+    },
+
+    cancelScan(ctx, websiteId, scanId) {
+      authorize(ctx, 'scans:run');
+      const scan = getWebsiteScan(ctx.orgId, websiteId, scanId);
+      if (!['queued', 'running', 'paused'].includes(scan.status)) {
+        throw new ValidationError('Only queued, running or paused website scans can be cancelled');
+      }
+      queue.cancelWhere('website_scan', (p) => p.scanId === scanId);
+      db.prepare("UPDATE website_scans SET status = 'cancelled', finished_at = ? WHERE id = ? AND org_id = ?")
+        .run(nowIso(), scanId, ctx.orgId);
+      audit(ctx, 'website_scan.cancel', scanId);
+      return getWebsiteScan(ctx.orgId, websiteId, scanId);
+    },
+
+    pauseScan(ctx, websiteId, scanId) {
+      authorize(ctx, 'scans:run');
+      const scan = getWebsiteScan(ctx.orgId, websiteId, scanId);
+      if (scan.status !== 'running') throw new ValidationError('Only a running crawl can be paused');
+      db.prepare("UPDATE website_scans SET status = 'paused' WHERE id = ? AND org_id = ?").run(scanId, ctx.orgId);
+      audit(ctx, 'website_scan.pause', scanId);
+      return getWebsiteScan(ctx.orgId, websiteId, scanId);
+    },
+
+    resumeScan(ctx, websiteId, scanId) {
+      authorize(ctx, 'scans:run');
+      const scan = getWebsiteScan(ctx.orgId, websiteId, scanId);
+      if (scan.status !== 'paused') throw new ValidationError('Only a paused crawl can be resumed');
+      db.prepare("UPDATE website_scans SET status = 'queued' WHERE id = ? AND org_id = ?").run(scanId, ctx.orgId);
+      queue.enqueue('website_scan', { scanId }, { orgId: ctx.orgId });
+      audit(ctx, 'website_scan.resume', scanId);
+      return getWebsiteScan(ctx.orgId, websiteId, scanId);
+    },
+
+    listPages(ctx, websiteId, scanId) {
+      authorize(ctx, 'scans:read');
+      getWebsiteScan(ctx.orgId, websiteId, scanId);
+      return db.prepare('SELECT url, url_hash AS urlHash, status_code AS statusCode, content_type AS contentType, depth, title FROM crawl_pages WHERE org_id = ? AND scan_id = ? ORDER BY depth, url')
+        .all(ctx.orgId, scanId);
+    },
+
+    listEndpoints(ctx, websiteId, scanId) {
+      authorize(ctx, 'scans:read');
+      getWebsiteScan(ctx.orgId, websiteId, scanId);
+      return db.prepare('SELECT url, method, status_code AS statusCode, content_type AS contentType, param_names AS paramNames FROM crawl_endpoints WHERE org_id = ? AND scan_id = ? ORDER BY url')
+        .all(ctx.orgId, scanId)
+        .map((r) => ({ ...r, paramNames: parse(r.paramNames, []) }));
+    },
+
+    listForms(ctx, websiteId, scanId) {
+      authorize(ctx, 'scans:read');
+      getWebsiteScan(ctx.orgId, websiteId, scanId);
+      return db.prepare('SELECT action, method, field_names AS fieldNames, submitted FROM crawl_forms WHERE org_id = ? AND scan_id = ?')
+        .all(ctx.orgId, scanId)
+        .map((r) => ({ ...r, fieldNames: parse(r.fieldNames, []), submitted: false }));
+    },
+
+    async explainFinding(ctx, websiteId, scanId, findingId) {
+      authorize(ctx, 'scans:read');
+      const site = getWebsite(ctx.orgId, websiteId);
+      const scan = getWebsiteScan(ctx.orgId, websiteId, scanId);
+      const findings = (scan.passiveResults && scan.passiveResults.findings) || [];
+      const finding = findings.find((f) => f.id === findingId);
+      if (!finding) throw new NotFoundError('Finding not found');
+      const local = plainEnglishForFinding(finding, site.targetUrl);
+      const settings = settingsOf(ctx.orgId);
+      const provider = aiProviderFactory();
+      if (!settings.aiEnabled || !provider) {
+        return { text: local, source: 'rules', findingId: finding.id };
+      }
+      try {
+        const out = await ai.explainWebsiteFinding(finding, {
+          provider,
+          consent: { aiEnabled: true, sendCode: false },
+          siteUrl: site.targetUrl,
+        });
+        saveAi(ctx, {
+          repoId: null, findingId: finding.id, kind: 'website_explain',
+          provider: provider.name, answer: out.text,
+        });
+        return { text: out.text, source: 'ai', findingId: finding.id, warnings: out.warnings || [] };
+      } catch {
+        return { text: local, source: 'rules', findingId: finding.id };
+      }
     },
 
     listScans(ctx, websiteId, { limit = 50 } = {}) {

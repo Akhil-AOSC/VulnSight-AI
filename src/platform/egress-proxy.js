@@ -35,10 +35,25 @@ function hostAllowed(host, allow) {
   return allow.some((rule) => (rule.startsWith('*.') ? host.endsWith(rule.slice(1)) && host.length > rule.length - 1 : host === rule));
 }
 
+const scanAllowHosts = new Set();
+
+function setScanEgressHosts(hosts = []) {
+  scanAllowHosts.clear();
+  for (const host of hosts) {
+    const clean = String(host || '').toLowerCase().replace(/\.$/, '');
+    if (clean) scanAllowHosts.add(clean);
+  }
+}
+
+function clearScanEgressHosts() {
+  scanAllowHosts.clear();
+}
+
 function createEgressProxy({
   allow = DEFAULT_ALLOW, ports = [443], lookup = (h) => dns.lookup(h, { all: true }),
   dial = (address, port) => net.connect({ host: address, port }), log = () => {},
   maxTunnels = 200, idleTimeoutMs = 60000, maxUploadBytes = 100 * 1024 * 1024,
+  extraAllow = () => [...scanAllowHosts],
 } = {}) {
   const rules = allow.map((r) => r.toLowerCase());
   let open = 0;
@@ -67,7 +82,8 @@ function createEgressProxy({
     if (net.isIP(host)) return deny(client, host, 'IP addresses are not allowed');
     if (!HOST.test(host) || host.length > 253) return deny(client, host, 'invalid hostname');
     if (!ports.includes(port)) return deny(client, host, `port ${port} is not allowed`);
-    if (!hostAllowed(host, rules)) return deny(client, host, 'host is not on the allowlist');
+    const effective = [...rules, ...extraAllow().map((h) => String(h).toLowerCase())];
+    if (!hostAllowed(host, effective)) return deny(client, host, 'host is not on the allowlist');
     if (open >= maxTunnels) return deny(client, host, 'too many open tunnels', 503);
 
     let address;
@@ -135,4 +151,7 @@ if (require.main === module) {
   proxy.listen(port, process.env.HOST || '0.0.0.0', () => console.log(JSON.stringify({ msg: 'egress proxy listening', port })));
 }
 
-module.exports = { createEgressProxy, allowFromEnv, hostAllowed, DEFAULT_ALLOW };
+module.exports = {
+  createEgressProxy, allowFromEnv, hostAllowed, DEFAULT_ALLOW,
+  setScanEgressHosts, clearScanEgressHosts,
+};

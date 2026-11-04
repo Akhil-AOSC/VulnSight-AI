@@ -139,6 +139,37 @@ function sanitizeFinding(finding) {
   };
 }
 
+async function explainWebsiteFinding(finding, { provider, consent, siteUrl } = {}) {
+  requireConsent(consent, 'explain website findings');
+  const { finding: safe, injected } = sanitizeFinding(finding);
+  const loc = (safe.location && (safe.location.url || safe.location.path)) || siteUrl || '';
+  const prompt = `Explain this website security finding in plain English for a non-expert.
+
+Rules:
+- Four short sentences maximum.
+- No unexplained jargon.
+- Do not invent extra vulnerabilities.
+- Do not include exploit payloads.
+
+Finding title: ${untrusted(safe.title, 300)}
+Severity: ${safe.severity}
+Location: ${untrusted(loc, 300)}
+Scanner: ${untrusted(safe.scanner && safe.scanner.name, 80)}
+Description: ${untrusted(safe.description, 800)}
+Advice: ${untrusted(safe.remediation && safe.remediation.advice, 500)}`;
+  const text = await provider.complete({
+    system: 'You explain website security findings in clear, calm English. You never invent issues or provide attack instructions.',
+    messages: [{ role: 'user', content: prompt }],
+    maxTokens: 400,
+  });
+  return {
+    findingId: finding.id,
+    text,
+    warnings: injected ? ['Suspicious content was withheld from the AI.'] : [],
+    meta: label(provider, 'website_finding_explain'),
+  };
+}
+
 async function explainFinding(finding, { provider, consent } = {}) {
   requireConsent(consent, 'explain findings');
   const { finding: safe, injected } = sanitizeFinding(finding);
@@ -234,4 +265,4 @@ async function summarizeWebsiteDast(websiteUrl, passiveTelemetry, findings = [],
   };
 }
 
-module.exports = { explainFinding, suggestFix, askQuestion, summarizePosture, summarizeWebsiteDast, upgradeImpact, looksLikeInjection, untrusted, describeFinding, ConsentError, SYSTEM_PROMPT, taskPrompt };
+module.exports = { explainFinding, explainWebsiteFinding, suggestFix, askQuestion, summarizePosture, summarizeWebsiteDast, upgradeImpact, looksLikeInjection, untrusted, describeFinding, ConsentError, SYSTEM_PROMPT, taskPrompt };

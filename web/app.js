@@ -28302,9 +28302,17 @@ function WebsitesView({ onSelectScan }) {
     }
   }
   async function handleStartScan(site, profile) {
+    const body = { profile };
+    if (profile === "ascan") {
+      const ok = window.confirm(
+        `Active exploit scanning sends attack payloads to ${site.hostname}. Use it only on a site you own or are contracted to test. Continue?`
+      );
+      if (!ok) return;
+      body.authorizeActiveTesting = true;
+    }
     try {
       setScanningSiteId(site.id);
-      const scan = await api.post(api.org(`/websites/${site.id}/scans`), { profile });
+      const scan = await api.post(api.org(`/websites/${site.id}/scans`), body);
       toast(`${profile.toUpperCase()} scan queued`);
       await loadWebsites();
       if (onSelectScan) {
@@ -28412,17 +28420,30 @@ function WebsitesView({ onSelectScan }) {
                 children: scanningSiteId === site.id ? "Starting..." : "Passive Scan"
               }
             ),
-            site.isVerified ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-              "button",
-              {
-                type: "button",
-                className: "btn btn-sm btn-subtle",
-                disabled: scanningSiteId === site.id,
-                onClick: () => handleStartScan(site, "standard"),
-                title: "Full crawl and endpoint analysis",
-                children: "Active Crawl"
-              }
-            ) : null
+            site.isVerified ? /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(import_jsx_runtime12.Fragment, { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-sm btn-subtle",
+                  disabled: scanningSiteId === site.id,
+                  onClick: () => handleStartScan(site, "crawl"),
+                  title: "GET-only Traditional crawl. Does not submit forms or run active attacks.",
+                  children: "Crawl site"
+                }
+              ),
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-sm btn-subtle",
+                  disabled: scanningSiteId === site.id,
+                  onClick: () => handleStartScan(site, "ascan"),
+                  title: "OWASP ZAP active scan. Requires ZAP_API_URL and confirmation. Authorized sites only.",
+                  children: "Exploit scan"
+                }
+              )
+            ] }) : null
           ] }),
           canWrite && /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
             "button",
@@ -28612,6 +28633,11 @@ function WebsiteScanView({ websiteId, scanId }) {
   const [sevFilter, setSevFilter] = (0, import_react13.useState)("all");
   const [searchQuery, setSearchQuery] = (0, import_react13.useState)("");
   const [expandedFinding, setExpandedFinding] = (0, import_react13.useState)(null);
+  const [crawlPages, setCrawlPages] = (0, import_react13.useState)([]);
+  const [crawlEndpoints, setCrawlEndpoints] = (0, import_react13.useState)([]);
+  const [crawlForms, setCrawlForms] = (0, import_react13.useState)([]);
+  const [explanations, setExplanations] = (0, import_react13.useState)({});
+  const [explainingId, setExplainingId] = (0, import_react13.useState)(null);
   (0, import_react13.useEffect)(() => {
     async function loadData() {
       try {
@@ -28622,6 +28648,16 @@ function WebsiteScanView({ websiteId, scanId }) {
         ]);
         setSite(siteData);
         setScan(scanData);
+        if (scanData && scanData.status === "completed") {
+          const [pages, endpointsList, formsList] = await Promise.all([
+            api.get(api.org(`/websites/${websiteId}/scans/${scanId}/pages`)).catch(() => []),
+            api.get(api.org(`/websites/${websiteId}/scans/${scanId}/endpoints`)).catch(() => []),
+            api.get(api.org(`/websites/${websiteId}/scans/${scanId}/forms`)).catch(() => [])
+          ]);
+          setCrawlPages(pages || []);
+          setCrawlEndpoints(endpointsList || []);
+          setCrawlForms(formsList || []);
+        }
       } catch (err) {
         toast(err.message || "Failed to load website scan details", "error");
       } finally {
@@ -28631,7 +28667,7 @@ function WebsiteScanView({ websiteId, scanId }) {
     loadData();
   }, [websiteId, scanId]);
   (0, import_react13.useEffect)(() => {
-    if (!scan || scan.status !== "queued" && scan.status !== "running") return;
+    if (!scan || !["queued", "running", "paused"].includes(scan.status)) return;
     const timer = setInterval(async () => {
       try {
         const scanData = await api.get(api.org(`/websites/${websiteId}/scans/${scanId}`));
@@ -28646,6 +28682,26 @@ function WebsiteScanView({ websiteId, scanId }) {
     }, 2500);
     return () => clearInterval(timer);
   }, [scan, websiteId, scanId]);
+  async function handleExplain(finding, event) {
+    if (event) event.stopPropagation();
+    if (!finding || !finding.id) return;
+    if (explanations[finding.id]) {
+      setExpandedFinding(finding.id);
+      return;
+    }
+    try {
+      setExplainingId(finding.id);
+      const res = await api.post(
+        api.org(`/websites/${websiteId}/scans/${scanId}/findings/${encodeURIComponent(finding.id)}/explain`)
+      );
+      setExplanations((prev) => ({ ...prev, [finding.id]: res }));
+      setExpandedFinding(finding.id);
+    } catch (err) {
+      toast(err.message || "Could not explain this finding", "error");
+    } finally {
+      setExplainingId(null);
+    }
+  }
   async function handleDownloadReport(format) {
     try {
       const res = await api.get(api.org(`/websites/${websiteId}/scans/${scanId}/report?format=${format}`));
@@ -28716,6 +28772,23 @@ function WebsiteScanView({ websiteId, scanId }) {
         ] })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "row", style: { gap: "0.5rem" }, children: [
+        ["queued", "running", "paused"].includes(scan.status) && /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
+          "button",
+          {
+            type: "button",
+            className: "btn btn-sm btn-subtle",
+            onClick: async () => {
+              try {
+                const next = await api.post(api.org(`/websites/${websiteId}/scans/${scanId}/cancel`));
+                setScan(next);
+                toast("Crawl cancelled");
+              } catch (err) {
+                toast(err.message, "error");
+              }
+            },
+            children: "Cancel crawl"
+          }
+        ),
         /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
           "button",
           {
@@ -28754,7 +28827,7 @@ function WebsiteScanView({ websiteId, scanId }) {
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "badge st-running", children: "Live Scanner Active" })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { className: "muted small", style: { margin: 0 }, children: scan.status === "queued" ? "The scan is queued in the platform worker queue. Analysis will begin momentarily..." : "Inspecting HTTP security headers, CORS policies, cookies, TLS/SSL configuration, endpoints, and web vulnerabilities. Results stream in automatically." }),
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { className: "muted small", style: { margin: 0 }, children: scan.status === "queued" ? "The scan is queued. GET-only crawl will start after passive inspection." : scan.progress ? `Engine ${scan.progress.engine || scan.engine || "crawler"} \xB7 pages ${scan.progress.pages || 0} \xB7 endpoints ${scan.progress.endpoints || 0} \xB7 queue ${scan.progress.queue || 0}` : "Passive inspection and GET-only discovery in progress. Forms are recorded but not submitted." }),
         /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "scan-progress-bar-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "scan-progress-bar-indeterminate" }) })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "stats", style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }, children: ["Security Posture", "Critical Severity", "High Severity", "Medium & Low", "Endpoints Inspected"].map((label, idx) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "card skeleton-stat-card", children: [
@@ -28809,7 +28882,8 @@ function WebsiteScanView({ websiteId, scanId }) {
         ["headers", "Security Headers & CORS"],
         ["cookies", `Cookies (${cookiesList.length})`],
         ["tls", "TLS / SSL Configuration"],
-        ["crawl", `Endpoints & Forms (${endpoints.length})`],
+        ["crawl", `Endpoints & Forms (${crawlEndpoints.length || endpoints.length})`],
+        ["pages", `Pages (${crawlPages.length || s.pages || 0})`],
         ["technologies", `Technologies (${tech.length})`]
       ].map(([key, label]) => /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
         "button",
@@ -28861,7 +28935,8 @@ function WebsiteScanView({ websiteId, scanId }) {
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", children: "Vulnerability" }),
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", children: "Affected Location" }),
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", children: "Recommended Remediation" }),
-            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", style: { width: "80px" }, children: "Details" })
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", style: { width: "80px" }, children: "Details" }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", style: { width: "120px" }, children: "Plain English" })
           ] }) }),
           /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("tbody", { children: filteredFindings.map((f) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)(import_react13.default.Fragment, { children: [
             /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)(
@@ -28877,11 +28952,31 @@ function WebsiteScanView({ websiteId, scanId }) {
                   ] }),
                   /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("code", { className: "small", children: f.location && (f.location.url || f.location.parameter || f.location.path) || site.targetUrl }) }),
                   /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { className: "small", children: f.remediation && (f.remediation.advice || f.remediation.fixedIn) || "Review configuration" }),
-                  /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("button", { type: "button", className: "btn btn-sm btn-subtle", children: expandedFinding === f.id ? "Hide" : "View" }) })
+                  /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("button", { type: "button", className: "btn btn-sm btn-subtle", children: expandedFinding === f.id ? "Hide" : "View" }) }),
+                  /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
+                    "button",
+                    {
+                      type: "button",
+                      className: "btn btn-sm btn-primary",
+                      disabled: explainingId === f.id,
+                      onClick: (e) => handleExplain(f, e),
+                      children: explainingId === f.id ? "Writing..." : explanations[f.id] ? "Show" : "Explain"
+                    }
+                  ) })
                 ]
               }
             ),
-            expandedFinding === f.id && /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("tr", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { colSpan: 5, style: { background: "var(--color-bg)", padding: "1rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { style: { display: "grid", gap: "0.5rem" }, children: [
+            expandedFinding === f.id && /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("tr", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { colSpan: 6, style: { background: "var(--color-bg)", padding: "1rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { style: { display: "grid", gap: "0.5rem" }, children: [
+              explanations[f.id] && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("strong", { children: "In plain English" }),
+                /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: "small muted", children: [
+                  " ",
+                  "(",
+                  explanations[f.id].source === "ai" ? "AI" : "built-in explainer",
+                  ")"
+                ] }),
+                /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { style: { margin: "0.4rem 0 0.75rem" }, children: explanations[f.id].text })
+              ] }),
               /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { children: [
                 /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("strong", { children: "Description:" }),
                 /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { style: { margin: "0.25rem 0" }, children: f.description || "No extended description available." })
@@ -28968,7 +29063,7 @@ function WebsiteScanView({ websiteId, scanId }) {
         !tls ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "empty", children: "Target was accessed over HTTP or TLS data is unavailable." }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "1.25rem" }, children: [
           /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { children: [
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "small muted", children: "Certificate Authority Trust:" }),
-            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { style: { marginTop: "0.25rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: `badge ${tls.authorized ? "sev-low" : "sev-critical"}`, children: tls.authorized ? "Trusted &amp; Valid" : `Untrusted: ${tls.authorizationError || "Untrusted"}` }) })
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { style: { marginTop: "0.25rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: `badge ${tls.valid || tls.authorized ? "sev-low" : "sev-critical"}`, children: tls.valid || tls.authorized ? "Trusted and valid" : `Untrusted${tls.authError || tls.authorizationError ? `: ${tls.authError || tls.authorizationError}` : ""}` }) })
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { children: [
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "small muted", children: "Negotiated TLS Protocol:" }),
@@ -28976,15 +29071,15 @@ function WebsiteScanView({ websiteId, scanId }) {
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { children: [
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "small muted", children: "Cipher Suite:" }),
-            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { style: { marginTop: "0.25rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("code", { children: tls.cipher ? tls.cipher.name || JSON.stringify(tls.cipher) : "Unknown" }) })
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { style: { marginTop: "0.25rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("code", { children: typeof tls.cipher === "string" ? tls.cipher : tls.cipher && tls.cipher.name || "Unknown" }) })
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { children: [
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "small muted", children: "Certificate Expiry:" }),
             /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { style: { marginTop: "0.25rem" }, children: [
               /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("strong", { children: tls.validTo ? fmtDate(tls.validTo) : "N/A" }),
-              tls.daysRemaining != null && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: "small muted", children: [
+              (tls.daysLeft != null || tls.daysRemaining != null) && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: "small muted", children: [
                 " (",
-                tls.daysRemaining,
+                tls.daysLeft != null ? tls.daysLeft : tls.daysRemaining,
                 " days remaining)"
               ] })
             ] })
@@ -29003,18 +29098,23 @@ function WebsiteScanView({ websiteId, scanId }) {
         /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("section", { className: "card", children: [
           /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("h2", { className: "m-0", children: [
             "Discovered Endpoints (",
-            endpoints.length,
+            crawlEndpoints.length || endpoints.length,
             ")"
           ] }) }),
-          !endpoints.length ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "empty", children: "Only root target was inspected. Run an Active Crawl to map endpoints." }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("ul", { style: { margin: 0, paddingLeft: "1.25rem", display: "grid", gap: "0.35rem" }, children: endpoints.map((ep, i) => /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("li", { className: "small", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("a", { href: ep, target: "_blank", rel: "noopener noreferrer", children: ep }) }, i)) })
+          !(crawlEndpoints.length || endpoints.length) ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "empty", children: "Only the seed URL was inspected. Run Crawl site after verification to map GET endpoints." }) : crawlEndpoints.length ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("ul", { style: { margin: 0, paddingLeft: "1.25rem", display: "grid", gap: "0.35rem" }, children: crawlEndpoints.map((ep, i) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("li", { className: "small", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "badge", children: ep.method }),
+            " ",
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("a", { href: ep.url, target: "_blank", rel: "noopener noreferrer", children: ep.url }),
+            ep.statusCode ? ` \xB7 ${ep.statusCode}` : ""
+          ] }, i)) }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("ul", { style: { margin: 0, paddingLeft: "1.25rem", display: "grid", gap: "0.35rem" }, children: endpoints.map((ep, i) => /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("li", { className: "small", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("a", { href: ep, target: "_blank", rel: "noopener noreferrer", children: ep }) }, i)) })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("section", { className: "card", children: [
           /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("h2", { className: "m-0", children: [
-            "Discovered HTML Forms & Inputs (",
-            forms.length,
-            ")"
+            "Discovered HTML Forms (",
+            crawlForms.length || forms.length,
+            ") \u2014 not submitted"
           ] }) }),
-          !forms.length ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "empty", children: "No HTML forms were detected on the crawled pages." }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("table", { children: [
+          !(crawlForms.length || forms.length) ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "empty", children: "No HTML forms were detected. Forms are never submitted during this crawl." }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("table", { children: [
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("thead", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("tr", { children: [
               /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", children: "Page URL" }),
               /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", children: "Form Action" }),
@@ -29047,6 +29147,24 @@ function WebsiteScanView({ websiteId, scanId }) {
             ")"
           ] }, i)) })
         ] })
+      ] }),
+      activeTab === "pages" && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("section", { className: "card", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("h2", { className: "m-0", children: [
+          "Discovered pages (",
+          crawlPages.length,
+          ")"
+        ] }) }),
+        !crawlPages.length ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "empty", children: "No crawl pages stored. Run Crawl site after the domain is verified." }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("ul", { style: { margin: 0, paddingLeft: "1.25rem", display: "grid", gap: "0.35rem" }, children: crawlPages.map((page) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("li", { className: "small", children: [
+          "depth ",
+          page.depth,
+          " \xB7 ",
+          page.statusCode || "-",
+          " \xB7 ",
+          page.title || "untitled",
+          " \xB7",
+          " ",
+          /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("a", { href: page.url, target: "_blank", rel: "noopener noreferrer", children: page.url })
+        ] }, page.urlHash || page.url)) })
       ] }),
       activeTab === "technologies" && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("section", { className: "card", children: [
         /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("h2", { className: "m-0", children: [

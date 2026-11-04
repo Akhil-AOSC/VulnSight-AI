@@ -1,0 +1,13 @@
+# DAST worker: OWASP ZAP plus a thin Node runner. Not used until ZAP_API_URL is wired
+# and live Docker + per-scan egress have been verified. Phase 1 crawl is GET-only;
+# do not invoke ZAP ascan from this image.
+FROM ghcr.io/zaproxy/zaproxy:stable
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY src ./src
+USER zap
+CMD ["node", "/app/src/platform/scan-child.js"]

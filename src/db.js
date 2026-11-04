@@ -493,6 +493,10 @@ async function deleteOrgScopedFromMongo(orgId) {
       ['MONGODB_GIT_COLLECTION', 'git_connections'],
       ['MONGODB_WEBSITES_COLLECTION', 'websites'],
       ['MONGODB_WEBSITE_SCANS_COLLECTION', 'website_scans'],
+      ['MONGODB_CRAWL_PAGES_COLLECTION', 'crawl_pages'],
+      ['MONGODB_CRAWL_ENDPOINTS_COLLECTION', 'crawl_endpoints'],
+      ['MONGODB_CRAWL_FORMS_COLLECTION', 'crawl_forms'],
+      ['MONGODB_CRAWL_LINKS_COLLECTION', 'crawl_links'],
     ]) {
       const coll = await namedCollection(envKey, name);
       if (coll) await coll.deleteMany({ orgId });
@@ -501,6 +505,41 @@ async function deleteOrgScopedFromMongo(orgId) {
     return true;
   } catch (err) {
     console.warn('[MongoDB Warning] Could not delete organisation data:', err.message);
+    return false;
+  }
+}
+
+async function saveCrawlInventoryToMongo(doc) {
+  try {
+    const client = await getClient();
+    if (!client) return false;
+    const dbn = mongoDbName();
+    const stamp = { orgId: doc.orgId, websiteId: doc.websiteId, scanId: doc.scanId, updatedAt: new Date().toISOString() };
+    if (doc.pages && doc.pages.length) {
+      const coll = client.db(dbn).collection(process.env.MONGODB_CRAWL_PAGES_COLLECTION || 'crawl_pages');
+      for (const page of doc.pages) {
+        await coll.replaceOne(
+          { orgId: doc.orgId, scanId: doc.scanId, urlHash: page.urlHash },
+          { ...stamp, ...page },
+          { upsert: true }
+        );
+      }
+    }
+    if (doc.endpoints && doc.endpoints.length) {
+      const coll = client.db(dbn).collection(process.env.MONGODB_CRAWL_ENDPOINTS_COLLECTION || 'crawl_endpoints');
+      await coll.insertMany(doc.endpoints.map((e) => ({ ...stamp, ...e })));
+    }
+    if (doc.forms && doc.forms.length) {
+      const coll = client.db(dbn).collection(process.env.MONGODB_CRAWL_FORMS_COLLECTION || 'crawl_forms');
+      await coll.insertMany(doc.forms.map((f) => ({ ...stamp, ...f, submitted: false })));
+    }
+    if (doc.links && doc.links.length) {
+      const coll = client.db(dbn).collection(process.env.MONGODB_CRAWL_LINKS_COLLECTION || 'crawl_links');
+      await coll.insertMany(doc.links.map((l) => ({ ...stamp, ...l })));
+    }
+    return true;
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not save crawl inventory:', err.message);
     return false;
   }
 }
@@ -542,4 +581,5 @@ module.exports = {
   saveAuditToMongo,
   listAuditFromMongo,
   deleteOrgScopedFromMongo,
+  saveCrawlInventoryToMongo,
 };

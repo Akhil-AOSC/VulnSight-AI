@@ -128,6 +128,62 @@ const MIGRATIONS = [
   );
   CREATE INDEX website_scans_org_site ON website_scans (org_id, website_id, created_at);
   `,
+  // 5: GET-only crawl inventory and progress (ZAP or builtin spider)
+  `
+  ALTER TABLE website_scans ADD COLUMN progress TEXT;
+  ALTER TABLE website_scans ADD COLUMN limits TEXT;
+  ALTER TABLE website_scans ADD COLUMN engine TEXT;
+  CREATE TABLE crawl_pages (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    website_id TEXT NOT NULL,
+    scan_id TEXT NOT NULL,
+    url TEXT NOT NULL,
+    url_hash TEXT NOT NULL,
+    status_code INTEGER,
+    content_type TEXT,
+    depth INTEGER,
+    title TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, scan_id, url_hash)
+  );
+  CREATE TABLE crawl_endpoints (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    website_id TEXT NOT NULL,
+    scan_id TEXT NOT NULL,
+    url TEXT NOT NULL,
+    method TEXT NOT NULL,
+    status_code INTEGER,
+    content_type TEXT,
+    param_names TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE crawl_forms (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    website_id TEXT NOT NULL,
+    scan_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    method TEXT NOT NULL,
+    field_names TEXT,
+    submitted INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE crawl_links (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    website_id TEXT NOT NULL,
+    scan_id TEXT NOT NULL,
+    from_hash TEXT NOT NULL,
+    to_hash TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX crawl_pages_scan ON crawl_pages (org_id, scan_id);
+  CREATE INDEX crawl_endpoints_scan ON crawl_endpoints (org_id, scan_id);
+  CREATE INDEX crawl_forms_scan ON crawl_forms (org_id, scan_id);
+  `,
 ];
 
 function openDatabase(file = ':memory:') {

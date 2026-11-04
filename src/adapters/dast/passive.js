@@ -172,12 +172,15 @@ function inspectTls(hostname, port = 443, timeoutMs = 8000) {
 
           resolve({
             valid: authorized,
+            authorized,
             authError: authError || null,
+            authorizationError: authError || null,
             issuer: cert.issuer ? cert.issuer.O || cert.issuer.CN : 'Unknown',
             subject: cert.subject ? cert.subject.CN : hostname,
             validFrom: validFrom.toISOString(),
             validTo: validTo.toISOString(),
             daysLeft,
+            daysRemaining: daysLeft,
             protocol,
             cipher: cipher ? cipher.name : null,
             bits: cipher ? cipher.bits : null,

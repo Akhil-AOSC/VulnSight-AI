@@ -140,3 +140,11 @@ test('allowlist matching and environment configuration', () => {
   assert.ok(DEFAULT_ALLOW.every((h) => !/^\d+\.\d+\.\d+\.\d+$/.test(h)), 'defaults contain no IP literals');
   assert.ok(!DEFAULT_ALLOW.some((h) => h === '*' || h === '*.com'), 'no catch-all entries');
 });
+
+test('per-scan extra allowlist hosts are permitted only while listed', async (t) => {
+  const extra = [];
+  const { port } = await setup(t, { proxy: { extraAllow: () => extra } });
+  assert.match((await connect(port, 'customer.example.com:443')).status, /403/);
+  extra.push('customer.example.com');
+  assert.match((await connect(port, 'customer.example.com:443')).status, /200/);
+});

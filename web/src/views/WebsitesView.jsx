@@ -65,9 +65,17 @@ export function WebsitesView({ onSelectScan }) {
   }
 
   async function handleStartScan(site, profile) {
+    const body = { profile };
+    if (profile === 'ascan') {
+      const ok = window.confirm(
+        `Active exploit scanning sends attack payloads to ${site.hostname}. Use it only on a site you own or are contracted to test. Continue?`
+      );
+      if (!ok) return;
+      body.authorizeActiveTesting = true;
+    }
     try {
       setScanningSiteId(site.id);
-      const scan = await api.post(api.org(`/websites/${site.id}/scans`), { profile });
+      const scan = await api.post(api.org(`/websites/${site.id}/scans`), body);
       toast(`${profile.toUpperCase()} scan queued`);
       await loadWebsites();
       if (onSelectScan) {
@@ -204,15 +212,26 @@ export function WebsitesView({ onSelectScan }) {
                 {scanningSiteId === site.id ? 'Starting...' : 'Passive Scan'}
               </button>
               {site.isVerified ? (
-                <button
-                  type="button"
-                  className="btn btn-sm btn-subtle"
-                  disabled={scanningSiteId === site.id}
-                  onClick={() => handleStartScan(site, 'standard')}
-                  title="Full crawl and endpoint analysis"
-                >
-                  Active Crawl
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-subtle"
+                    disabled={scanningSiteId === site.id}
+                    onClick={() => handleStartScan(site, 'crawl')}
+                    title="GET-only Traditional crawl. Does not submit forms or run active attacks."
+                  >
+                    Crawl site
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-subtle"
+                    disabled={scanningSiteId === site.id}
+                    onClick={() => handleStartScan(site, 'ascan')}
+                    title="OWASP ZAP active scan. Requires ZAP_API_URL and confirmation. Authorized sites only."
+                  >
+                    Exploit scan
+                  </button>
+                </>
               ) : null}
             </div>
           )}
