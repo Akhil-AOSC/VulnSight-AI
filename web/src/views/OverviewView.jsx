@@ -517,7 +517,7 @@ export function OverviewView() {
             </div>
           </div>
 
-          <div className="grid cols-2">
+<div className="grid cols-2">
             <RepoSeverityBreakdown repositories={data.repositories} trend={data.trend} />
 
             <section className="card overview-remediation-card">
@@ -636,6 +636,41 @@ export function OverviewView() {
               }}
             />
           </section>
+
+          {data.websites && data.websites.length > 0 && (
+            <section className="card">
+              <div className="card-head">
+                <div className="row" style={{ justifyContent: 'space-between', width: '100%' }}>
+                  <h2 className="m-0">Monitored Websites</h2>
+                  <a href="#/websites" className="small">View all websites &rarr;</a>
+                </div>
+              </div>
+              <DataTable
+                headers={['Target', 'Verification', 'Posture', 'Last status', 'Last scan', '']}
+                rows={data.websites.map((w) => ({
+                  id: w.id,
+                  cells: [
+                    <div key="target">
+                      <strong>{w.name}</strong>
+                      <div className="small muted">{w.targetUrl}</div>
+                    </div>,
+                    <span key="v" className={`badge ${w.isVerified ? 'sev-low' : 'sev-medium'}`}>
+                      {w.isVerified ? 'Verified' : 'Unverified'}
+                    </span>,
+                    w.postureScore != null ? `${w.postureScore}/100` : '-',
+                    w.lastStatus ? <StatusBadge key="s" status={w.lastStatus} /> : <span key="s" className="muted">Never scanned</span>,
+                    ago(w.lastScanAt),
+                    <a key="a" href="#/websites" className="btn btn-sm btn-subtle">
+                      View
+                    </a>,
+                  ],
+                }))}
+                onRow={() => {
+                  location.hash = '#/websites';
+                }}
+              />
+            </section>
+          )}
 
           <div className="grid cols-2">
             <section className="card">

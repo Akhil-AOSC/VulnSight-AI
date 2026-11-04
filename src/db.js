@@ -382,6 +382,107 @@ async function listAuditFromMongo(orgId) {
   }
 }
 
+async function getWebsitesCollection() {
+  const client = await getClient();
+  if (!client) return null;
+  return client.db(mongoDbName()).collection(process.env.MONGODB_WEBSITES_COLLECTION || 'websites');
+}
+
+async function saveWebsiteToMongo(doc) {
+  try {
+    const coll = await getWebsitesCollection();
+    if (!coll) return false;
+    await coll.replaceOne(
+      { id: doc.id, orgId: doc.orgId },
+      { ...doc, updatedAt: new Date().toISOString() },
+      { upsert: true }
+    );
+    return true;
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not save website:', err.message);
+    return false;
+  }
+}
+
+async function listWebsitesFromMongo(orgId) {
+  try {
+    const coll = await getWebsitesCollection();
+    if (!coll) return null;
+    return await coll.find({ orgId }).sort({ createdAt: -1 }).toArray();
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not list websites:', err.message);
+    return null;
+  }
+}
+
+async function getWebsiteFromMongo(orgId, id) {
+  try {
+    const coll = await getWebsitesCollection();
+    if (!coll) return null;
+    return await coll.findOne({ id, orgId });
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not get website:', err.message);
+    return null;
+  }
+}
+
+async function deleteWebsiteFromMongo(orgId, id) {
+  try {
+    const coll = await getWebsitesCollection();
+    if (!coll) return false;
+    await coll.deleteOne({ id, orgId });
+    return true;
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not delete website:', err.message);
+    return false;
+  }
+}
+
+async function getWebsiteScansCollection() {
+  const client = await getClient();
+  if (!client) return null;
+  return client.db(mongoDbName()).collection(process.env.MONGODB_WEBSITE_SCANS_COLLECTION || 'website_scans');
+}
+
+async function saveWebsiteScanToMongo(doc) {
+  try {
+    const coll = await getWebsiteScansCollection();
+    if (!coll) return false;
+    await coll.replaceOne(
+      { id: doc.id, orgId: doc.orgId },
+      { ...doc, updatedAt: new Date().toISOString() },
+      { upsert: true }
+    );
+    return true;
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not save website scan:', err.message);
+    return false;
+  }
+}
+
+async function listWebsiteScansFromMongo(orgId, websiteId) {
+  try {
+    const coll = await getWebsiteScansCollection();
+    if (!coll) return null;
+    const query = websiteId ? { orgId, websiteId } : { orgId };
+    return await coll.find(query).sort({ startedAt: -1 }).limit(50).toArray();
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not list website scans:', err.message);
+    return null;
+  }
+}
+
+async function getWebsiteScanFromMongo(orgId, id) {
+  try {
+    const coll = await getWebsiteScansCollection();
+    if (!coll) return null;
+    return await coll.findOne({ id, orgId });
+  } catch (err) {
+    console.warn('[MongoDB Warning] Could not get website scan:', err.message);
+    return null;
+  }
+}
+
 async function deleteOrgScopedFromMongo(orgId) {
   try {
     for (const [envKey, name] of [
@@ -390,6 +491,8 @@ async function deleteOrgScopedFromMongo(orgId) {
       ['MONGODB_AUDIT_COLLECTION', 'audit_logs'],
       ['MONGODB_REPOS_COLLECTION', 'repositories'],
       ['MONGODB_GIT_COLLECTION', 'git_connections'],
+      ['MONGODB_WEBSITES_COLLECTION', 'websites'],
+      ['MONGODB_WEBSITE_SCANS_COLLECTION', 'website_scans'],
     ]) {
       const coll = await namedCollection(envKey, name);
       if (coll) await coll.deleteMany({ orgId });
@@ -403,6 +506,15 @@ async function deleteOrgScopedFromMongo(orgId) {
 }
 
 module.exports = {
+  getWebsitesCollection,
+  saveWebsiteToMongo,
+  listWebsitesFromMongo,
+  getWebsiteFromMongo,
+  deleteWebsiteFromMongo,
+  getWebsiteScansCollection,
+  saveWebsiteScanToMongo,
+  listWebsiteScansFromMongo,
+  getWebsiteScanFromMongo,
   isMongoConfigured,
   getMongoStatus,
   saveScanToMongo,

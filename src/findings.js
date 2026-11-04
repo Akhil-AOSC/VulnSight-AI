@@ -18,7 +18,7 @@ const { LEVELS, rank } = require('./severity');
 //   status       open | acknowledged | suppressed | fixed (lifecycle, set by the platform)
 //   aiAnalysis   always null here: AI commentary is stored separately, never mixed
 //                with scanner facts
-const CATEGORIES = ['sca', 'sast', 'secret', 'container', 'iac'];
+const CATEGORIES = ['sca', 'sast', 'secret', 'container', 'iac', 'dast'];
 const STATUSES = ['open', 'acknowledged', 'suppressed', 'fixed'];
 
 function fingerprint(parts) {
@@ -37,7 +37,8 @@ function createFinding(input) {
     identifiers: { primary: null, aliases: [], cwe: [], ...input.identifiers },
     location: {
       file: null, line: null, endLine: null, package: null, version: null,
-      ecosystem: null, direct: null, paths: [], ...input.location,
+      ecosystem: null, direct: null, paths: [], url: null, method: null, parameter: null,
+      ...input.location,
     },
     remediation: { fixedIn: null, advice: null, ...input.remediation },
     evidence: input.evidence == null ? null : input.evidence,
@@ -54,7 +55,7 @@ function createFinding(input) {
   const loc = f.location;
   f.id = fingerprint([
     f.category, f.identifiers.primary || f.scanner.ruleId,
-    loc.file, loc.line, loc.package, loc.version, loc.ecosystem,
+    loc.file, loc.line, loc.package, loc.version, loc.ecosystem, loc.url, loc.parameter,
   ]);
   return f;
 }

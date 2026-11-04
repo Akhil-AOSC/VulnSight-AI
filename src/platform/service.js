@@ -17,7 +17,7 @@ const { runSandboxed } = require('./sandbox');
 const { createLocalExecutor } = require('./executors');
 const { NonRetryableError } = require('./queue');
 const { DEFAULT_SCANNERS, SCANNERS } = require('../pipeline');
-const { summarize } = require('../risk');
+const { summarize, postureScore } = require('../risk');
 const exporters = require('../reports/export');
 const ai = require('../ai/assistant');
 const { providerFromEnv } = require('../ai/providers');
@@ -25,6 +25,9 @@ const { generateAiAnalysis } = require('../ai');
 const { fromScaIssue, createFinding } = require('../findings');
 const { upgradePlan } = require('../report');
 const { usagesForFinding } = require('../code-context');
+const { runPassiveScan, validateTargetUrl } = require('../adapters/dast/passive');
+const { crawlWebsite } = require('../adapters/dast/crawler');
+const { generateVerificationToken, checkOwnership } = require('./dast-verifier');
 const {
   isMongoConfigured,
   getMongoStatus,
@@ -49,7 +52,13 @@ const {
   saveAuditToMongo,
   listAuditFromMongo,
   deleteOrgScopedFromMongo,
-} = require('../db');
+  saveWebsiteToMongo,
+  listWebsitesFromMongo,
+  getWebsiteFromMongo,
+  deleteWebsiteFromMongo,
+  saveWebsiteScanToMongo,
+  listWebsiteScansFromMongo,
+  getWebsiteScanFromMongo} = require('../db');
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const GRANT_TTL_MS = 10 * 60 * 1000;
@@ -1505,6 +1514,466 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
     },
   };
 
+
+  // ---------- websites (DAST) ------------------------------------------------------------------------
+  function websiteDocument(row, latestScan = null) {
+    return {
+      id: row.id,
+      orgId: row.org_id,
+      targetUrl: row.target_url,
+      hostname: row.hostname,
+      name: row.name,
+      isVerified: Boolean(row.is_verified),
+      verificationToken: row.verification_token,
+      verificationMethod: row.verification_method || null,
+      config: parse(row.config, {}),
+      schedule: row.schedule || null,
+      createdAt: row.created_at,
+      latestScan: latestScan ? {
+        id: latestScan.id,
+        profile: latestScan.profile,
+        status: latestScan.status,
+        postureScore: latestScan.posture_score,
+        summary: parse(latestScan.summary, null),
+        startedAt: latestScan.started_at,
+        finishedAt: latestScan.finished_at,
+      } : null,
+    };
+  }
+
+  function websiteScanDocument(row) {
+    return {
+      id: row.id,
+      orgId: row.org_id,
+      websiteId: row.website_id,
+      profile: row.profile,
+      status: row.status,
+      summary: parse(row.summary, {}),
+      postureScore: row.posture_score,
+      passiveResults: parse(row.passive_results, {}),
+      aiAnalysis: parse(row.ai_analysis, null),
+      error: row.error || null,
+      requestedBy: row.requested_by || null,
+      createdAt: row.created_at,
+      startedAt: row.started_at,
+      finishedAt: row.finished_at,
+    };
+  }
+
+  function getWebsite(orgId, websiteId) {
+    const row = db.prepare('SELECT * FROM websites WHERE org_id = ? AND id = ?').get(orgId, websiteId);
+    if (!row) throw new NotFoundError('Website not found');
+    const latestScan = db.prepare('SELECT * FROM website_scans WHERE org_id = ? AND website_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId, websiteId);
+    return websiteDocument(row, latestScan);
+  }
+
+  function getWebsiteScan(orgId, websiteId, scanId) {
+    const row = db.prepare('SELECT * FROM website_scans WHERE org_id = ? AND website_id = ? AND id = ?').get(orgId, websiteId, scanId);
+    if (!row) throw new NotFoundError('Website scan not found');
+    return websiteScanDocument(row);
+  }
+
+  async function handleWebsiteScanJob({ scanId }, job = { attempts: 1, max_attempts: 1 }) {
+    const scan = db.prepare('SELECT * FROM website_scans WHERE id = ?').get(scanId);
+    if (!scan || scan.status === 'cancelled') return;
+    const site = db.prepare('SELECT * FROM websites WHERE id = ? AND org_id = ?').get(scan.website_id, scan.org_id);
+    if (!site) {
+      db.prepare("UPDATE website_scans SET status = 'failed', error = ?, finished_at = ? WHERE id = ?")
+        .run('Website was removed', nowIso(), scanId);
+      return;
+    }
+    db.prepare("UPDATE website_scans SET status = 'running', started_at = ?, error = NULL WHERE id = ?").run(nowIso(), scanId);
+
+    try {
+      // 1. Passive DAST inspection
+      const passive = await runPassiveScan(site.target_url);
+      let findings = [...(passive.findings || [])];
+      let crawlResult = null;
+
+      // 2. Active crawl if requested and site is verified
+      if (scan.profile === 'standard' || scan.profile === 'deep') {
+        if (!site.is_verified) {
+          throw new ValidationError('Active scanning requires domain ownership verification');
+        }
+        crawlResult = await crawlWebsite(site.target_url, { maxPages: scan.profile === 'deep' ? 25 : 10 });
+        if (crawlResult && crawlResult.findings) {
+          findings = findings.concat(crawlResult.findings);
+        }
+      }
+
+      // 3. Posture score & summary
+      const posture = postureScore(findings);
+      const sum = summarize(findings);
+      const summary = {
+        total: findings.length,
+        critical: sum.bySeverity.critical || 0,
+        high: sum.bySeverity.high || 0,
+        medium: sum.bySeverity.medium || 0,
+        low: sum.bySeverity.low || 0,
+        grade: posture.grade,
+        endpoints: crawlResult ? crawlResult.crawledUrls.length : 1,
+        forms: crawlResult ? crawlResult.forms.length : 0,
+      };
+
+      // 4. AI correlation
+      let aiAnalysis = null;
+      const orgSettings = settingsOf(scan.org_id);
+      if ((orgSettings.aiEnabled || enableAutoAi) && process.env.GROQ_API_KEY) {
+        try {
+          const aiPayload = {
+            targetUrl: site.target_url,
+            technologies: passive.technologies || [],
+            telemetry: {
+              tls: passive.tls,
+              headers: passive.headers,
+              cookies: passive.cookies,
+              cors: passive.cors,
+              responseStatus: passive.responseStatus,
+              endpoints: crawlResult ? crawlResult.crawledUrls : [site.target_url],
+              forms: crawlResult ? crawlResult.forms : [],
+              exposedFiles: crawlResult ? crawlResult.exposedFiles : [],
+            },
+            findings,
+          };
+          aiAnalysis = await ai.summarizeWebsiteDast(aiPayload, {
+            provider: aiProviderFactory(),
+            consent: { aiEnabled: true, aiSendCode: orgSettings.aiSendCode },
+          });
+        } catch (err) {
+          console.warn('[AI DAST Warning] Could not correlate findings with AI:', err.message);
+        }
+      }
+
+      const finishedAt = nowIso();
+      const passiveResultsData = {
+        targetUrl: passive.targetUrl,
+        reachable: passive.reachable,
+        responseStatus: passive.responseStatus,
+        headers: passive.headers,
+        cookies: passive.cookies,
+        cors: passive.cors,
+        tls: passive.tls,
+        technologies: passive.technologies,
+        crawledUrls: crawlResult ? crawlResult.crawledUrls : [site.target_url],
+        forms: crawlResult ? crawlResult.forms : [],
+        exposedFiles: crawlResult ? crawlResult.exposedFiles : [],
+        findings,
+      };
+
+      transaction(db, () => {
+        db.prepare(`UPDATE website_scans SET status = 'completed', summary = ?, posture_score = ?, passive_results = ?, ai_analysis = ?, finished_at = ?, error = NULL WHERE id = ?`)
+          .run(JSON.stringify(summary), posture.score, JSON.stringify(passiveResultsData), JSON.stringify(aiAnalysis), finishedAt, scanId);
+
+        if (aiAnalysis && aiAnalysis.executiveSummary) {
+          db.prepare('INSERT INTO ai_history (id, org_id, repo_id, finding_id, user_id, kind, provider, question, answer, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            .run(uuid(), scan.org_id, null, null, scan.requested_by || null, 'dast_summary', aiAnalysis.provider || 'groq', `Website Security Assessment for ${site.target_url}`, aiAnalysis.executiveSummary, finishedAt);
+        }
+      });
+
+      if (enableMongo && isMongoConfigured()) {
+        await saveWebsiteScanToMongo({
+          id: scan.id,
+          orgId: scan.org_id,
+          websiteId: site.id,
+          targetUrl: site.target_url,
+          profile: scan.profile,
+          status: 'completed',
+          postureScore: posture.score,
+          summary,
+          passiveResults: passiveResultsData,
+          aiAnalysis,
+          startedAt: scan.started_at,
+          finishedAt,
+        });
+      }
+
+      const severe = findings.filter((f) => f.severity === 'critical' || f.severity === 'high');
+      if (severe.length) {
+        notify(scan.org_id, 'findings.new', `${severe.length} new high/critical finding(s) on ${site.hostname}`,
+          severe.slice(0, 5).map((f) => f.title).join('; '), ['owner', 'admin', 'developer']);
+      }
+    } catch (err) {
+      const message = String(err.message || err).slice(0, 300);
+      const finishedAt = nowIso();
+      db.prepare("UPDATE website_scans SET status = 'failed', error = ?, finished_at = ? WHERE id = ?")
+        .run(message, finishedAt, scanId);
+      if (enableMongo && isMongoConfigured()) {
+        await saveWebsiteScanToMongo({
+          id: scan.id,
+          orgId: scan.org_id,
+          websiteId: site.id,
+          targetUrl: site.target_url,
+          profile: scan.profile,
+          status: 'failed',
+          error: message,
+          startedAt: scan.started_at,
+          finishedAt,
+        });
+      }
+    }
+  }
+
+  const websites = {
+    async create(ctx, { url, name, config = {} } = {}) {
+      authorize(ctx, 'repos:write');
+      const rawUrl = String(url || '').trim();
+      if (!rawUrl) throw new ValidationError('Website URL is required');
+
+      const validated = await validateTargetUrl(rawUrl);
+      const targetUrl = validated.parsed.origin;
+      const hostname = validated.parsed.hostname;
+      const siteName = String(name || hostname).trim().slice(0, 100);
+
+      const existing = db.prepare('SELECT id FROM websites WHERE org_id = ? AND target_url = ?').get(ctx.orgId, targetUrl);
+      if (existing) throw new ValidationError('This website URL is already registered in this organisation');
+
+      const id = uuid();
+      const token = generateVerificationToken();
+      const nowStr = nowIso();
+
+      db.prepare(`INSERT INTO websites (id, org_id, target_url, hostname, name, is_verified, verification_token, verification_method, config, created_at)
+                  VALUES (?, ?, ?, ?, ?, 0, ?, NULL, ?, ?)`)
+        .run(id, ctx.orgId, targetUrl, hostname, siteName, token, JSON.stringify(config), nowStr);
+
+      const doc = getWebsite(ctx.orgId, id);
+      if (enableMongo && isMongoConfigured()) {
+        await saveWebsiteToMongo({
+          id,
+          orgId: ctx.orgId,
+          targetUrl,
+          hostname,
+          name: siteName,
+          verified: false,
+          verificationToken: token,
+          verificationMethod: null,
+          config,
+          createdAt: nowStr,
+        });
+      }
+      audit(ctx, 'website.create', id, { targetUrl, hostname });
+      return doc;
+    },
+
+    async list(ctx) {
+      authorize(ctx, 'repos:read');
+      if (enableMongo && isMongoConfigured()) {
+        try {
+          const remote = await listWebsitesFromMongo(ctx.orgId);
+          if (Array.isArray(remote)) {
+            for (const doc of remote) {
+              if (!doc.id || doc.orgId !== ctx.orgId) continue;
+              const exists = db.prepare('SELECT 1 FROM websites WHERE id = ? AND org_id = ?').get(doc.id, ctx.orgId);
+              if (!exists) {
+                db.prepare(`INSERT INTO websites (id, org_id, target_url, hostname, name, is_verified, verification_token, verification_method, config, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                  .run(doc.id, ctx.orgId, doc.targetUrl, doc.hostname, doc.name, doc.verified ? 1 : 0, doc.verificationToken, doc.verificationMethod || null, JSON.stringify(doc.config || {}), doc.createdAt || nowIso());
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('[Mongo Website Sync Warning]:', err.message);
+        }
+      }
+
+      const rows = db.prepare('SELECT * FROM websites WHERE org_id = ? ORDER BY created_at DESC').all(ctx.orgId);
+      return rows.map((row) => {
+        const latestScan = db.prepare('SELECT * FROM website_scans WHERE org_id = ? AND website_id = ? ORDER BY created_at DESC LIMIT 1').get(ctx.orgId, row.id);
+        return websiteDocument(row, latestScan);
+      });
+    },
+
+    get(ctx, websiteId) {
+      authorize(ctx, 'repos:read');
+      return getWebsite(ctx.orgId, websiteId);
+    },
+
+    async remove(ctx, websiteId) {
+      authorize(ctx, 'repos:write');
+      getWebsite(ctx.orgId, websiteId);
+      transaction(db, () => {
+        db.prepare('DELETE FROM website_scans WHERE website_id = ? AND org_id = ?').run(websiteId, ctx.orgId);
+        db.prepare('DELETE FROM websites WHERE id = ? AND org_id = ?').run(websiteId, ctx.orgId);
+      });
+      if (enableMongo && isMongoConfigured()) {
+        await deleteWebsiteFromMongo(ctx.orgId, websiteId);
+      }
+      audit(ctx, 'website.remove', websiteId);
+      return { ok: true };
+    },
+
+    async verify(ctx, websiteId, opts = {}) {
+      authorize(ctx, 'repos:write');
+      const site = getWebsite(ctx.orgId, websiteId);
+      if (site.isVerified) {
+        return { verified: true, method: site.verificationMethod };
+      }
+
+      if (opts && opts.manual) {
+        db.prepare('UPDATE websites SET is_verified = 1, verification_method = ? WHERE id = ? AND org_id = ?')
+          .run('manual_authorization', websiteId, ctx.orgId);
+        if (enableMongo && isMongoConfigured()) {
+          const updated = getWebsite(ctx.orgId, websiteId);
+          await saveWebsiteToMongo({
+            id: updated.id,
+            orgId: updated.orgId,
+            targetUrl: updated.targetUrl,
+            hostname: updated.hostname,
+            name: updated.name,
+            verified: true,
+            verificationToken: updated.verificationToken,
+            verificationMethod: 'manual_authorization',
+            config: updated.config,
+            createdAt: updated.createdAt,
+          });
+        }
+        audit(ctx, 'website.verify', websiteId, { method: 'manual_authorization' });
+        return { verified: true, method: 'manual_authorization' };
+      }
+
+      const res = await checkOwnership(site.hostname, site.targetUrl, site.verificationToken);
+      if (res && res.verified) {
+        db.prepare('UPDATE websites SET is_verified = 1, verification_method = ? WHERE id = ? AND org_id = ?')
+          .run(res.method, websiteId, ctx.orgId);
+        if (enableMongo && isMongoConfigured()) {
+          const updated = getWebsite(ctx.orgId, websiteId);
+          await saveWebsiteToMongo({
+            id: updated.id,
+            orgId: updated.orgId,
+            targetUrl: updated.targetUrl,
+            hostname: updated.hostname,
+            name: updated.name,
+            verified: true,
+            verificationToken: updated.verificationToken,
+            verificationMethod: res.method,
+            config: updated.config,
+            createdAt: updated.createdAt,
+          });
+        }
+        audit(ctx, 'website.verify', websiteId, { method: res.method });
+        return { verified: true, method: res.method };
+      }
+      return { verified: false, error: res && res.error, dns: res && res.dns, http: res && res.http };
+    },
+
+    startScan(ctx, websiteId, { profile = 'passive' } = {}) {
+      authorize(ctx, 'scans:run');
+      const site = getWebsite(ctx.orgId, websiteId);
+      const validProfiles = ['passive', 'standard', 'deep'];
+      if (!validProfiles.includes(profile)) {
+        throw new ValidationError(`Profile must be one of: ${validProfiles.join(', ')}`);
+      }
+      if (profile !== 'passive' && !site.isVerified) {
+        throw new ValidationError('Active scanning (standard / deep) requires domain ownership verification. Please verify ownership first.');
+      }
+      const active = db.prepare("SELECT COUNT(*) AS n FROM website_scans WHERE org_id = ? AND status IN ('queued', 'running')").get(ctx.orgId).n;
+      if (active >= 5) {
+        throw new ValidationError('Too many website scans are currently running. Please wait for one to finish.');
+      }
+      const scanId = uuid();
+      const nowStr = nowIso();
+      db.prepare(`INSERT INTO website_scans (id, org_id, website_id, profile, status, requested_by, created_at)
+                  VALUES (?, ?, ?, ?, 'queued', ?, ?)`)
+        .run(scanId, ctx.orgId, websiteId, profile, ctx.userId || null, nowStr);
+
+      queue.enqueue('website_scan', { scanId }, { orgId: ctx.orgId });
+      audit(ctx, 'website_scan.start', scanId, { websiteId, profile });
+      return websiteScanDocument(db.prepare('SELECT * FROM website_scans WHERE id = ?').get(scanId));
+    },
+
+    listScans(ctx, websiteId, { limit = 50 } = {}) {
+      authorize(ctx, 'scans:read');
+      getWebsite(ctx.orgId, websiteId);
+      const lim = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 100);
+      const rows = db.prepare('SELECT * FROM website_scans WHERE org_id = ? AND website_id = ? ORDER BY created_at DESC LIMIT ?')
+        .all(ctx.orgId, websiteId, lim);
+      return rows.map(websiteScanDocument);
+    },
+
+    getScan(ctx, websiteId, scanId) {
+      authorize(ctx, 'scans:read');
+      return getWebsiteScan(ctx.orgId, websiteId, scanId);
+    },
+
+    report(ctx, websiteId, scanId, format = 'json') {
+      authorize(ctx, 'reports:read');
+      const site = getWebsite(ctx.orgId, websiteId);
+      const scan = getWebsiteScan(ctx.orgId, websiteId, scanId);
+      audit(ctx, 'website_report.export', scanId, { format, websiteId });
+
+      const findings = (scan.passiveResults && scan.passiveResults.findings) || [];
+      const title = `Website Security Assessment: ${site.targetUrl}`;
+
+      switch (format) {
+        case 'csv':
+          return { type: 'text/csv; charset=utf-8', ext: 'csv', body: exporters.renderCsv(findings) };
+        case 'markdown': {
+          const s = scan.summary || {};
+          const lines = [
+            `# ${title}`,
+            '',
+            `Target: \`${site.targetUrl}\`  `,
+            `Hostname: \`${site.hostname}\`  `,
+            `Profile: \`${scan.profile}\`  `,
+            `Status: \`${scan.status}\`  `,
+            `Generated: ${scan.finishedAt || scan.createdAt}`,
+            '',
+            `**Security Posture Score: ${scan.postureScore != null ? scan.postureScore : 'N/A'}/100 (Grade ${s.grade || 'N/A'})** · ${s.total || findings.length} findings detected`,
+            '',
+            '| Critical | High | Medium | Low |',
+            '|---|---|---|---|',
+            `| ${s.critical || 0} | ${s.high || 0} | ${s.medium || 0} | ${s.low || 0} |`,
+            '',
+          ];
+
+          if (scan.aiAnalysis && scan.aiAnalysis.executiveSummary) {
+            lines.push('## AI Executive Summary', '', scan.aiAnalysis.executiveSummary, '');
+          }
+
+          if (scan.aiAnalysis && scan.aiAnalysis.riskNarrative) {
+            lines.push('### Risk Narrative', '', scan.aiAnalysis.riskNarrative, '');
+          }
+
+          const tech = (scan.passiveResults && scan.passiveResults.technologies) || [];
+          if (tech.length) {
+            lines.push('## Detected Technologies', '');
+            for (const t of tech) {
+              lines.push(`- **${t.name}** (${t.category})${t.version ? ` v${t.version}` : ''}`);
+            }
+            lines.push('');
+          }
+
+          const tls = (scan.passiveResults && scan.passiveResults.tls);
+          if (tls) {
+            lines.push('## TLS / SSL Configuration', '');
+            lines.push(`- **Authorized:** ${tls.authorized ? 'Yes' : 'No'}`);
+            if (tls.protocol) lines.push(`- **Protocol:** ${tls.protocol}`);
+            if (tls.cipher) lines.push(`- **Cipher:** ${tls.cipher.name || tls.cipher}`);
+            if (tls.validTo) lines.push(`- **Certificate Expiry:** ${tls.validTo} (${tls.daysRemaining} days remaining)`);
+            if (tls.issuer) lines.push(`- **Issuer:** ${typeof tls.issuer === 'object' ? (tls.issuer.O || tls.issuer.CN || JSON.stringify(tls.issuer)) : tls.issuer}`);
+            lines.push('');
+          }
+
+          lines.push('## Vulnerabilities and Security Gaps', '');
+          if (!findings.length) {
+            lines.push('No vulnerabilities or configuration weaknesses detected.');
+          } else {
+            lines.push('| Severity | Title | Location | Remediation |', '|---|---|---|---|');
+            for (const f of exporters.sortFindings(findings)) {
+              const loc = (f.location && (f.location.url || f.location.path || f.location.parameter)) || site.targetUrl;
+              const rem = (f.remediation && (f.remediation.advice || f.remediation.fixedIn)) || 'Review configuration';
+              lines.push(`| ${f.severity} | ${f.title.replace(/[|\\]/g, '\\  // ---------- dashboard')} | ${String(loc).replace(/[|\\]/g, '\\  // ---------- dashboard')} | ${String(rem).replace(/[|\\]/g, '\\  // ---------- dashboard')} |`);
+            }
+          }
+
+          return { type: 'text/markdown; charset=utf-8', ext: 'md', body: lines.join('\n') + '\n' };
+        }
+        case 'json':
+        default:
+          return { type: 'application/json', ext: 'json', body: JSON.stringify({ website: site, scan }, null, 2) };
+      }
+    },
+  };
+
   // ---------- dashboard ------------------------------------------------------------------------------
   let mongoSyncedOrgs = new Set();
   const dashboard = {
@@ -1513,6 +1982,19 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       await applyRemoteConnections(ctx.orgId);
       await applyRemoteRepos(ctx.orgId);
       const repoRows = db.prepare('SELECT * FROM repositories WHERE org_id = ? ORDER BY full_name').all(ctx.orgId);
+      const websiteRows = db.prepare('SELECT * FROM websites WHERE org_id = ? ORDER BY name').all(ctx.orgId);
+      const websitesOverview = websiteRows.map((site) => {
+        const lastScan = db.prepare('SELECT status, posture_score, summary, finished_at FROM website_scans WHERE org_id = ? AND website_id = ? ORDER BY created_at DESC LIMIT 1').get(ctx.orgId, site.id);
+        return {
+          id: site.id,
+          name: site.name,
+          targetUrl: site.target_url,
+          isVerified: Boolean(site.is_verified),
+          postureScore: lastScan ? lastScan.posture_score : null,
+          lastStatus: lastScan ? lastScan.status : null,
+          lastScanAt: lastScan ? lastScan.finished_at : null,
+        };
+      });
       const totals = { total: 0, critical: 0, high: 0, medium: 0, low: 0 };
       let scoreSum = 0;
       let scored = 0;
@@ -1548,6 +2030,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         riskScore: scored ? Math.round(100 - scoreSum / scored) : 0,
         posture: scored ? Math.round(scoreSum / scored) : null,
         repositories,
+        websites: websitesOverview,
         trend,
         recentScans: db.prepare('SELECT * FROM scans WHERE org_id = ? ORDER BY created_at DESC LIMIT 10').all(ctx.orgId).map(publicScan),
         failedScans: db.prepare("SELECT * FROM scans WHERE org_id = ? AND status = 'failed' ORDER BY created_at DESC LIMIT 5").all(ctx.orgId).map(publicScan),
@@ -1892,6 +2375,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       for (const org of db.prepare('SELECT id FROM orgs').all()) {
         const cutoff = new Date(clock() - settingsOf(org.id).retentionDays * 86400e3).toISOString();
         const r = db.prepare("DELETE FROM scans WHERE org_id = ? AND created_at < ? AND status IN ('completed','failed','cancelled')").run(org.id, cutoff);
+        db.prepare("DELETE FROM website_scans WHERE org_id = ? AND created_at < ? AND status IN ('completed','failed','cancelled')").run(org.id, cutoff);
         scansDeleted += Number(r.changes);
         db.prepare('DELETE FROM notifications WHERE org_id = ? AND created_at < ?').run(org.id, cutoff);
         db.prepare('DELETE FROM ai_history WHERE org_id = ? AND created_at < ?').run(org.id, cutoff);
@@ -1904,8 +2388,8 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
   };
 
   return {
-    auth, orgs, teams, connections, repos, scans, findings: findingsApi, dashboard, ai: aiApi,
-    audit: auditApi, notifications, automation, grants, handlers: { scan: handleScanJob }, authorize, can,
+    auth, orgs, teams, connections, repos, scans, findings: findingsApi, websites, dashboard, ai: aiApi,
+    audit: auditApi, notifications, automation, grants, handlers: { scan: handleScanJob, website_scan: handleWebsiteScanJob }, authorize, can,
   };
 }
 

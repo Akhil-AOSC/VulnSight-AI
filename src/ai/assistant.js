@@ -57,6 +57,9 @@ function describeFinding(f, { consent = {} } = {}) {
   ];
   if (f.location.package) lines.push(`Package: ${f.location.package}@${f.location.version} (${f.location.ecosystem}), ${f.location.direct === true ? 'direct' : f.location.direct === false ? 'transitive' : 'direct/transitive unknown'}`);
   if (f.location.file) lines.push(`File: ${f.location.file}${f.location.line ? `:${f.location.line}` : ''}`);
+  if (f.location.url) lines.push(`URL: ${f.location.url}`);
+  if (f.location.method) lines.push(`HTTP Method: ${f.location.method}`);
+  if (f.location.parameter) lines.push(`Parameter: ${f.location.parameter}`);
   if (f.remediation.fixedIn) lines.push(`Fixed in: ${f.remediation.fixedIn}`);
   if (f.description) lines.push(`Description: ${untrusted(f.description, 800)}`);
   const usages = Array.isArray(f.location.usages) ? f.location.usages : [];
@@ -192,4 +195,43 @@ async function summarizePosture(findings, { provider, consent } = {}) {
   return { text, stats: s, meta: label(provider, 'summary') };
 }
 
-module.exports = { explainFinding, suggestFix, askQuestion, summarizePosture, upgradeImpact, looksLikeInjection, untrusted, describeFinding, ConsentError, SYSTEM_PROMPT, taskPrompt };
+async function summarizeWebsiteDast(websiteUrl, passiveTelemetry, findings = [], { provider, consent } = {}) {
+  requireConsent(consent, 'summarize website security posture');
+  const dFindings = (findings || []).map((f) => describeFinding(f, { consent: { sendCode: false } })).join('\n---\n');
+
+  const telemetryLines = [
+    `Target: ${websiteUrl}`,
+    `HTTP Status: ${passiveTelemetry.statusCode || 'unknown'}`,
+    `TLS Issuer: ${passiveTelemetry.tls ? passiveTelemetry.tls.issuer : 'None'} (Expires: ${passiveTelemetry.tls ? passiveTelemetry.tls.validTo : 'N/A'}, Protocol: ${passiveTelemetry.tls ? passiveTelemetry.tls.protocol : 'N/A'})`,
+    `Technologies: ${(passiveTelemetry.technologies || []).map((t) => `${t.name}${t.version ? ` ${t.version}` : ''}`).join(', ') || 'None detected'}`,
+    `Missing/Weak Headers: ${JSON.stringify(passiveTelemetry.headers || {})}`,
+    `Cookies Audited: ${(passiveTelemetry.cookies || []).length}`,
+  ];
+
+  const userPrompt = `Technical Website Security Telemetry:\n${telemetryLines.join('\n')}\n\nDetected DAST Findings (${findings.length} total):\n${dFindings || 'No automated scanner vulnerabilities detected.'}\n\nProvide an executive security assessment:
+1. Risk Level (Critical, High, Medium, or Low).
+2. Executive Summary (2-3 sentences explaining overall posture).
+3. Attack Vector Analysis (how an attacker would chain these weaknesses).
+4. Key Prioritized Remediation Guidance (concrete developer fixes).
+5. Categorized Audit:
+   - Confirmed Vulnerabilities
+   - Potential Vulnerabilities
+   - Configuration Weaknesses
+   - Informational Observations
+   - Untested Areas`;
+
+  const text = await provider.complete({
+    system: SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: userPrompt }],
+    maxTokens: 1200,
+  });
+
+  return {
+    targetUrl: websiteUrl,
+    text,
+    findingsCount: findings.length,
+    meta: label(provider, 'website_dast_summary'),
+  };
+}
+
+module.exports = { explainFinding, suggestFix, askQuestion, summarizePosture, summarizeWebsiteDast, upgradeImpact, looksLikeInjection, untrusted, describeFinding, ConsentError, SYSTEM_PROMPT, taskPrompt };

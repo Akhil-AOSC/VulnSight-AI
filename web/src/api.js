@@ -77,6 +77,7 @@ export const api = {
   patch: (p, b = {}) => request('PATCH', p, b),
   put: (p, b = {}) => request('PUT', p, b),
   del: (p) => request('DELETE', p),
+  delete: (p) => request('DELETE', p),
   org: (p) => `/orgs/${session.orgId}${p}`,
   async download(path, filename) {
     const res = await request('GET', path, undefined, { raw: true });

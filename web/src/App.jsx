@@ -9,11 +9,14 @@ import { ScanView } from './views/ScanView.jsx';
 import { AssistantView } from './views/AssistantView.jsx';
 import { ReportsView } from './views/ReportsView.jsx';
 import { SettingsView } from './views/SettingsView.jsx';
+import { WebsitesView } from './views/WebsitesView.jsx';
+import { WebsiteScanView } from './views/WebsiteScanView.jsx';
 
 const NAV = [
   ['overview', 'Overview'],
   ['new-scan', 'New scan'],
   ['repos', 'Repositories'],
+  ['websites', 'Websites'],
   ['assistant', 'AI assistant'],
   ['reports', 'Reports'],
   ['settings', 'Settings'],
@@ -21,7 +24,11 @@ const NAV = [
 
 function parseHash() {
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
-  return { route: parts[0] || 'overview', param: parts[1] || null };
+  return {
+    route: parts[0] || 'overview',
+    param: parts[1] || null,
+    subParam: parts[2] === 'scans' ? (parts[3] || null) : (parts[2] || null),
+  };
 }
 
 export function App() {
@@ -144,7 +151,7 @@ export function App() {
     currentTheme === 'dark' ||
     (currentTheme === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
 
-  const { route, param } = routeState;
+  const { route, param, subParam } = routeState;
 
   return (
     <>
@@ -250,6 +257,12 @@ export function App() {
               <ReposListView key={orgId} />
             ))}
           {route === 'scans' && param && <ScanView key={`${orgId}-${param}`} scanId={param} />}
+          {route === 'websites' &&
+            (subParam ? (
+              <WebsiteScanView key={`${orgId}-${param}-${subParam}`} websiteId={param} scanId={subParam} />
+            ) : (
+              <WebsitesView key={orgId} />
+            ))}
           {route === 'assistant' && (
             <AssistantView key={`${orgId}-${param || ''}`} initialRepoId={param} />
           )}
@@ -262,7 +275,7 @@ export function App() {
               onMeUpdated={() => setMe({ ...session.me })}
             />
           )}
-          {!['overview', 'new-scan', 'repos', 'scans', 'assistant', 'reports', 'settings'].includes(
+          {!['overview', 'new-scan', 'repos', 'websites', 'scans', 'assistant', 'reports', 'settings'].includes(
             route
           ) && <OverviewView key={orgId} />}
         </main>

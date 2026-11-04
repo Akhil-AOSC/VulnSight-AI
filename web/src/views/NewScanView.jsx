@@ -37,6 +37,7 @@ export function NewScanView() {
       />
 
       {canRunScan ? (
+        <>
         <section className="card">
           <h2>Run a vulnerability scan</h2>
           <p className="muted small scan-sub">
@@ -81,6 +82,19 @@ export function NewScanView() {
             </button>
           </form>
         </section>
+
+        <section className="card" style={{ marginTop: '1.5rem' }}>
+          <h2>Scan a website or web application (DAST)</h2>
+          <p className="muted small scan-sub">
+            Test TLS/SSL configuration, HTTP security headers, CORS policies, cookie attributes, and crawled endpoints.
+          </p>
+          <div style={{ marginTop: '0.75rem' }}>
+            <a href="#/websites" className="btn btn-primary">
+              Open Website Scanner
+            </a>
+          </div>
+        </section>
+        </>
       ) : (
         <div className="card empty">
           You do not have permission to start scans in this organisation.

@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createClaudeProvider, createOpenAiProvider, createMockProvider, providerFromEnv } = require('../src/ai/providers');
-const { explainFinding, suggestFix, askQuestion, summarizePosture, upgradeImpact, looksLikeInjection, untrusted, ConsentError } = require('../src/ai/assistant');
+const { explainFinding, suggestFix, askQuestion, summarizePosture, summarizeWebsiteDast, upgradeImpact, looksLikeInjection, untrusted, ConsentError } = require('../src/ai/assistant');
 const { createFinding } = require('../src/findings');
 
 const sca = createFinding({
@@ -150,5 +150,22 @@ test('generateAiAnalysis returns clean report when zero issues exist', async () 
   const res = await generateAiAnalysis({ summary: { issues: 0 } }, { apiKey: 'fake_key' });
   assert.equal(res.riskLevel, 'None');
   assert.match(res.executiveSummary, /No known security vulnerabilities/);
+});
+
+test('summarizeWebsiteDast correlates telemetry and findings with consent', async () => {
+  const provider = createMockProvider(() => 'Assessment: Risk Level High. Missing CSP coupled with reflected input.');
+  const dastFinding = createFinding({
+    category: 'dast',
+    scanner: { name: 'vulnsight-passive', ruleId: 'header-csp' },
+    title: 'Missing CSP',
+    severity: 'medium',
+    location: { url: 'https://example.com' },
+  });
+
+  const res = await summarizeWebsiteDast('https://example.com', { statusCode: 200, headers: {} }, [dastFinding], { provider, consent: on });
+  assert.equal(res.targetUrl, 'https://example.com');
+  assert.equal(res.findingsCount, 1);
+  assert.ok(res.text.includes('Assessment'));
+  assert.equal(res.meta.kind, 'website_dast_summary');
 });
 

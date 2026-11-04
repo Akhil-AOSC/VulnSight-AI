@@ -94,6 +94,40 @@ const MIGRATIONS = [
   ALTER TABLE provider_connections ADD COLUMN expires_at TEXT;
   ALTER TABLE provider_connections ADD COLUMN scopes TEXT;
   `,
+  // 4: website security scanner (DAST) targets and scan runs
+  `
+  CREATE TABLE websites (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    target_url TEXT NOT NULL,
+    hostname TEXT NOT NULL,
+    name TEXT NOT NULL,
+    is_verified INTEGER NOT NULL DEFAULT 0,
+    verification_token TEXT NOT NULL,
+    verification_method TEXT,
+    config TEXT NOT NULL DEFAULT '{}',
+    schedule TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, target_url)
+  );
+  CREATE TABLE website_scans (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    website_id TEXT NOT NULL REFERENCES websites(id) ON DELETE CASCADE,
+    profile TEXT NOT NULL DEFAULT 'passive',
+    status TEXT NOT NULL,
+    summary TEXT,
+    posture_score INTEGER,
+    passive_results TEXT,
+    ai_analysis TEXT,
+    error TEXT,
+    requested_by TEXT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT
+  );
+  CREATE INDEX website_scans_org_site ON website_scans (org_id, website_id, created_at);
+  `,
 ];
 
 function openDatabase(file = ':memory:') {

@@ -17,12 +17,17 @@ function csvCell(value) {
 
 const CSV_COLUMNS = [
   ['id', (f) => f.id], ['category', (f) => f.category], ['severity', (f) => f.severity],
-  ['risk', (f) => findingRisk(f).score], ['status', (f) => f.status], ['title', (f) => f.title],
-  ['identifier', (f) => f.identifiers.primary], ['aliases', (f) => f.identifiers.aliases.join(' ')],
-  ['cwe', (f) => f.identifiers.cwe.join(' ')], ['file', (f) => f.location.file], ['line', (f) => f.location.line],
-  ['package', (f) => f.location.package], ['version', (f) => f.location.version],
-  ['fixed_in', (f) => f.remediation.fixedIn], ['scanners', (f) => (f.sources || [f.scanner]).map((s) => s.name).join(' ')],
-  ['url', (f) => f.url],
+  ['risk', (f) => findingRisk(f).score], ['status', (f) => f.status || 'open'], ['title', (f) => f.title],
+  ['identifier', (f) => (f.identifiers && f.identifiers.primary) || f.id],
+  ['aliases', (f) => (f.identifiers && f.identifiers.aliases ? f.identifiers.aliases.join(' ') : '')],
+  ['cwe', (f) => (f.identifiers && f.identifiers.cwe ? f.identifiers.cwe.join(' ') : '')],
+  ['file', (f) => (f.location && (f.location.file || f.location.url || f.location.path)) || ''],
+  ['line', (f) => (f.location && (f.location.line || f.location.parameter)) || ''],
+  ['package', (f) => (f.location && (f.location.package || f.location.method)) || ''],
+  ['version', (f) => (f.location && f.location.version) || ''],
+  ['fixed_in', (f) => (f.remediation && f.remediation.fixedIn) || ''],
+  ['scanners', (f) => (f.sources || [f.scanner]).filter(Boolean).map((s) => s.name || s).join(' ')],
+  ['url', (f) => f.url || (f.location && f.location.url) || ''],
 ];
 
 function renderCsv(findings) {

@@ -119,6 +119,17 @@ function createApi({ platform, trustProxy = false, hsts = false, limiter = creat
   route('GET', org('/repos/:repo/branches'), async (req, p) => platform.repos.branches(ctxOf(req, p), p.repo));
   route('GET', org('/repos/:repo/webhook'), async (req, p) => ({ url: `/api/v1/webhooks/${p.repo}`, secret: platform.repos.webhookSecret(ctxOf(req, p), p.repo) }));
 
+  // ---- websites (DAST) ----
+  route('GET', org('/websites'), async (req, p) => platform.websites.list(ctxOf(req, p)));
+  route('POST', org('/websites'), async (req, p, b) => platform.websites.create(ctxOf(req, p), b), { status: 201 });
+  route('GET', org('/websites/:site'), async (req, p) => platform.websites.get(ctxOf(req, p), p.site));
+  route('DELETE', org('/websites/:site'), async (req, p) => { await platform.websites.remove(ctxOf(req, p), p.site); return { ok: true }; });
+  route('POST', org('/websites/:site/verify'), async (req, p, b) => platform.websites.verify(ctxOf(req, p), p.site, b));
+  route('POST', org('/websites/:site/scans'), async (req, p, b) => platform.websites.startScan(ctxOf(req, p), p.site, b), { status: 202 });
+  route('GET', org('/websites/:site/scans'), async (req, p, b, q) => platform.websites.listScans(ctxOf(req, p), p.site, q));
+  route('GET', org('/websites/:site/scans/:scan'), async (req, p) => platform.websites.getScan(ctxOf(req, p), p.site, p.scan));
+  route('GET', org('/websites/:site/scans/:scan/report'), async (req, p, b, q) => ({ download: platform.websites.report(ctxOf(req, p), p.site, p.scan, q.format || 'json') }));
+
   // ---- scans and findings ----
   route('POST', org('/repos/:repo/scans'), async (req, p, b) => platform.scans.start(ctxOf(req, p), p.repo, b), { status: 202 });
   route('POST', org('/quick-scan'), async (req, p, b) => platform.scans.quickScan(ctxOf(req, p), b), { status: 202 });
@@ -174,7 +185,7 @@ function createApi({ platform, trustProxy = false, hsts = false, limiter = creat
     if (!/^[\w.-]+$/.test(name) || !TYPES[path.extname(name)]) return false;
     const file = path.join(WEB_DIR, name);
     if (!fs.existsSync(file)) return false;
-    send(res, 200, fs.readFileSync(file), { 'content-type': TYPES[path.extname(name)], 'cache-control': 'no-cache' });
+    send(res, 200, fs.readFileSync(file), { 'content-type': TYPES[path.extname(name)], 'cache-control': 'no-cache, no-store, must-revalidate' });
     return true;
   }
 
