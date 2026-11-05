@@ -191,20 +191,21 @@ export function WebsitesView({ onSelectScan }) {
           )}
         </div>,
 
-        <div key="actions" className="row" style={{ justifyContent: 'flex-end', gap: '0.4rem' }}>
+        <div key="actions" className="website-actions-cell">
           {latest && (
             <a
               href={`#/websites/${site.id}/scans/${latest.id}`}
-              className="btn btn-sm btn-subtle"
+              className="btn btn-sm btn-subtle website-action-btn"
+              title="View latest scan results and telemetry"
             >
               Results
             </a>
           )}
           {canScan && (
-            <div className="dropdown-inline" style={{ display: 'inline-flex', gap: '0.25rem' }}>
+            <div className="website-scan-group" role="group" aria-label="Trigger scan options">
               <button
                 type="button"
-                className="btn btn-sm btn-primary"
+                className="website-scan-btn btn-active-primary"
                 disabled={scanningSiteId === site.id}
                 onClick={() => handleStartScan(site, 'passive')}
                 title="Runs TLS, headers, cookies, and CORS inspection (no authorization token required)"
@@ -215,7 +216,7 @@ export function WebsitesView({ onSelectScan }) {
                 <>
                   <button
                     type="button"
-                    className="btn btn-sm btn-subtle"
+                    className="website-scan-btn"
                     disabled={scanningSiteId === site.id}
                     onClick={() => handleStartScan(site, 'crawl')}
                     title="GET-only Traditional crawl. Does not submit forms or run active attacks."
@@ -224,7 +225,7 @@ export function WebsitesView({ onSelectScan }) {
                   </button>
                   <button
                     type="button"
-                    className="btn btn-sm btn-subtle"
+                    className="website-scan-btn"
                     disabled={scanningSiteId === site.id}
                     onClick={() => handleStartScan(site, 'ascan')}
                     title="OWASP ZAP active scan. Requires ZAP_API_URL and confirmation. Authorized sites only."
@@ -238,7 +239,7 @@ export function WebsitesView({ onSelectScan }) {
           {canWrite && (
             <button
               type="button"
-              className="btn btn-sm btn-danger-subtle"
+              className="btn btn-sm btn-danger-subtle website-action-btn"
               onClick={() => handleDeleteWebsite(site)}
               title="Delete website target"
             >

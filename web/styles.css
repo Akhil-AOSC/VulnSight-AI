@@ -2266,3 +2266,81 @@ main:focus { outline: none; }
 .btn-generate-export {
   font-weight: 600;
 }
+
+
+/* ==========================================================================
+   Website Monitored Table Actions (Clean, Structured, Non-wrapping)
+   ========================================================================== */
+.website-actions-cell {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  flex-wrap: nowrap !important;
+  white-space: nowrap !important;
+  min-width: max-content;
+}
+
+.website-action-btn {
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 4px 10px;
+  height: 28px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  white-space: nowrap;
+  box-shadow: none;
+}
+
+.website-scan-group {
+  display: inline-flex;
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 2px;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+.website-scan-btn {
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 4px 9px;
+  height: 24px;
+  border-radius: calc(var(--radius-xs) - 2px);
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  box-shadow: none;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.website-scan-btn:hover:not(:disabled) {
+  background: var(--surface);
+  color: var(--brand);
+}
+
+.website-scan-btn.btn-active-primary {
+  background: var(--brand);
+  color: #fff;
+}
+
+.website-scan-btn.btn-active-primary:hover:not(:disabled) {
+  background: var(--brand-hover);
+  color: #fff;
+}
+
+.table-wrap table th.num,
+.table-wrap table td.num {
+  text-align: right;
+  white-space: nowrap;
+}

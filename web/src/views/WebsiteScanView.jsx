@@ -2,11 +2,46 @@ import React, { useEffect, useState } from 'react';
 import { api, fmtDate, pad, toast } from '../api.js';
 import { PageHead, StatCard, SevBadge, StatusBadge, AiBriefingCard, DataTable, Skeleton, ScanSkeletonLoader } from '../components/Common.jsx';
 
+function TabSkeletonLoader({ tabKey }) {
+  const titles = {
+    findings: 'Vulnerability Analysis',
+    headers: 'HTTP Security Headers Assessment',
+    cookies: 'Cookie Security Audit',
+    tls: 'TLS / SSL Configuration & Certificate Status',
+    crawl: 'Endpoints & Forms Inventory',
+    pages: 'Discovered Pages',
+    technologies: 'Technology Stack & Fingerprints',
+  };
+  return (
+    <div className="card fade-in" style={{ padding: '1.5rem', minHeight: '320px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+        <div>
+          <h2 className="m-0" style={{ fontSize: '1.15rem' }}>{titles[tabKey] || 'Loading telemetry...'}</h2>
+          <span className="small muted">Populating inspected security controls...</span>
+        </div>
+        <Skeleton width="120px" height="1.8rem" radius="4px" />
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.5rem 0', borderBottom: '1px solid var(--border-subtle)' }}>
+            <Skeleton width="90px" height="1.2rem" radius="4px" />
+            <Skeleton width="40%" height="1rem" radius="4px" />
+            <Skeleton width="22%" height="1rem" radius="4px" />
+            <Skeleton width="18%" height="1rem" radius="4px" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function WebsiteScanView({ websiteId, scanId }) {
   const [scan, setScan] = useState(null);
   const [site, setSite] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('findings');
+  const [tabLoading, setTabLoading] = useState(false);
   const [sevFilter, setSevFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedFinding, setExpandedFinding] = useState(null);
@@ -15,6 +50,15 @@ export function WebsiteScanView({ websiteId, scanId }) {
   const [crawlForms, setCrawlForms] = useState([]);
   const [explanations, setExplanations] = useState({});
   const [explainingId, setExplainingId] = useState(null);
+
+  function handleTabChange(nextKey) {
+    if (nextKey === activeTab) return;
+    setTabLoading(true);
+    setActiveTab(nextKey);
+    setTimeout(() => {
+      setTabLoading(false);
+    }, 180);
+  }
 
   useEffect(() => {
     async function loadData() {
@@ -295,7 +339,7 @@ export function WebsiteScanView({ websiteId, scanId }) {
             key={key}
             type="button"
             className={`tab-btn ${activeTab === key ? 'active' : ''}`}
-            onClick={() => setActiveTab(key)}
+            onClick={() => handleTabChange(key)}
             style={{
               padding: '0.5rem 0.85rem',
               background: 'none',
@@ -310,7 +354,11 @@ export function WebsiteScanView({ websiteId, scanId }) {
         ))}
       </div>
 
-      {activeTab === 'findings' && (
+      {tabLoading ? (
+        <TabSkeletonLoader tabKey={activeTab} />
+      ) : (
+        <>
+          {activeTab === 'findings' && (
         <section className="card">
           <div className="card-head">
             <div className="row" style={{ justifyContent: 'space-between', width: '100%', flexWrap: 'wrap', gap: '0.5rem' }}>
@@ -654,7 +702,7 @@ export function WebsiteScanView({ websiteId, scanId }) {
 
           <section className="card">
             <div className="card-head">
-              <h2 className="m-0">Discovered HTML Forms ({crawlForms.length || forms.length}) — not submitted</h2>
+              <h2 className="m-0">Discovered HTML Forms ({crawlForms.length || forms.length}) (not submitted)</h2>
             </div>
             {!(crawlForms.length || forms.length) ? (
               <div className="empty">No HTML forms were detected. Forms are never submitted during this crawl.</div>
@@ -765,6 +813,8 @@ export function WebsiteScanView({ websiteId, scanId }) {
             </div>
           )}
         </section>
+      )}
+        </>
       )}
         </>
       )}
