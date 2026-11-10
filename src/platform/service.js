@@ -1692,10 +1692,20 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         }
       }
 
+      const inv = crawlResult || (passive && passive.inventory) || null;
+      if (!crawlResult && inv) {
+        persistCrawlInventory(scan.org_id, site.id, scanId, inv);
+        if (enableMongo && isMongoConfigured()) {
+          await saveCrawlInventoryToMongo({
+            orgId: scan.org_id, websiteId: site.id, scanId, ...inv,
+          }).catch(() => {});
+        }
+      }
+
       const posture = postureScore(findings);
       const sum = summarize(findings);
-      const crawledUrls = crawlResult && crawlResult.pages ? crawlResult.pages.map((p) => p.url) : [site.target_url];
-      const forms = crawlResult && crawlResult.forms ? crawlResult.forms : [];
+      const crawledUrls = inv && inv.pages ? inv.pages.map((p) => p.url) : [site.target_url];
+      const forms = inv && inv.forms ? inv.forms : [];
       const summary = {
         total: findings.length,
         critical: sum.bySeverity.critical || 0,
@@ -1703,10 +1713,10 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         medium: sum.bySeverity.medium || 0,
         low: sum.bySeverity.low || 0,
         grade: posture.grade,
-        endpoints: crawlResult && crawlResult.endpoints ? crawlResult.endpoints.length : 1,
-        pages: crawlResult && crawlResult.pages ? crawlResult.pages.length : 1,
+        endpoints: inv && inv.endpoints ? inv.endpoints.length : 1,
+        pages: inv && inv.pages ? inv.pages.length : 1,
         forms: forms.length,
-        engine: crawlResult && crawlResult.engine,
+        engine: (crawlResult && crawlResult.engine) || (inv && inv.engine) || 'vulnsight-recon',
       };
 
       // 4. AI correlation
@@ -1722,10 +1732,10 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
               headers: passive.headers,
               cookies: passive.cookies,
               cors: passive.cors,
-              responseStatus: passive.responseStatus,
+              responseStatus: passive.statusCode || passive.responseStatus,
               endpoints: crawledUrls,
               forms: forms.map((f) => ({ action: f.action, method: f.method, fieldNames: f.fieldNames || [] })),
-              exposedFiles: [],
+              exposedFiles: (findings || []).filter((f) => f.ruleId && f.ruleId.startsWith('exposed-')).map((f) => (f.location && f.location.url) || f.title),
             },
             findings,
           };

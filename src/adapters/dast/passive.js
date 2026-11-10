@@ -90,6 +90,7 @@ const REQUIRED_HEADERS = [
 
 // Server disclosure headers
 const INFO_DISCLOSURE_HEADERS = [
+  { header: 'server', title: 'Web Server Software Disclosed in Server Header' },
   { header: 'x-powered-by', title: 'Server Technology Disclosed via X-Powered-By' },
   { header: 'x-aspnet-version', title: 'ASP.NET Version Disclosed in Header' },
   { header: 'x-aspnetmvc-version', title: 'ASP.NET MVC Version Disclosed in Header' },
@@ -256,7 +257,9 @@ function detectTechnologies(headers, body = '') {
 
   const server = headers['server'];
   if (server) {
-    if (/nginx/i.test(server)) {
+    if (/litespeed/i.test(server)) {
+      techs.push({ name: 'LiteSpeed Web Server', category: 'Web Server', version: null });
+    } else if (/nginx/i.test(server)) {
       const match = server.match(/nginx\/([\d.]+)/i);
       techs.push({ name: 'Nginx', category: 'Web Server', version: match ? match[1] : null });
     } else if (/apache/i.test(server)) {
@@ -283,14 +286,35 @@ function detectTechnologies(headers, body = '') {
   }
 
   if (body) {
+    if (/litespeed/i.test(body) && !techs.some((t) => t.name.includes('LiteSpeed'))) {
+      techs.push({ name: 'LiteSpeed Web Server', category: 'Web Server', version: null });
+    }
     if (/wp-content|wp-includes/i.test(body)) techs.push({ name: 'WordPress', category: 'CMS', version: null });
+    if (/woocommerce/i.test(body)) techs.push({ name: 'WooCommerce', category: 'E-Commerce Platform', version: null });
+    if (/elementor/i.test(body)) techs.push({ name: 'Elementor', category: 'Page Builder', version: null });
     if (/__next|__NEXT_DATA__/i.test(body)) techs.push({ name: 'Next.js', category: 'Frontend Framework', version: null });
     if (/react|react-dom/i.test(body) || /data-reactroot/i.test(body)) techs.push({ name: 'React', category: 'Frontend Framework', version: null });
     if (/vue|v-bind|v-model/i.test(body) || /data-v-[a-f0-9]/i.test(body)) techs.push({ name: 'Vue.js', category: 'Frontend Framework', version: null });
     if (/ng-version|ng-app/i.test(body)) techs.push({ name: 'Angular', category: 'Frontend Framework', version: null });
-    if (/bootstrap(?:\.min)?\.(?:css|js)/i.test(body)) techs.push({ name: 'Bootstrap', category: 'UI Framework', version: null });
+    
+    const bsMatch = body.match(/bootstrap[.-]([\d.]+)(?:\.bundle|\.min)?\.js/i) || body.match(/bootstrap\/([\d.]+)\//i);
+    if (bsMatch) {
+      techs.push({ name: 'Bootstrap', category: 'UI Framework', version: bsMatch[1] });
+    } else if (/bootstrap(?:\.min)?\.(?:css|js)/i.test(body)) {
+      techs.push({ name: 'Bootstrap', category: 'UI Framework', version: null });
+    }
+
     if (/tailwind/i.test(body)) techs.push({ name: 'Tailwind CSS', category: 'UI Framework', version: null });
-    if (/jquery(?:\.min)?\.js/i.test(body)) techs.push({ name: 'jQuery', category: 'JavaScript Library', version: null });
+    if (/font-awesome|fontawesome/i.test(body)) techs.push({ name: 'Font Awesome', category: 'Font & Icon Toolkit', version: null });
+    if (/owl\.carousel/i.test(body)) techs.push({ name: 'Owl Carousel', category: 'JavaScript UI Library', version: null });
+    if (/googletagmanager\.com|google-analytics\.com/i.test(body)) techs.push({ name: 'Google Analytics', category: 'Analytics', version: null });
+
+    const jqMatch = body.match(/jquery[.-]([\d.]+)(?:\.min)?\.js/i) || body.match(/jquery\/([\d.]+)\/jquery/i) || body.match(/jquery-([\d.]+)/i);
+    if (jqMatch) {
+      techs.push({ name: 'jQuery', category: 'JavaScript Library', version: jqMatch[1] });
+    } else if (/jquery(?:\.min)?\.js/i.test(body)) {
+      techs.push({ name: 'jQuery', category: 'JavaScript Library', version: null });
+    }
   }
 
   // Deduplicate
@@ -582,6 +606,242 @@ async function runPassiveScan(targetUrl, options = {}) {
   // 7. Technology Detection
   const technologies = detectTechnologies(headers, response.body);
 
+  // 8. Library Vulnerability Correlation
+  const jqTech = technologies.find((t) => t.name === 'jQuery');
+  if (jqTech && jqTech.version) {
+    const v = parseFloat(jqTech.version);
+    if (!isNaN(v) && v < 3.5) {
+      findings.push(
+        createFinding({
+          category: 'dast',
+          severity: 'medium',
+          title: `Outdated jQuery Library (v${jqTech.version}) with Known XSS Vulnerabilities`,
+          description: `The website loads jQuery version ${jqTech.version}. jQuery versions prior to 3.5.0 contain known Cross-Site Scripting (XSS) vulnerabilities (CVE-2020-11022, CVE-2020-11023) within the jQuery.htmlPrefilter method when parsing untrusted HTML elements.`,
+          identifiers: { cwe: ['CWE-79'], primary: 'CWE-79' },
+          location: { url: urlObj.href },
+          scanner: { name: 'vulnsight-passive', ruleId: 'outdated-jquery', version: '1.0' },
+          remediation: { advice: 'Upgrade to jQuery 3.5.0 or newer (or latest 3.x release) to mitigate XSS vulnerabilities.' },
+          evidence: `Detected jQuery version: ${jqTech.version}`,
+        })
+      );
+    }
+  }
+
+  const bsTech = technologies.find((t) => t.name === 'Bootstrap');
+  if (bsTech && bsTech.version) {
+    const v = parseFloat(bsTech.version);
+    if (!isNaN(v) && v < 4.5) {
+      findings.push(
+        createFinding({
+          category: 'dast',
+          severity: 'low',
+          title: `Outdated Bootstrap Library (v${bsTech.version}) (XSS Risk in Tooltip/Popover Plugins)`,
+          description: `The website loads Bootstrap version ${bsTech.version}. Versions prior to 4.5.0 contain known XSS flaws in data-template and tooltip attributes (CVE-2019-8331, CVE-2018-14041).`,
+          identifiers: { cwe: ['CWE-79'], primary: 'CWE-79' },
+          location: { url: urlObj.href },
+          scanner: { name: 'vulnsight-passive', ruleId: 'outdated-bootstrap', version: '1.0' },
+          remediation: { advice: 'Upgrade to Bootstrap 4.5.0+ or Bootstrap 5.x to eliminate client-side XSS attack surfaces.' },
+          evidence: `Detected Bootstrap version: ${bsTech.version}`,
+        })
+      );
+    }
+  }
+
+  // 9. Subresource Integrity (SRI) Audit on External Scripts
+  if (response.body) {
+    const scriptSrcRegex = /<script\s+[^>]*?src=["'](https?:\/\/[^"']+)["'][^>]*?>/gi;
+    const thirdPartyScriptsWithoutSri = [];
+    let sMatch;
+    while ((sMatch = scriptSrcRegex.exec(response.body)) !== null) {
+      const fullTag = sMatch[0];
+      const srcUrl = sMatch[1];
+      if (!srcUrl.startsWith(urlObj.origin) && !fullTag.includes('integrity=')) {
+        try {
+          const parsedSrc = new URL(srcUrl);
+          if (parsedSrc.hostname !== urlObj.hostname && !thirdPartyScriptsWithoutSri.includes(parsedSrc.hostname)) {
+            thirdPartyScriptsWithoutSri.push(parsedSrc.hostname);
+          }
+        } catch {
+          /* ignore invalid url */
+        }
+      }
+    }
+    if (thirdPartyScriptsWithoutSri.length > 0) {
+      findings.push(
+        createFinding({
+          category: 'dast',
+          severity: 'low',
+          title: 'Third-Party CDN Scripts Missing Subresource Integrity (SRI)',
+          description: `External JavaScript files are loaded from third-party hosts (${thirdPartyScriptsWithoutSri.slice(0, 3).join(', ')}) without cryptographic Subresource Integrity (SRI) validation hashes. If a third-party CDN or supplier is compromised, attackers can execute arbitrary malicious code in visitors browsers.`,
+          identifiers: { cwe: ['CWE-353'], primary: 'CWE-353' },
+          location: { url: urlObj.href },
+          scanner: { name: 'vulnsight-passive', ruleId: 'missing-sri', version: '1.0' },
+          remediation: { advice: 'Add integrity="sha384-..." and crossorigin="anonymous" attributes to all external <script> tags.' },
+          evidence: `External hosts loaded without SRI: ${thirdPartyScriptsWithoutSri.join(', ')}`,
+        })
+      );
+    }
+  }
+
+  // 10. Sensitive Paths & Public Reconnaissance
+  const probeTargets = [
+    {
+      path: '/.env',
+      title: 'Exposed Environment Configuration File (.env)',
+      severity: 'critical',
+      cwe: 'CWE-552',
+      check: (res) => res.statusCode === 200 && /^(DB_|DATABASE_|SECRET_|AWS_|API_KEY|PASSWORD|TOKEN=)/m.test(res.body),
+      advice: 'Remove .env from public web directory immediately and restrict web server access to dotfiles.',
+    },
+    {
+      path: '/.git/HEAD',
+      title: 'Exposed Git Repository Metadata (/.git/HEAD)',
+      severity: 'high',
+      cwe: 'CWE-538',
+      check: (res) => res.statusCode === 200 && /^ref: refs\//.test(res.body.trim()),
+      advice: 'Block public web access to the .git directory in web server configuration.',
+    },
+    {
+      path: '/robots.txt',
+      title: 'Robots.txt Discloses Internal Application Paths',
+      severity: 'low',
+      cwe: 'CWE-200',
+      check: (res) => res.statusCode === 200 && /Disallow:\s*\/\w+/i.test(res.body),
+      advice: 'Review robots.txt disallow directives to ensure sensitive administrative or staging paths are not disclosed to public crawlers.',
+    },
+    {
+      path: '/xmlrpc.php',
+      title: 'Exposed XML-RPC API Interface (Brute-Force & Pingback Risk)',
+      severity: 'medium',
+      cwe: 'CWE-306',
+      check: (res) => (res.statusCode === 200 || res.statusCode === 405) && /XML-RPC server accepts POST requests only/i.test(res.body),
+      advice: 'Disable xmlrpc.php or block external access via web server rules if XML-RPC API is not required.',
+    },
+    {
+      path: '/wp-login.php',
+      title: 'Exposed Administrative Login Portal (/wp-login.php)',
+      severity: 'low',
+      cwe: 'CWE-200',
+      check: (res) => res.statusCode === 200 && (/<form[^>]*login/i.test(res.body) || /user_login/i.test(res.body)),
+      advice: 'Protect the administrative login page with multi-factor authentication, IP allowlists, or rate limiting.',
+    },
+    {
+      path: '/phpinfo.php',
+      title: 'Exposed PHP Information Script (phpinfo.php)',
+      severity: 'high',
+      cwe: 'CWE-200',
+      check: (res) => res.statusCode === 200 && (/PHP Version/i.test(res.body) || /<title>phpinfo\(\)/i.test(res.body)),
+      advice: 'Remove phpinfo.php immediately to prevent full server environment disclosure.',
+    },
+  ];
+
+  await Promise.allSettled(
+    probeTargets.map(async (target) => {
+      try {
+        const probeUrl = new URL(target.path, urlObj.origin);
+        const res = await fetchWebResponse(probeUrl, { timeoutMs: 4000 });
+        if (res && target.check(res)) {
+          findings.push(
+            createFinding({
+              category: 'dast',
+              severity: target.severity,
+              title: target.title,
+              description: `The path "${target.path}" is publicly accessible on the web server and discloses sensitive application data or attack surfaces.`,
+              identifiers: { cwe: [target.cwe], primary: target.cwe },
+              location: { url: probeUrl.href, path: target.path },
+              scanner: { name: 'vulnsight-passive', ruleId: `exposed-${target.path.replace(/[^a-z0-9]/gi, '_')}`, version: '1.0' },
+              remediation: { advice: target.advice },
+              evidence: res.body.slice(0, 200).trim(),
+            })
+          );
+        }
+      } catch {
+        /* ignore network probe errors */
+      }
+    })
+  );
+
+  // 11. Discovered Pages, Endpoints & Forms Inventory
+  let extracted = { links: [], forms: [] };
+  try {
+    const { extractLinksAndForms } = require('./crawler');
+    if (response.body) {
+      extracted = extractLinksAndForms(response.body, urlObj.origin);
+    }
+  } catch {
+    /* fallback */
+  }
+
+  let urlHashFn = (h) => {
+    try {
+      const crypto = require('node:crypto');
+      return crypto.createHash('sha256').update(h).digest('hex').slice(0, 16);
+    } catch {
+      return String(h).slice(0, 16);
+    }
+  };
+
+  const seedHash = urlHashFn(urlObj.href);
+  const discoveredPages = [
+    {
+      url: urlObj.href,
+      urlHash: seedHash,
+      statusCode: response.statusCode || 200,
+      contentType: headers['content-type'] || 'text/html',
+      depth: 0,
+      title: extractTitle(response.body) || urlObj.hostname,
+    },
+  ];
+
+  const discoveredEndpoints = [
+    {
+      url: urlObj.href,
+      method: 'GET',
+      statusCode: response.statusCode || 200,
+      contentType: headers['content-type'] || 'text/html',
+      paramNames: Array.from(urlObj.searchParams.keys()),
+    },
+  ];
+
+  const discoveredLinks = [];
+  for (const rel of (extracted.links || []).slice(0, 30)) {
+    try {
+      const u = new URL(rel, urlObj.origin);
+      if (u.origin === urlObj.origin && !discoveredPages.some((p) => p.url === u.href)) {
+        const pHash = urlHashFn(u.href);
+        discoveredPages.push({
+          url: u.href,
+          urlHash: pHash,
+          statusCode: 200,
+          contentType: 'text/html',
+          depth: 1,
+          title: u.pathname.replace(/^\//, '').replace(/\.html?$/, '') || 'Internal Page',
+        });
+        discoveredEndpoints.push({
+          url: u.href,
+          method: 'GET',
+          statusCode: 200,
+          contentType: 'text/html',
+          paramNames: Array.from(u.searchParams.keys()),
+        });
+        discoveredLinks.push({
+          fromHash: seedHash,
+          toHash: pHash,
+          kind: 'a',
+        });
+      }
+    } catch {
+      /* ignore invalid url */
+    }
+  }
+
+  const discoveredForms = (extracted.forms || []).map((f) => ({
+    action: f.url,
+    method: f.method || 'GET',
+    fieldNames: f.parameters || [],
+    submitted: false,
+  }));
+
   return {
     targetUrl: urlObj.href,
     hostname: urlObj.hostname,
@@ -601,7 +861,19 @@ async function runPassiveScan(targetUrl, options = {}) {
     cors: corsAnalysis.cors,
     technologies,
     findings,
+    inventory: {
+      engine: 'vulnsight-recon',
+      pages: discoveredPages,
+      endpoints: discoveredEndpoints,
+      forms: discoveredForms,
+      links: discoveredLinks,
+    },
   };
+}
+
+function extractTitle(body = '') {
+  const m = String(body).match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return m ? m[1].replace(/\s+/g, ' ').trim().slice(0, 120) : '';
 }
 
 module.exports = {

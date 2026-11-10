@@ -28417,8 +28417,8 @@ function WebsitesView({ onSelectScan }) {
                 className: "website-scan-btn btn-active-primary",
                 disabled: scanningSiteId === site.id,
                 onClick: () => handleStartScan(site, "passive"),
-                title: "Runs TLS, headers, cookies, and CORS inspection (no authorization token required)",
-                children: scanningSiteId === site.id ? "Starting..." : "Passive Scan"
+                title: "Runs Comprehensive Full Scan: TLS, security headers, technology stack, discovered pages, forms and sensitive files",
+                children: scanningSiteId === site.id ? "Scanning..." : "Full Scan"
               }
             ),
             site.isVerified ? /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(import_jsx_runtime12.Fragment, { children: [

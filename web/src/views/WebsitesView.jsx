@@ -208,9 +208,9 @@ export function WebsitesView({ onSelectScan }) {
                 className="website-scan-btn btn-active-primary"
                 disabled={scanningSiteId === site.id}
                 onClick={() => handleStartScan(site, 'passive')}
-                title="Runs TLS, headers, cookies, and CORS inspection (no authorization token required)"
+                title="Runs Comprehensive Full Scan: TLS, security headers, technology stack, discovered pages, forms and sensitive files"
               >
-                {scanningSiteId === site.id ? 'Starting...' : 'Passive Scan'}
+                {scanningSiteId === site.id ? 'Scanning...' : 'Full Scan'}
               </button>
               {site.isVerified ? (
                 <>
