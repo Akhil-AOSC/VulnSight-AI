@@ -81,7 +81,12 @@ function buildScanStory({
   findings = 0,
 } = {}) {
   const stages = (engines || []).map(explainEngine);
-  const unfinished = stages.filter((s) => ['error', 'blocked', 'skipped', 'partial'].includes(s.status));
+  const unfinished = stages.filter((s) => {
+    if (!['error', 'blocked', 'skipped', 'partial'].includes(s.status)) return false;
+    if (s.status === 'skipped' && /Public Website Assessment does not execute/i.test(s.detail || '')) return false;
+    if (profile === 'public' && s.name === 'vulnsight-passive' && s.status === 'blocked') return false;
+    return true;
+  });
   if (!partial) {
     return {
       headline: 'Inspection finished',

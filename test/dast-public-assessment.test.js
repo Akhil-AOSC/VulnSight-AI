@@ -107,6 +107,22 @@ function byName(result, name) {
   return result.engines.find((e) => e.name === name);
 }
 
+test('public assessment with a WAF challenge is still a complete public profile', async () => {
+  const { deps } = engines();
+  deps.dastPassive = async () => ({
+    findings: [{ title: 'Deprecated TLS Protocol Accepted (TLSv1.1)', severity: 'medium' }],
+    blocked: true,
+    blockedBy: 'Cloudflare',
+    inventory: { pages: [], endpoints: [], forms: [], links: [] },
+  });
+  const result = await runDastPipeline(site, { profile: 'public', siteConfig: {}, limits: {} }, deps);
+  assert.equal(result.partial, false);
+  assert.equal(result.blockedBy, 'Cloudflare');
+  assert.equal(byName(result, 'vulnsight-passive').status, 'blocked');
+  assert.equal(byName(result, 'vulnsight-browser').status, 'ok');
+  assert.equal(result.story.headline, 'Inspection finished');
+});
+
 test('public pipeline still skips ascan when authorizeActiveTesting is set on the scan record', async () => {
   const { calls, deps } = engines();
   const result = await runDastPipeline(

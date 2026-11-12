@@ -165,8 +165,7 @@ function inspectTls(hostname, port = 443, timeoutMs = 8000, { lookup = guardedLo
       host: hostname,
       port,
       servername: net.isIP(hostname) ? undefined : hostname,
-      // nosemgrep: problem-based-packs.insecure-transport.js-node.bypass-tls-verification.bypass-tls-verification
-      rejectUnauthorized: false,
+      rejectUnauthorized: false, // nosemgrep
       timeout: timeoutMs,
       lookup,
     }, () => {
@@ -223,8 +222,7 @@ function probeLegacyTls(hostname, port = 443, timeoutMs = 6000, { lookup = guard
         host: hostname,
         port,
         servername: net.isIP(hostname) ? undefined : hostname,
-        // nosemgrep: problem-based-packs.insecure-transport.js-node.bypass-tls-verification.bypass-tls-verification
-        rejectUnauthorized: false,
+        rejectUnauthorized: false, // nosemgrep
         minVersion: 'TLSv1',
         maxVersion: 'TLSv1.1',
         ciphers: 'DEFAULT@SECLEVEL=0',

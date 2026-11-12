@@ -29607,7 +29607,11 @@ function WebsiteScanView({ websiteId, scanId }) {
             if (a.status === "expired") return "expired";
             if (a.status === "revoked") return "revoked";
             if (a.status === "denied") return "outside approved scope";
-            return scan.profile === "passive" ? "not required for passive" : "not configured";
+            const profile = String(scan.profile || "");
+            if (profile === "passive" || profile === "public" || profile === "public_assessment") {
+              return "not required for public assessment";
+            }
+            return "not configured";
           })(),
           " ",
           "\xB7 Finished: ",

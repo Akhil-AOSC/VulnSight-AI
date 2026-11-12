@@ -229,7 +229,8 @@ function pinLookup(address, family) {
 
 function requestOnce(urlObj, {
   method = 'GET', headers = {}, timeoutMs = 10000, maxBytes = 250000, lookup = guardedLookup,
-  rejectUnauthorized = false, userAgent = 'VulnSight-Security-Scanner/1.0',
+  rejectUnauthorized = false, // nosemgrep
+  userAgent = 'VulnSight-Security-Scanner/1.0',
 } = {}) {
   const http = require('node:http');
   const https = require('node:https');

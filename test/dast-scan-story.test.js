@@ -27,6 +27,26 @@ test('scan story explains an incomplete ascan run in plain language', () => {
   assert.match(ascan.why, /no attack payloads were sent/i);
 });
 
+test('public assessment story does not count profile-skipped ZAP or Nuclei as unfinished', () => {
+  const skip = 'Not run: Public Website Assessment does not execute ZAP Spider, Nuclei, or ZAP Active Scan.';
+  const story = buildScanStory({
+    profile: 'public',
+    partial: false,
+    blockedBy: 'Cloudflare',
+    findings: 3,
+    pages: 1,
+    engines: [
+      { name: 'vulnsight-passive', status: 'blocked', error: 'blocked by Cloudflare', findings: 4 },
+      { name: 'vulnsight-browser', status: 'ok', findings: 0 },
+      { name: 'owasp-zap-spider', status: 'skipped', error: skip },
+      { name: 'nuclei', status: 'skipped', error: skip },
+      { name: 'owasp-zap-ascan', status: 'skipped', error: skip },
+    ],
+  });
+  assert.equal(story.headline, 'Inspection finished');
+  assert.doesNotMatch(story.readout, /did not finish/);
+});
+
 test('scan story explains a firewall IP ban instead of reporting empty results as ok', () => {
   const story = buildScanStory({
     profile: 'ascan',

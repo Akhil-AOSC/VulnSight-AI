@@ -306,8 +306,11 @@ async function runDastPipeline(site, scan, deps = {}) {
 
   if (passive.result) {
     if (passive.result.blocked) {
-      partial = true;
       blockedBy = blockerOf(passive.result);
+      // Public Website Assessment still completed: TLS/DNS findings and limited page discovery
+      // are in-profile. A challenge page is recorded on the engine, not as a failed scan.
+      // Authorized crawl/DAST profiles stay partial so posture is not scored as complete.
+      if (!stages.publicDiscovery) partial = true;
       // When the page is a WAF challenge, passive recon skips everything read from that page.
       // What it still returns comes from the TLS handshake and a separate plain-HTTP check, which
       // the challenge doesn't affect, so those findings stay.
@@ -566,7 +569,11 @@ async function runDastPipeline(site, scan, deps = {}) {
   if (stages.crawl) expected.add(process.env.ZAP_API_URL ? 'owasp-zap-spider' : 'builtin-get');
   if (stages.nuclei) expected.add('nuclei');
   if (stages.ascan) expected.add('owasp-zap-ascan');
-  if (engines.some((e) => expected.has(e.name) && ['error', 'blocked', 'skipped', 'partial'].includes(e.status))) {
+  if (engines.some((e) => {
+    if (!expected.has(e.name) || !['error', 'blocked', 'skipped', 'partial'].includes(e.status)) return false;
+    if (stages.publicDiscovery && e.name === 'vulnsight-passive' && e.blockReason === 'waf') return false;
+    return true;
+  })) {
     partial = true;
   }
   const story = buildScanStory({
