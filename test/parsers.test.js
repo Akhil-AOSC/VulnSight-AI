@@ -112,3 +112,9 @@ test('detectProjects finds the example projects', () => {
   assert.equal(pyApp.projects[0].type, 'pip');
   assert.deepEqual(pyApp.projects[0].skipped, ['flask']);
 });
+
+test('detectProjects at repo root skips examples demo apps', () => {
+  const root = detectProjects(path.join(__dirname, '..'));
+  const files = root.projects.map((p) => p.file.replace(/\\/g, '/'));
+  assert.ok(files.every((f) => !f.includes('/examples/')), files.join(', '));
+});

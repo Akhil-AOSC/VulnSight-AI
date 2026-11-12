@@ -21,6 +21,7 @@ const IGNORE_DIRS = new Set([
   'node_modules', '.git', '.svn', '.hg', 'dist', 'build',
   'venv', '.venv', 'env', '.env', '__pycache__', '.cache',
   '.next', '.nuxt', 'vendor', '.turbo', '.idea', '.vscode',
+  'examples',
 ]);
 
 function loadProject(filePath, opts = {}) {

@@ -24,6 +24,7 @@ jobs:
       - run: npm ci
       - name: Dependency scan (our own tool)
         run: node bin/vulnsight.js scan . --scanners=sca --fail-on=high
+        # examples/ holds intentionally vulnerable demo apps; scan them with npm run scan:examples.
       - name: Secrets (Gitleaks)
         uses: gitleaks/gitleaks-action@v2
         env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
