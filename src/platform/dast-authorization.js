@@ -1,5 +1,6 @@
 'use strict';
 
+const net = require('node:net');
 const { isOwnershipProven } = require('./dast-verifier');
 const { isVerifiedScopeHost, PRODUCT_PROFILES, profileNeeds } = require('../adapters/dast/scope');
 
@@ -88,27 +89,40 @@ function grantCoversProfile(grant, profile) {
   return allowed.includes(profile) || (profile === 'deep' && allowed.includes('ascan'));
 }
 
+function isConcretePublicHostname(value) {
+  const host = String(value || '').toLowerCase().replace(/\.$/, '').trim();
+  if (!host || host.includes('*') || host.startsWith('.')) return false;
+  if (net.isIP(host)) return false;
+  if (!/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(host)) return false;
+  const labels = host.split('.');
+  return labels.length >= 2 && labels.every((l) => l && !l.startsWith('-'));
+}
+
 function grantCoversHost(grant, hostname, siteHostname) {
   const host = String(hostname || '').toLowerCase();
   const site = String(siteHostname || '').toLowerCase();
-  if (!isVerifiedScopeHost(site, host)) return false;
   const listed = (grant.allowHosts || []).map((h) => String(h).toLowerCase());
-  if (!listed.length) return host === site;
+  if (listed.includes(host)) return true;
+  if (host === site) return true;
+  if (!isVerifiedScopeHost(site, host)) return false;
+  if (!listed.length) return false;
   return listed.includes(host);
 }
 
 function intersectScope(baseScope, grant, siteHostname) {
   if (!grant) return baseScope;
-  const grantHosts = (grant.allowHosts || []).filter((h) => isVerifiedScopeHost(siteHostname, h));
-  const hosts = grantHosts.length
-    ? grantHosts.filter((h) => (baseScope.allowHosts || []).includes(h) || (baseScope.extraHosts || []).includes(h) || h === siteHostname)
+  const listed = (grant.allowHosts || []).map((h) => String(h).toLowerCase());
+  const siteHosts = listed.filter((h) => isVerifiedScopeHost(siteHostname, h));
+  const originHosts = listed.filter((h) => !isVerifiedScopeHost(siteHostname, h) && isConcretePublicHostname(h));
+  const hosts = siteHosts.length
+    ? siteHosts.filter((h) => (baseScope.allowHosts || []).includes(h) || (baseScope.extraHosts || []).includes(h) || h === siteHostname)
     : [siteHostname];
   const allowPaths = (grant.allowPaths || ['/']).length ? grant.allowPaths : (baseScope.allowPaths || ['/']);
   const denyPaths = [...new Set([...(baseScope.denyPaths || []), ...(grant.denyPaths || [])])];
   const ports = (grant.ports || [80, 443]).map(Number).filter((p) => p === 80 || p === 443);
   return {
     allowHosts: hosts.length ? hosts : [siteHostname],
-    extraHosts: [],
+    extraHosts: originHosts,
     allowPaths: allowPaths.length ? allowPaths : ['/'],
     denyPaths,
     ports: ports.length ? ports : [80, 443],
@@ -224,9 +238,8 @@ function validateGrantInput({
     return 'Active testing permission requires the deep profile';
   }
   for (const host of allowHosts || []) {
-    if (!isVerifiedScopeHost(siteHostname, host)) {
-      return `Host ${host} is outside the registered website hostname`;
-    }
+    if (isVerifiedScopeHost(siteHostname, host) || isConcretePublicHostname(host)) continue;
+    return `Host ${host} is not a concrete public hostname`;
   }
   return null;
 }

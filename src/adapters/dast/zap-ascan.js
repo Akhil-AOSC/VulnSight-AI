@@ -41,8 +41,8 @@ async function runZapActiveScan(targetUrl, options = {}) {
       scope: options.scope,
       proxyUrl: options.proxy,
       maxRps: options.maxRps || 1,
-      sessionCookie: options.sessionCookie,
-      sessionHeader: options.sessionHeader,
+      sessionCookie: options.sessionCookie || (options.limits && options.limits.sessionCookie),
+      sessionHeader: options.sessionHeader || (options.limits && options.limits.sessionHeader),
     });
     const seeds = [...new Set([
       targetUrl,

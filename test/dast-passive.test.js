@@ -52,11 +52,14 @@ test('detectTechnologies identifies server, frameworks, and CMS patterns', () =>
   assert.equal(nginx.version, '1.24.0');
 });
 
-test('detectEdgeProtection fingerprints Cloudflare from cf-ray even when Server is nginx', () => {
+test('detectEdgeProtection notes reverse-proxy headers without naming a vendor', () => {
   const edge = detectEdgeProtection({ server: 'nginx/1.24.0', 'cf-ray': '8a1b2c3d4e5f-SYD', 'cf-cache-status': 'HIT' });
-  assert.deepEqual(edge.providers, ['Cloudflare']);
+  assert.equal(edge.present, true);
+  assert.deepEqual(edge.providers, []);
+  assert.ok(edge.signals.some((s) => s.startsWith('cf-ray:')));
   const techs = detectTechnologies({ server: 'nginx/1.24.0', 'cf-ray': '8a1b2c3d4e5f-SYD' }, '');
-  assert.ok(techs.some((t) => t.name === 'Cloudflare'));
+  assert.ok(techs.some((t) => t.name === 'CDN or reverse proxy'));
+  assert.ok(techs.every((t) => t.name !== 'Cloudflare'));
   assert.ok(techs.some((t) => t.name === 'Nginx'));
 });
 
@@ -72,14 +75,15 @@ test('analyzeEdgeProtection flags missing CDN/WAF and rate-limit headers without
   assert.match(rl.description, /does not send a request flood/i);
 });
 
-test('analyzeEdgeProtection stays quiet when Cloudflare headers are present', () => {
+test('analyzeEdgeProtection stays quiet when reverse-proxy headers are present', () => {
   const urlObj = new URL('https://example.com/');
   const { findings, edge } = analyzeEdgeProtection({
-    server: 'cloudflare',
-    'cf-ray': 'abc123-LAX',
+    server: 'nginx',
+    via: '1.1 example.cache',
+    'x-cache': 'Hit from cloudfront',
     'ratelimit-limit': '120',
   }, urlObj);
-  assert.deepEqual(edge.providers, ['Cloudflare']);
+  assert.equal(edge.present, true);
   assert.equal(findings.length, 0);
 });
 

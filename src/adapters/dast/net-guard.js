@@ -174,14 +174,20 @@ function readBounded(res, { maxBytes = 250000, deadlineMs = 15000 } = {}) {
 
 // ---- WAF / edge block detection --------------------------------------------------------------
 
-const BLOCK_SIGNATURES = [
-  { by: 'Cloudflare', test: (h, b) => h['cf-mitigated'] === 'challenge' || /__cf_chl_|\/cdn-cgi\/challenge-platform|<title>Just a moment\.\.\.<\/title>|Attention Required! \| Cloudflare/i.test(b) },
-  { by: 'Akamai', test: (h, b) => /akamaighost/i.test(String(h.server || '')) && /Access Denied|Reference #\d/i.test(b) },
-  { by: 'Imperva / Incapsula', test: (h, b) => /Incapsula incident ID|_Incapsula_Resource/i.test(b) },
-  { by: 'Sucuri', test: (h, b) => /Sucuri WebSite Firewall - Access Denied/i.test(b) || (Boolean(h['x-sucuri-block'])) },
-  { by: 'AWS WAF', test: (h, b, s) => s === 403 && /awswaf|aws-waf-token/i.test(b) },
-  { by: 'DataDome', test: (h) => Boolean(h['x-datadome']) && /captcha-delivery/i.test(String(h['x-datadome-cid'] || h['set-cookie'] || '')) },
-];
+function challengeReason(statusCode, h, text) {
+  if (statusCode === 429) return 'rate_limited';
+  if (statusCode === 503 && h['retry-after']) return 'rate_limited';
+  const headerHit = Object.entries(h).some(([k, v]) => (
+    /mitigat|captcha|challenge|waf|block/i.test(k)
+    && /challenge|captcha|block|deny/i.test(String(v || ''))
+  ));
+  if (headerHit) return 'challenge';
+  if (/challenge-platform|captcha-delivery|just a moment|attention required|access denied/i.test(text)
+    && (statusCode === 403 || statusCode === 503 || /<title>/i.test(text))) {
+    return 'challenge';
+  }
+  return null;
+}
 
 function parseRetryAfter(value) {
   if (!value) return null;
@@ -201,10 +207,9 @@ function detectBlock(statusCode, headers = {}, body = '') {
   for (const [k, v] of Object.entries(headers || {})) h[k.toLowerCase()] = Array.isArray(v) ? v.join(', ') : v;
   const text = String(body || '').slice(0, 20000);
   const retryAfterSec = parseRetryAfter(h['retry-after']);
-  for (const sig of BLOCK_SIGNATURES) {
-    if (sig.test(h, text, statusCode)) {
-      return { blocked: true, by: sig.by, reason: statusCode === 429 ? 'rate_limited' : 'challenge', retryAfterSec };
-    }
+  const reason = challengeReason(statusCode, h, text);
+  if (reason) {
+    return { blocked: true, by: 'WAF', reason, retryAfterSec };
   }
   if (statusCode === 429) return { blocked: true, by: 'origin', reason: 'rate_limited', retryAfterSec };
   if (statusCode === 503 && retryAfterSec != null) return { blocked: true, by: 'origin', reason: 'rate_limited', retryAfterSec };

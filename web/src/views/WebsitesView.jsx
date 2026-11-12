@@ -21,6 +21,7 @@ export function WebsitesView({ onSelectScan }) {
     expiresAt: '',
     allowedProfiles: ['discovery', 'standard'],
     allowActiveTesting: false,
+    extraHosts: '',
   });
   const [deepOpts, setDeepOpts] = useState({
     sessionCookie: '',
@@ -144,10 +145,14 @@ export function WebsitesView({ onSelectScan }) {
     if (!grantSite) return;
     try {
       setGrantBusy(true);
+      const extraHosts = grantForm.extraHosts.split(',').map((h) => h.trim()).filter(Boolean);
       await api.post(api.org(`/websites/${grantSite.id}/authorizations`), {
-        ...grantForm,
+        evidenceKind: grantForm.evidenceKind,
+        evidenceRef: grantForm.evidenceRef,
         expiresAt: new Date(grantForm.expiresAt).toISOString(),
+        allowedProfiles: grantForm.allowedProfiles,
         allowActiveTesting: Boolean(grantForm.allowActiveTesting) && grantForm.allowedProfiles.includes('deep'),
+        allowHosts: [...new Set([grantSite.hostname, ...extraHosts])],
       });
       toast('Client authorization grant recorded');
       setGrantSite(null);
@@ -225,8 +230,11 @@ export function WebsitesView({ onSelectScan }) {
         <div key="posture">
           {latest && latest.postureScore != null ? (
             <div>
-              <span className={`badge ${latest.postureScore >= 80 ? 'sev-low' : latest.postureScore >= 50 ? 'sev-medium' : 'sev-critical'}`}>
-                {latest.postureScore}/100 {summary && summary.grade ? `(${summary.grade})` : ''}
+              <span className={`badge ${summary && (summary.partial || summary.incomplete) ? 'sev-medium' : latest.postureScore >= 80 ? 'sev-low' : latest.postureScore >= 50 ? 'sev-medium' : 'sev-critical'}`}>
+                {summary && (summary.partial || summary.incomplete)
+                  ? `${latest.postureScore} partial`
+                  : `${latest.postureScore}/100`}
+                {summary && summary.grade && !(summary.partial || summary.incomplete) ? ` (${summary.grade})` : ''}
               </span>
               <div style={{ marginTop: '0.3rem' }}>
                 <SeverityBar counts={counts} />
@@ -372,63 +380,64 @@ export function WebsitesView({ onSelectScan }) {
             <ScanSkeletonLoader cards={4} hasTabs={false} rows={4} />
           </div>
         ) : (
-          <DataTable
-            headers={headers}
-        {scanProfile === 'deep' && (
-          <div className="deep-scan-opts">
-            <p className="small muted" style={{ margin: '0 0 12px' }}>
-              Authorized Deep only. Session values are sent with crawls and ZAP, never written to CSV or the scan JSON. Origin must be this host or a subdomain. A different Azure/Lambda host is its own website.
-            </p>
-            <div className="deep-scan-grid">
-              <label className="small muted" htmlFor="deep-cookie">
-                Session cookie
-                <input
-                  id="deep-cookie"
-                  type="password"
-                  autoComplete="off"
-                  value={deepOpts.sessionCookie}
-                  onChange={(e) => setDeepOpts({ ...deepOpts, sessionCookie: e.target.value })}
-                  placeholder="name=value"
-                />
-              </label>
-              <label className="small muted" htmlFor="deep-header">
-                Session header
-                <input
-                  id="deep-header"
-                  type="password"
-                  autoComplete="off"
-                  value={deepOpts.sessionHeader}
-                  onChange={(e) => setDeepOpts({ ...deepOpts, sessionHeader: e.target.value })}
-                  placeholder="Authorization: Bearer …"
-                />
-              </label>
-              <label className="small muted" htmlFor="deep-origin">
-                Origin URL
-                <input
-                  id="deep-origin"
-                  type="url"
-                  value={deepOpts.originUrl}
-                  onChange={(e) => setDeepOpts({ ...deepOpts, originUrl: e.target.value })}
-                  placeholder="https://origin.example.com"
-                />
-              </label>
-              <label className="small muted" htmlFor="deep-seeds" style={{ gridColumn: '1 / -1' }}>
-                API seed URLs
-                <textarea
-                  id="deep-seeds"
-                  rows={3}
-                  value={deepOpts.seedUrls}
-                  onChange={(e) => setDeepOpts({ ...deepOpts, seedUrls: e.target.value })}
-                  placeholder={'https://example.com/api/users\nhttps://example.com/openapi.json'}
-                />
-              </label>
-            </div>
-          </div>
-        )}
-
-            rows={rows}
-            empty="No website targets registered yet. Add a URL above to start security scanning."
-          />
+          <>
+            {scanProfile === 'deep' && (
+              <div className="deep-scan-opts">
+                <p className="small muted" style={{ margin: '0 0 12px' }}>
+                  Authorized Deep only. Session values are sealed in the job store and stripped from the API. Origin may be this host, a subdomain, or a hostname listed on the site grant.
+                </p>
+                <div className="deep-scan-grid">
+                  <label className="small muted" htmlFor="deep-cookie">
+                    Session cookie
+                    <input
+                      id="deep-cookie"
+                      type="password"
+                      autoComplete="off"
+                      value={deepOpts.sessionCookie}
+                      onChange={(e) => setDeepOpts({ ...deepOpts, sessionCookie: e.target.value })}
+                      placeholder="name=value"
+                    />
+                  </label>
+                  <label className="small muted" htmlFor="deep-header">
+                    Session header
+                    <input
+                      id="deep-header"
+                      type="password"
+                      autoComplete="off"
+                      value={deepOpts.sessionHeader}
+                      onChange={(e) => setDeepOpts({ ...deepOpts, sessionHeader: e.target.value })}
+                      placeholder="Authorization: Bearer token"
+                    />
+                  </label>
+                  <label className="small muted" htmlFor="deep-origin">
+                    Origin URL
+                    <input
+                      id="deep-origin"
+                      type="url"
+                      value={deepOpts.originUrl}
+                      onChange={(e) => setDeepOpts({ ...deepOpts, originUrl: e.target.value })}
+                      placeholder="https://origin.example.com"
+                    />
+                  </label>
+                  <label className="small muted" htmlFor="deep-seeds" style={{ gridColumn: '1 / -1' }}>
+                    API seed URLs
+                    <textarea
+                      id="deep-seeds"
+                      rows={3}
+                      value={deepOpts.seedUrls}
+                      onChange={(e) => setDeepOpts({ ...deepOpts, seedUrls: e.target.value })}
+                      placeholder={'https://example.com/api/users\nhttps://example.com/openapi.json'}
+                    />
+                  </label>
+                </div>
+              </div>
+            )}
+            <DataTable
+              headers={headers}
+              rows={rows}
+              empty="No website targets registered yet. Add a URL above to start security scanning."
+            />
+          </>
         )}
       </section>
 
@@ -539,6 +548,19 @@ export function WebsitesView({ onSelectScan }) {
                   onChange={(e) => setGrantForm({ ...grantForm, expiresAt: e.target.value })}
                   style={{ width: '100%' }}
                 />
+              </div>
+              <div>
+                <label className="small muted" htmlFor="ev-hosts">Extra origin hosts</label>
+                <input
+                  id="ev-hosts"
+                  value={grantForm.extraHosts}
+                  onChange={(e) => setGrantForm({ ...grantForm, extraHosts: e.target.value })}
+                  placeholder="origin.example.com, dxxx.cloudfront.net"
+                  style={{ width: '100%' }}
+                />
+                <p className="small muted" style={{ margin: '4px 0 0' }}>
+                  Optional concrete hostnames this grant also covers, such as an Azure Container Apps or CloudFront origin. Wildcards and IPs are rejected.
+                </p>
               </div>
               <fieldset style={{ border: '1px solid var(--border)', borderRadius: '6px', padding: '8px 12px' }}>
                 <legend className="small muted">Allowed profiles</legend>

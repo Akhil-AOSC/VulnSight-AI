@@ -119,9 +119,25 @@ test('grant cannot authorize a foreign hostname or out-of-scope path', () => {
     expiresAt: future(24),
     evidenceKind: 'engagement_id',
     evidenceRef: 'ENG-123456',
-    allowHosts: ['victim.org'],
+    allowHosts: ['*.victim.org'],
     siteHostname: 'example.com',
-  }), /outside the registered website hostname/);
+  }), /not a concrete public hostname/);
+  assert.match(validateGrantInput({
+    allowedProfiles: ['discovery'],
+    expiresAt: future(24),
+    evidenceKind: 'engagement_id',
+    evidenceRef: 'ENG-123456',
+    allowHosts: ['10.0.0.1'],
+    siteHostname: 'example.com',
+  }), /not a concrete public hostname/);
+  assert.equal(validateGrantInput({
+    allowedProfiles: ['discovery'],
+    expiresAt: future(24),
+    evidenceKind: 'engagement_id',
+    evidenceRef: 'ENG-123456',
+    allowHosts: ['example.com', 'origin.azurecontainerapps.io'],
+    siteHostname: 'example.com',
+  }), null);
 
   const scope = intersectScope(
     normalizeScope('example.com', { allowPaths: ['/'] }),
@@ -131,6 +147,14 @@ test('grant cannot authorize a foreign hostname or out-of-scope path', () => {
   assert.equal(urlInScope(normalizeUrl('https://example.com/app/x'), scope), true);
   assert.equal(urlInScope(normalizeUrl('https://example.com/secret'), scope), false);
   assert.equal(urlInScope(normalizeUrl('http://example.com/app'), scope), false);
+
+  const withOrigin = intersectScope(
+    normalizeScope('example.com', { allowPaths: ['/'] }),
+    { allowHosts: ['example.com', 'origin.azurecontainerapps.io'], allowPaths: ['/'], ports: [443] },
+    'example.com',
+  );
+  assert.ok(withOrigin.extraHosts.includes('origin.azurecontainerapps.io'));
+  assert.equal(urlInScope(normalizeUrl('https://origin.azurecontainerapps.io/health'), withOrigin), true);
 });
 
 test('deep ascan needs grant.allowActiveTesting or DNS ownership plus confirmation', async () => {

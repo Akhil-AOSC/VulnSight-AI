@@ -29,7 +29,16 @@ function parseCookieHeader(raw) {
   return value;
 }
 
-function parseUrlList(raw, { siteHostname, max = 40 } = {}) {
+function listedHosts(allowedHosts) {
+  return (allowedHosts || []).map((h) => String(h || '').toLowerCase().replace(/\.$/, '')).filter(Boolean);
+}
+
+function hostAllowedForDeep(host, siteHostname, allowedHosts) {
+  if (siteHostname && isVerifiedScopeHost(siteHostname, host)) return true;
+  return listedHosts(allowedHosts).includes(String(host || '').toLowerCase());
+}
+
+function parseUrlList(raw, { siteHostname, allowedHosts, max = 40 } = {}) {
   const items = Array.isArray(raw)
     ? raw
     : String(raw || '').split(/[\s,]+/);
@@ -48,7 +57,7 @@ function parseUrlList(raw, { siteHostname, max = 40 } = {}) {
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') continue;
     if (parsed.username || parsed.password) continue;
     const host = parsed.hostname.toLowerCase();
-    if (siteHostname && !isVerifiedScopeHost(siteHostname, host)) continue;
+    if (siteHostname && !hostAllowedForDeep(host, siteHostname, allowedHosts)) continue;
     if (seen.has(parsed.href)) continue;
     seen.add(parsed.href);
     out.push(parsed.href);
@@ -56,7 +65,7 @@ function parseUrlList(raw, { siteHostname, max = 40 } = {}) {
   return out;
 }
 
-function parseOriginUrl(raw, siteHostname) {
+function parseOriginUrl(raw, siteHostname, allowedHosts) {
   const text = String(raw || '').trim();
   if (!text) return null;
   let parsed;
@@ -70,17 +79,17 @@ function parseOriginUrl(raw, siteHostname) {
   }
   if (parsed.username || parsed.password) throw new Error('Origin URL must not contain credentials');
   const host = parsed.hostname.toLowerCase();
-  if (!isVerifiedScopeHost(siteHostname, host)) {
-    throw new Error('Origin URL must be the registered host or a subdomain. Add a different host as its own website.');
+  if (!hostAllowedForDeep(host, siteHostname, allowedHosts)) {
+    throw new Error('Origin URL must be the registered host, a subdomain, or a hostname listed on the site grant');
   }
   return parsed.href;
 }
 
-function parseDeepScanOptions(body = {}, { siteHostname, authorizedDeep } = {}) {
+function parseDeepScanOptions(body = {}, { siteHostname, authorizedDeep, allowedHosts } = {}) {
   const sessionCookie = parseCookieHeader(body.sessionCookie);
   const sessionHeader = parseHeaderLine(body.sessionHeader);
-  const seedUrls = parseUrlList(body.seedUrls, { siteHostname, max: 40 });
-  const originUrl = body.originUrl ? parseOriginUrl(body.originUrl, siteHostname) : null;
+  const seedUrls = parseUrlList(body.seedUrls, { siteHostname, allowedHosts, max: 40 });
+  const originUrl = body.originUrl ? parseOriginUrl(body.originUrl, siteHostname, allowedHosts) : null;
   const hasAuth = Boolean(sessionCookie || sessionHeader);
   const hasSeeds = seedUrls.length > 0;
   const hasOrigin = Boolean(originUrl);
@@ -99,10 +108,39 @@ function parseDeepScanOptions(body = {}, { siteHostname, authorizedDeep } = {}) 
 function redactDeepLimits(limits) {
   if (!limits || typeof limits !== 'object') return limits || null;
   const copy = { ...limits };
-  copy.hasSessionCookie = Boolean(copy.sessionCookie);
-  copy.hasSessionHeader = Boolean(copy.sessionHeader);
+  copy.hasSessionCookie = Boolean(copy.sessionCookie || copy.sessionCookieEnc);
+  copy.hasSessionHeader = Boolean(copy.sessionHeader || copy.sessionHeaderEnc);
   delete copy.sessionCookie;
   delete copy.sessionHeader;
+  delete copy.sessionCookieEnc;
+  delete copy.sessionHeaderEnc;
+  return copy;
+}
+
+function sealDeepLimits(limits, box) {
+  if (!limits || !box) return limits || {};
+  const copy = { ...limits };
+  if (copy.sessionCookie) {
+    copy.sessionCookieEnc = box.encrypt(copy.sessionCookie);
+    delete copy.sessionCookie;
+  }
+  if (copy.sessionHeader) {
+    copy.sessionHeaderEnc = box.encrypt(JSON.stringify(copy.sessionHeader));
+    delete copy.sessionHeader;
+  }
+  return copy;
+}
+
+function openDeepLimits(limits, box) {
+  const copy = { ...(limits || {}) };
+  if (copy.sessionCookieEnc && box) {
+    copy.sessionCookie = box.decrypt(copy.sessionCookieEnc);
+    delete copy.sessionCookieEnc;
+  }
+  if (copy.sessionHeaderEnc && box) {
+    copy.sessionHeader = JSON.parse(box.decrypt(copy.sessionHeaderEnc));
+    delete copy.sessionHeaderEnc;
+  }
   return copy;
 }
 
@@ -142,6 +180,8 @@ module.exports = {
   ZAP_NOISE_PLUGIN_IDS,
   parseDeepScanOptions,
   redactDeepLimits,
+  sealDeepLimits,
+  openDeepLimits,
   playwrightHeaders,
   mergeSeedUrls,
   isZapNoiseAlert,

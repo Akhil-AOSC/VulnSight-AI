@@ -19,7 +19,7 @@ test('scan story explains an incomplete ascan run in plain language', () => {
     ],
   });
   assert.equal(story.headline, 'Incomplete inspection');
-  assert.match(story.readout, /not a clean bill of health/);
+  assert.match(story.readout, /not a complete assessment/);
   const passive = explainEngine({ name: 'vulnsight-passive', status: 'error', error: 'connect ETIMEDOUT 1.2.3.4:443' });
   assert.match(passive.why, /timed out/);
   assert.doesNotMatch(passive.why, /different client/);

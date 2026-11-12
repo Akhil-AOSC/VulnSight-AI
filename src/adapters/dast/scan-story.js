@@ -41,9 +41,7 @@ function explainEngine(eng = {}) {
     if (eng.blockReason === 'connection_dropped' || /stopped answering|dropping connections/i.test(err)) {
       why = 'The host stopped answering this machine: connections timed out with no HTTP response. Its firewall has most likely banned the scanner IP, so results from this stage are missing or incomplete.';
     } else if (eng.blockReason === 'waf' || /^blocked by /i.test(err)) {
-      const provider = err.replace(/^blocked by /i, '').trim();
-      const named = provider && provider.toUpperCase() !== 'WAF' ? ` (${provider})` : '';
-      why = `The site's firewall${named} answered with a bot challenge instead of the page, so header, cookie and technology checks were skipped. TLS results were kept. To scan your own site fully, allow the scanner IP in that firewall.`;
+      why = 'The site\'s firewall answered with a bot challenge instead of the page, so header, cookie and technology checks were skipped. TLS results were kept. To scan your own site fully, allow the scanner IP in that firewall.';
     } else {
       why = err || 'The origin blocked this engine.';
     }
@@ -103,7 +101,7 @@ function buildScanStory({
   }
   return {
     headline: 'Incomplete inspection',
-    readout: `${unfinished.length} engine${unfinished.length === 1 ? '' : 's'} did not finish.${blockedBit} Posture is not a clean bill of health.`,
+    readout: `${unfinished.length} engine${unfinished.length === 1 ? '' : 's'} did not finish.${blockedBit} The number shown as posture is a partial score, not a complete assessment.`,
     profile: profile || null,
     stages,
   };

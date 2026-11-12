@@ -24,14 +24,14 @@ test('parseRay reads id and location code from cf-ray without a city map', () =>
   assert.equal(parseRay(undefined), null);
 });
 
-test('nsHost and cookieNames identify the DNS host and keep cookie names only', () => {
-  assert.equal(nsHost(['kai.ns.cloudflare.com']), 'Cloudflare');
-  assert.equal(nsHost(['ns-1.awsdns-01.com']), 'Amazon Route 53');
-  assert.equal(nsHost(['ns1.example.net']), null);
+test('nsHost and cookieNames keep observed nameservers and cookie names only', () => {
+  assert.equal(nsHost(['kai.ns.cloudflare.com']), 'kai.ns.cloudflare.com');
+  assert.equal(nsHost(['ns-1.awsdns-01.com']), 'ns-1.awsdns-01.com');
+  assert.equal(nsHost([]), null);
   assert.deepEqual(cookieNames(['__cf_bm=SECRET; path=/', 'sid=abc']), ['__cf_bm', 'sid']);
 });
 
-test('a Cloudflare challenge is reported as edge evidence, with no cookie values', async () => {
+test('a challenge is reported as edge evidence, with no cookie values or vendor name', async () => {
   const edge = await collectEdgeIntel({
     hostname: 'zango.com.au',
     statusCode: 403,
@@ -42,14 +42,13 @@ test('a Cloudflare challenge is reported as edge evidence, with no cookie values
       'set-cookie': ['__cf_bm=SECRETVALUE123; path=/; HttpOnly'],
     },
     body: '<html><head><title>Just a moment...</title></head></html>',
-    block: { blocked: true, by: 'Cloudflare', reason: 'challenge', retryAfterSec: null },
+    block: { blocked: true, by: 'WAF', reason: 'challenge', retryAfterSec: null },
     tls: { issuer: 'Google Trust Services', subject: 'zango.com.au', sans: 'DNS:zango.com.au, DNS:*.zango.com.au', protocol: 'TLSv1.3' },
     resolver: cloudflareDns,
   });
 
-  assert.equal(edge.provider, 'Cloudflare');
-  assert.equal(edge.confidence, 'confirmed');
-  assert.equal(edge.dnsHost, 'Cloudflare');
+  assert.equal(edge.provider, 'CDN / reverse proxy');
+  assert.equal(edge.dnsHost, 'kai.ns.cloudflare.com');
   assert.equal(edge.originHidden, true);
   assert.equal(edge.dns.ipv4.length, 3);
   assert.ok(edge.dns.ipv4.every((r) => r.owner === null));
@@ -60,17 +59,18 @@ test('a Cloudflare challenge is reported as edge evidence, with no cookie values
   assert.equal(edge.botProtection.pageTitle, 'Just a moment...');
   assert.deepEqual(edge.cookieNames, ['__cf_bm']);
   assert.ok(!JSON.stringify(edge).includes('SECRETVALUE123'), 'cookie values must never be stored');
+  assert.ok(!edge.signals.some((s) => /Cloudflare|Akamai|Fastly/i.test(String(s.provider || ''))));
   assert.deepEqual(edge.tls.sans, ['zango.com.au', '*.zango.com.au']);
 });
 
-test('a site that is only DNS-hosted on Cloudflare is not reported as behind Cloudflare', async () => {
+test('a site with only nameservers is not reported as behind an edge', async () => {
   const edge = await collectEdgeIntel({
     hostname: 'grey-cloud.example',
     statusCode: 200,
     headers: { server: 'nginx' },
     resolver: { ...cloudflareDns, resolve4: async () => ['203.0.114.10'], resolve6: async () => [] },
   });
-  assert.equal(edge.dnsHost, 'Cloudflare');
+  assert.equal(edge.dnsHost, 'kai.ns.cloudflare.com');
   assert.equal(edge.provider, null, 'DNS hosting alone does not prove traffic goes through the edge');
   assert.equal(edge.originHidden, false);
   assert.equal(edge.botProtection.challenged, false);

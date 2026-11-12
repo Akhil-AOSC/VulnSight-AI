@@ -51,10 +51,10 @@ test('guardedLookup rejects a rebinding answer that includes a non-public addres
   }
 });
 
-test('detectBlock recognises Cloudflare challenge pages', () => {
+test('detectBlock recognises a challenge page without naming a vendor', () => {
   const hit = detectBlock(403, { 'cf-mitigated': 'challenge' }, '<title>Just a moment...</title>');
   assert.equal(hit.blocked, true);
-  assert.equal(hit.by, 'Cloudflare');
+  assert.equal(hit.by, 'WAF');
   const miss = detectBlock(200, { server: 'nginx' }, '<html>ok</html>');
   assert.equal(miss.blocked, false);
 });

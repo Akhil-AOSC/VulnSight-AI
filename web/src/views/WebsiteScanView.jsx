@@ -143,10 +143,10 @@ export function EdgePanel({ edge, emailDns, hostname }) {
         <section className="card">
           <div className="card-head"><h2 className="m-0">Evidence ({(e.signals || []).length})</h2></div>
           <SimpleTable
-            head={['Source', 'Provider', 'What was observed']}
+            head={['Source', 'What was observed']}
             empty="No CDN or WAF signals were observed."
             rows={(e.signals || []).map((sig, i) => (
-              <tr key={i}><td>{sig.source}</td><td><strong>{sig.provider}</strong></td><td><code>{sig.detail}</code></td></tr>
+              <tr key={i}><td>{sig.source}</td><td><code>{sig.detail}</code></td></tr>
             ))}
           />
         </section>
@@ -547,7 +547,7 @@ export function WebsiteScanView({ websiteId, scanId }) {
               <strong>Incomplete assessment</strong>
               <p className="small" style={{ margin: '4px 0 0' }}>
                 One or more engines were skipped, blocked, or stopped before finishing. Findings below are only from engines that ran.
-                This is not a clean bill of health. Check engine status for authorization, cancellation, or host-drop reasons.
+                Any number shown as posture is a partial score, not a complete assessment.
               </p>
             </div>
           )}
@@ -627,9 +627,11 @@ export function WebsiteScanView({ websiteId, scanId }) {
           )}
           <div className="stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
             <StatCard
-              num={scan.postureScore != null ? `${scan.postureScore}/100` : 'N/A'}
+              num={scan.postureScore != null
+                ? (s.partial ? `${scan.postureScore} partial` : `${scan.postureScore}/100`)
+                : 'N/A'}
               label={s.partial
-                ? `Security posture (incomplete${s.grade ? `, grade ${s.grade}` : ''})`
+                ? 'Partial score, not a complete assessment'
                 : `Security Posture (Grade ${s.grade || 'N/A'})`}
             />
             <StatCard
@@ -1192,7 +1194,7 @@ export function WebsiteScanView({ websiteId, scanId }) {
               <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--color-border)' }}>
                 <h3 className="m-0" style={{ fontSize: '14px', marginBottom: '8px' }}>Loaded scripts ({unique.length})</h3>
                 <p className="small muted" style={{ margin: '0 0 8px' }}>
-                  In-scope JavaScript URLs from the headless browser (not Chrome DevTools, not Cloudflare challenge scripts).
+                  In-scope JavaScript URLs from the headless browser (not Chrome DevTools, not edge challenge scripts).
                 </p>
                 <ul style={{ margin: 0, paddingLeft: '1.25rem', display: 'grid', gap: '0.35rem' }}>
                   {unique.slice(0, 80).map((ep) => (

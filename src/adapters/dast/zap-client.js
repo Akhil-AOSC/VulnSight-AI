@@ -76,7 +76,7 @@ async function applyZapSessionHeaders({ sessionCookie, sessionHeader } = {}) {
       matchRegex: 'false',
       matchString: 'Cookie',
       replacement: sessionCookie,
-    }).catch(() => {});
+    });
   }
   if (sessionHeader && sessionHeader.name && sessionHeader.value) {
     await zapGet('/JSON/replacer/action/addRule/', {
@@ -86,7 +86,7 @@ async function applyZapSessionHeaders({ sessionCookie, sessionHeader } = {}) {
       matchRegex: 'false',
       matchString: sessionHeader.name,
       replacement: sessionHeader.value,
-    }).catch(() => {});
+    });
   }
 }
 
@@ -120,6 +120,9 @@ async function prepareZapSession({ scope = {}, proxyUrl, maxRps = 1, sessionCook
   const info = await zapGet('/JSON/context/view/context/', { contextName }).catch(() => ({}));
   const ctx = info.context || info;
   const contextId = String(created.contextId || ctx.id || ctx.contextId || '1');
+  if (sessionCookie || (sessionHeader && sessionHeader.name)) {
+    await applyZapSessionHeaders({ sessionCookie, sessionHeader });
+  }
   currentSession = { contextName, contextId };
   return currentSession;
 }
@@ -207,6 +210,6 @@ async function countZapResponses(targetUrl) {
 
 module.exports = {
   countZapResponses,
-  zapGet, zapBase, withZapMutex, prepareZapSession, seedZapUrls, hostRegex, ensureInScanTree,
+  zapGet, zapBase, withZapMutex, prepareZapSession, applyZapSessionHeaders, seedZapUrls, hostRegex, ensureInScanTree,
   flattenZapList, listZapTreeUrls, pickTreeUrl, getZapSession, resetZapSession, rememberZapUrls,
 };

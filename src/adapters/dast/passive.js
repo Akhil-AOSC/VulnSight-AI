@@ -409,8 +409,8 @@ function detectTechnologies(headers, body = '') {
     if (momentMatch) techs.push({ name: 'Moment.js', category: 'JavaScript Library', version: momentMatch[1] });
   }
 
-  for (const provider of detectEdgeProtection(headers).providers) {
-    if (!techs.some((t) => t.name === provider)) techs.push({ name: provider, category: 'CDN / Reverse Proxy', version: null });
+  if (detectEdgeProtection(headers).present && !techs.some((t) => t.category === 'CDN / Reverse Proxy')) {
+    techs.push({ name: 'CDN or reverse proxy', category: 'CDN / Reverse Proxy', version: null });
   }
 
   const seen = new Set();
@@ -422,39 +422,39 @@ function detectTechnologies(headers, body = '') {
   });
 }
 
-// ---- Edge / WAF fingerprint (headers only; no floods, no bypass attempts) ---------------------
-
-const EDGE_PROVIDERS = [
-  { name: 'Cloudflare', headers: ['cf-ray', 'cf-cache-status'], pattern: /cloudflare/i },
-  { name: 'Amazon CloudFront', headers: ['x-amz-cf-id', 'x-amz-cf-pop'], pattern: /cloudfront/i },
-  { name: 'Akamai', headers: ['x-akamai-transformed', 'akamai-grn'], pattern: /akamai/i },
-  { name: 'Azure Front Door / CDN', headers: ['x-azure-ref', 'x-fd-healthprobe'], pattern: /azure/i },
-  { name: 'Fastly', headers: ['x-served-by'], pattern: /fastly|cache-/i },
-  { name: 'Sucuri', headers: ['x-sucuri-id', 'x-sucuri-cache'], pattern: /sucuri/i },
-  { name: 'Imperva / Incapsula', headers: ['x-iinfo'], pattern: /incapsula|imperva/i },
-];
+// ---- Edge / WAF fingerprint (headers actually returned; no vendor catalog, no bypass) ---------
 
 const RATE_LIMIT_HEADERS = ['ratelimit-limit', 'x-ratelimit-limit', 'ratelimit-policy', 'retry-after'];
 
+function looksLikeReverseProxyHeader(name) {
+  const key = String(name || '').toLowerCase();
+  if (!key) return false;
+  if (RATE_LIMIT_HEADERS.includes(key)) return false;
+  return key === 'via'
+    || key === 'forwarded'
+    || key === 'cdn-loop'
+    || key === 'x-served-by'
+    || key === 'x-cache'
+    || key === 'x-cdn'
+    || key === 'cdn'
+    || /(^|-)(cdn|cache|proxy|waf|pop|ray)(-|$)/.test(key)
+    || /^x-forwarded-/.test(key);
+}
+
 function detectEdgeProtection(headers = {}) {
-  const server = String(headers.server || '');
-  const via = String(headers.via || '');
-  const xcdn = String(headers['x-cdn'] || headers.cdn || '');
-  const xcache = String(headers['x-cache'] || '');
-  const haystack = `${server} ${via} ${xcdn} ${xcache}`;
-  const providers = [];
   const signals = [];
-  for (const rule of EDGE_PROVIDERS) {
-    const hitHeader = (rule.headers || []).find((name) => headers[name]);
-    const hitText = rule.pattern && rule.pattern.test(haystack);
-    if (!hitHeader && !hitText) continue;
-    providers.push(rule.name);
-    signals.push(hitHeader ? `${hitHeader}: ${headers[hitHeader]}` : haystack.trim().slice(0, 80));
+  for (const [name, value] of Object.entries(headers || {})) {
+    if (value == null || value === '') continue;
+    const key = String(name).toLowerCase();
+    if (!looksLikeReverseProxyHeader(key)) continue;
+    const shown = Array.isArray(value) ? value[0] : value;
+    signals.push(`${key}: ${String(shown).slice(0, 80)}`);
   }
   const rateLimitName = RATE_LIMIT_HEADERS.find((name) => headers[name]);
   const rateLimitValue = rateLimitName ? headers[rateLimitName] : null;
   return {
-    providers,
+    present: signals.length > 0,
+    providers: [],
     signals,
     hasRateLimitHeader: Boolean(rateLimitValue),
     rateLimitEvidence: rateLimitValue ? String(rateLimitValue).slice(0, 80) : null,
@@ -464,12 +464,12 @@ function detectEdgeProtection(headers = {}) {
 function analyzeEdgeProtection(headers, urlObj) {
   const edge = detectEdgeProtection(headers);
   const findings = [];
-  if (edge.providers.length === 0) {
+  if (!edge.present) {
     findings.push(createFinding({
       category: 'dast',
       severity: 'low',
       title: 'No CDN or WAF fingerprint on HTTP responses',
-      description: 'Responses do not show an edge CDN or WAF fingerprint. The origin may be reachable directly, so volumetric denial-of-service and unfiltered proxy traffic are not absorbed at the edge. This is a header observation only; VulnSight does not flood the site or test bypasses.',
+      description: 'Responses do not show reverse-proxy or cache headers (for example Via or X-Cache). The origin may be reachable directly, so volumetric denial-of-service and unfiltered proxy traffic are not absorbed at the edge. This is a header observation only; VulnSight does not flood the site or test bypasses.',
       identifiers: { cwe: ['CWE-400'], primary: 'CWE-400' },
       location: { url: urlObj.href },
       scanner: { name: 'vulnsight-passive', ruleId: 'missing-edge-waf', version: '1.0' },
@@ -477,11 +477,11 @@ function analyzeEdgeProtection(headers, urlObj) {
         advice: 'Put the origin behind a CDN or WAF. Allow only that edge to reach origin. Enable DDoS/WAF and bot controls at the edge. Confirm with the provider dashboard, not with load tests against production.',
       },
       evidence: edge.hasRateLimitHeader
-        ? `No CDN/WAF headers. Rate-limit header present: ${edge.rateLimitEvidence}`
-        : 'No CDN/WAF headers (cf-ray, x-amz-cf-id, x-akamai-transformed, via/fastly, …) and no RateLimit-Limit / Retry-After header.',
+        ? `No reverse-proxy or cache headers. Rate-limit header present: ${edge.rateLimitEvidence}`
+        : 'No Via, X-Cache, CDN-Loop, or similar reverse-proxy headers, and no RateLimit-Limit / Retry-After header.',
     }));
   }
-  if (edge.providers.length === 0 && !edge.hasRateLimitHeader) {
+  if (!edge.present && !edge.hasRateLimitHeader) {
     findings.push(createFinding({
       category: 'dast',
       severity: 'low',

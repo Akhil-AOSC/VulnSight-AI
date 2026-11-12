@@ -177,8 +177,8 @@ async function runStage(name, fn) {
 const isDropped = (engine) => Boolean(engine && engine.blockReason === 'connection_dropped');
 
 /**
- * Name of whatever blocked an engine. Engines report it as `blockedBy: 'Cloudflare'`; older
- * results carry `blocked: { by }` instead. Falls back to 'WAF' when no provider was recognised.
+ * Name of whatever blocked an engine. Engines report `blockedBy`; older results carry
+ * `blocked: { by }`. Falls back to 'WAF' when nothing was named.
  */
 function blockerOf(result) {
   if (!result) return 'WAF';

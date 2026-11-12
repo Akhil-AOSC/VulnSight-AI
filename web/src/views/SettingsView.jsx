@@ -316,8 +316,9 @@ function DastPoliciesPanel({ readOnly }) {
                 required
                 value={form.allowHosts}
                 onChange={(e) => setForm({ ...form, allowHosts: e.target.value })}
-                placeholder={form.kind === 'lab' ? 'staging.example.com' : 'example.com'}
+                placeholder={form.kind === 'lab' ? 'staging.example.com' : 'example.com, origin.example.com'}
               />
+              <span className="small muted">Include origin hostnames the engagement covers. Lab hosts must match exactly.</span>
             </label>
             <label>
               Deny hosts (optional)

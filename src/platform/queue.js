@@ -6,6 +6,7 @@ const { uuid, now, transaction } = require('./db');
 // that Celery + Redis would implement in the hosted deployment; here it is backed by the same
 // database so a restart never loses queued scans.
 const VISIBILITY_TIMEOUT_MS = 15 * 60 * 1000;
+const DAST_VISIBILITY_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const BACKOFF_MS = [30 * 1000, 2 * 60 * 1000, 10 * 60 * 1000];
 
 function createQueue(db, { clock = () => Date.now() } = {}) {
@@ -25,12 +26,20 @@ function createQueue(db, { clock = () => Date.now() } = {}) {
       return transaction(db, () => {
         const t = iso(clock());
         const stale = iso(clock() - VISIBILITY_TIMEOUT_MS);
-        const row = db.prepare(`SELECT * FROM jobs WHERE (status = 'queued' AND run_at <= ?) OR (status = 'running' AND locked_at <= ?)
-                                ORDER BY run_at LIMIT 1`).get(t, stale);
+        const staleDast = iso(clock() - DAST_VISIBILITY_TIMEOUT_MS);
+        const row = db.prepare(`SELECT * FROM jobs WHERE (status = 'queued' AND run_at <= ?)
+                                OR (status = 'running' AND type = 'website_scan' AND locked_at <= ?)
+                                OR (status = 'running' AND type != 'website_scan' AND locked_at <= ?)
+                                ORDER BY run_at LIMIT 1`).get(t, staleDast, stale);
         if (!row) return null;
         db.prepare("UPDATE jobs SET status = 'running', attempts = attempts + 1, locked_at = ? WHERE id = ?").run(t, row.id);
         return { ...row, attempts: row.attempts + 1, payload: JSON.parse(row.payload) };
       });
+    },
+
+    heartbeat(id) {
+      if (!id) return;
+      db.prepare("UPDATE jobs SET locked_at = ? WHERE id = ? AND status = 'running'").run(iso(clock()), id);
     },
 
     complete(id) {
@@ -106,4 +115,4 @@ function createWorker({ queue, handlers, pollMs = 1000, onError = () => {} }) {
   };
 }
 
-module.exports = { createQueue, createWorker, NonRetryableError, VISIBILITY_TIMEOUT_MS };
+module.exports = { createQueue, createWorker, NonRetryableError, VISIBILITY_TIMEOUT_MS, DAST_VISIBILITY_TIMEOUT_MS };

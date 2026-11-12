@@ -30,7 +30,7 @@ const { runWebsiteCrawl } = require('../adapters/dast/zap-spider');
 const { runZapActiveScan } = require('../adapters/dast/zap-ascan');
 const { plainEnglishForFinding } = require('../adapters/dast/plain-english');
 const { normalizeProfile, normalizeLimits, normalizeScope, profileNeeds } = require('../adapters/dast/scope');
-const { parseDeepScanOptions, redactDeepLimits } = require('../adapters/dast/deep-options');
+const { parseDeepScanOptions, redactDeepLimits, sealDeepLimits, openDeepLimits } = require('../adapters/dast/deep-options');
 const { runDastPipeline, isVerificationFresh } = require('../adapters/dast/pipeline');
 const { generateVerificationToken, checkOwnership, isOwnershipProven } = require('./dast-verifier');
 const {
@@ -1693,6 +1693,19 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
   }
 
   async function handleWebsiteScanJob({ scanId }, job = { attempts: 1, max_attempts: 1 }) {
+    const beat = () => {
+      if (job && job.id) queue.heartbeat(job.id);
+    };
+    beat();
+    const heartbeatTimer = setInterval(beat, 60 * 1000);
+    try {
+      await executeWebsiteScanJob({ scanId }, job);
+    } finally {
+      clearInterval(heartbeatTimer);
+    }
+  }
+
+  async function executeWebsiteScanJob({ scanId }, job = { attempts: 1, max_attempts: 1 }) {
     const scan = db.prepare('SELECT * FROM website_scans WHERE id = ?').get(scanId);
     if (!scan || scan.status === 'cancelled') return;
     const site = db.prepare('SELECT * FROM websites WHERE id = ? AND org_id = ?').get(scan.website_id, scan.org_id);
@@ -1712,7 +1725,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
     try {
       const pipeline = await runDastPipeline(site, {
         profile: scan.profile,
-        limits: parse(scan.limits, {}),
+        limits: openDeepLimits(parse(scan.limits, {}), secretBox),
         siteConfig: parse(site.config, {}),
         authorizeActiveTesting: Boolean(scan.authorize_active),
         grant: grantById(scan.org_id, site.id, scan.authorization_id),
@@ -1740,6 +1753,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
           });
         },
         onProgress: async (progress) => {
+          if (job && job.id) queue.heartbeat(job.id);
           const latest = db.prepare('SELECT status, progress FROM website_scans WHERE id = ?').get(scanId);
           if (latest && latest.status === 'cancelled') return;
           const prev = parse(latest && latest.progress, {});
@@ -2176,7 +2190,14 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       try {
         deepOpts = parseDeepScanOptions(
           { sessionCookie, sessionHeader, seedUrls, originUrl },
-          { siteHostname: site.hostname || raw.hostname, authorizedDeep: storedActive && normalized === 'deep' },
+          {
+            siteHostname: site.hostname || raw.hostname,
+            authorizedDeep: storedActive && normalized === 'deep',
+            allowedHosts: [
+              ...((grant && grant.allowHosts) || []),
+              ...((access.policy && access.policy.allowHosts) || []),
+            ],
+          },
         );
       } catch (err) {
         throw new ValidationError(err.message);
@@ -2193,7 +2214,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
           normalized,
           ctx.userId || null,
           nowStr,
-          JSON.stringify(limits),
+          JSON.stringify(sealDeepLimits(limits, secretBox)),
           crawl && grant && grant.status === 'active' ? grant.id : null,
           storedActive ? 1 : 0,
           JSON.stringify({
@@ -2204,7 +2225,13 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         );
 
       queue.enqueue('website_scan', { scanId }, { orgId: ctx.orgId });
-      audit(ctx, 'website_scan.start', scanId, { websiteId, profile: normalized, limits, authorizeActiveTesting: storedActive, source: access.source });
+      audit(ctx, 'website_scan.start', scanId, {
+        websiteId,
+        profile: normalized,
+        limits: redactDeepLimits(limits),
+        authorizeActiveTesting: storedActive,
+        source: access.source,
+      });
       return websiteScanDocument(db.prepare('SELECT * FROM website_scans WHERE id = ?').get(scanId));
     },
 
@@ -2329,7 +2356,9 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
             `Status: \`${scan.status}\`  `,
             `Generated: ${scan.finishedAt || scan.createdAt}`,
             '',
-            `**Security Posture Score: ${scan.postureScore != null ? scan.postureScore : 'N/A'}/100 (Grade ${s.grade || 'N/A'})** · ${s.total || findings.length} findings detected`,
+            s.partial || s.incomplete
+              ? `**Partial score ${scan.postureScore != null ? scan.postureScore : 'N/A'}, not a complete assessment** (would-be grade ${s.grade || 'N/A'}). ${s.total || findings.length} findings so far.`
+              : `**Security Posture Score: ${scan.postureScore != null ? scan.postureScore : 'N/A'}/100 (Grade ${s.grade || 'N/A'})** · ${s.total || findings.length} findings detected`,
             '',
             '| Critical | High | Medium | Low |',
             '|---|---|---|---|',

@@ -156,13 +156,12 @@ const tlsFinding = {
   identifiers: { primary: 'CWE-295', cwe: ['CWE-295'] }, location: { url: 'https://shop.example.com/' },
 };
 
-test('WAF challenge on passive recon names the provider and keeps TLS findings', async () => {
-  // passive.js returns the provider both ways: blocked: { by } and blockedBy.
+test('WAF challenge on passive recon keeps TLS findings and does not name a vendor', async () => {
   const { deps } = engines({
     passive: async () => ({
       findings: [tlsFinding],
-      blocked: { by: 'Cloudflare', reason: 'challenge', retryAfterSec: null },
-      blockedBy: 'Cloudflare',
+      blocked: { by: 'WAF', reason: 'challenge', retryAfterSec: null },
+      blockedBy: 'WAF',
       inventory: null,
     }),
   });
@@ -170,21 +169,22 @@ test('WAF challenge on passive recon names the provider and keeps TLS findings',
 
   const passive = byName(result, 'vulnsight-passive');
   assert.equal(passive.status, 'blocked');
-  assert.equal(passive.error, 'blocked by Cloudflare');
-  assert.equal(result.blockedBy, 'Cloudflare');
+  assert.equal(passive.error, 'blocked by WAF');
+  assert.equal(result.blockedBy, 'WAF');
   assert.ok(result.findings.some((f) => f.scanner.ruleId === 'tls-cert-untrusted'), 'TLS finding from the handshake is kept');
   const story = result.story.stages.find((s) => s.name === 'vulnsight-passive');
-  assert.match(story.why, /firewall \(Cloudflare\)/);
+  assert.match(story.why, /firewall answered with a bot challenge/);
+  assert.doesNotMatch(story.why, /Cloudflare|Akamai|Fastly/);
   assert.match(story.why, /TLS results were kept/);
 });
 
-test('older passive results that only carry blocked.by still name the provider', async () => {
+test('older passive results that only carry blocked.by still surface the block', async () => {
   const { deps } = engines({
-    passive: async () => ({ findings: [], blocked: { by: 'Akamai', reason: 'challenge' }, inventory: null }),
+    passive: async () => ({ findings: [], blocked: { by: 'WAF', reason: 'challenge' }, inventory: null }),
   });
   const result = await runDastPipeline(site, scan, deps);
-  assert.equal(result.blockedBy, 'Akamai');
-  assert.equal(byName(result, 'vulnsight-passive').error, 'blocked by Akamai');
+  assert.equal(result.blockedBy, 'WAF');
+  assert.equal(byName(result, 'vulnsight-passive').error, 'blocked by WAF');
 });
 
 test('an active scan stopped by its time limit is partial, not ok', async () => {

@@ -24027,9 +24027,7 @@ var require_scan_story = __commonJS({
         if (eng.blockReason === "connection_dropped" || /stopped answering|dropping connections/i.test(err)) {
           why = "The host stopped answering this machine: connections timed out with no HTTP response. Its firewall has most likely banned the scanner IP, so results from this stage are missing or incomplete.";
         } else if (eng.blockReason === "waf" || /^blocked by /i.test(err)) {
-          const provider = err.replace(/^blocked by /i, "").trim();
-          const named = provider && provider.toUpperCase() !== "WAF" ? ` (${provider})` : "";
-          why = `The site's firewall${named} answered with a bot challenge instead of the page, so header, cookie and technology checks were skipped. TLS results were kept. To scan your own site fully, allow the scanner IP in that firewall.`;
+          why = "The site's firewall answered with a bot challenge instead of the page, so header, cookie and technology checks were skipped. TLS results were kept. To scan your own site fully, allow the scanner IP in that firewall.";
         } else {
           why = err || "The origin blocked this engine.";
         }
@@ -24088,7 +24086,7 @@ var require_scan_story = __commonJS({
       }
       return {
         headline: "Incomplete inspection",
-        readout: `${unfinished.length} engine${unfinished.length === 1 ? "" : "s"} did not finish.${blockedBit} Posture is not a clean bill of health.`,
+        readout: `${unfinished.length} engine${unfinished.length === 1 ? "" : "s"} did not finish.${blockedBit} The number shown as posture is a partial score, not a complete assessment.`,
         profile: profile || null,
         stages
       };
@@ -28184,9 +28182,10 @@ function DastPoliciesPanel({ readOnly }) {
               required: true,
               value: form.allowHosts,
               onChange: (e) => setForm({ ...form, allowHosts: e.target.value }),
-              placeholder: form.kind === "lab" ? "staging.example.com" : "example.com"
+              placeholder: form.kind === "lab" ? "staging.example.com" : "example.com, origin.example.com"
             }
-          )
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "small muted", children: "Include origin hostnames the engagement covers. Lab hosts must match exactly." })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("label", { children: [
           "Deny hosts (optional)",
@@ -28821,7 +28820,8 @@ function WebsitesView({ onSelectScan }) {
     evidenceRef: "",
     expiresAt: "",
     allowedProfiles: ["discovery", "standard"],
-    allowActiveTesting: false
+    allowActiveTesting: false,
+    extraHosts: ""
   });
   const [deepOpts, setDeepOpts] = (0, import_react12.useState)({
     sessionCookie: "",
@@ -28899,14 +28899,7 @@ function WebsitesView({ onSelectScan }) {
     }
     try {
       setScanningSiteId(site.id);
-      const body = { profile };
-      if (profile === "deep") {
-        if (deepOpts.sessionCookie.trim()) body.sessionCookie = deepOpts.sessionCookie.trim();
-        if (deepOpts.sessionHeader.trim()) body.sessionHeader = deepOpts.sessionHeader.trim();
-        if (deepOpts.seedUrls.trim()) body.seedUrls = deepOpts.seedUrls;
-        if (deepOpts.originUrl.trim()) body.originUrl = deepOpts.originUrl.trim();
-      }
-      const scan = await api.post(api.org(`/websites/${site.id}/scans`), body);
+      const scan = await api.post(api.org(`/websites/${site.id}/scans`), { profile });
       toast(`${profile} scan queued`);
       await loadWebsites();
       if (onSelectScan) {
@@ -28942,10 +28935,14 @@ function WebsitesView({ onSelectScan }) {
     if (!grantSite) return;
     try {
       setGrantBusy(true);
+      const extraHosts = grantForm.extraHosts.split(",").map((h) => h.trim()).filter(Boolean);
       await api.post(api.org(`/websites/${grantSite.id}/authorizations`), {
-        ...grantForm,
+        evidenceKind: grantForm.evidenceKind,
+        evidenceRef: grantForm.evidenceRef,
         expiresAt: new Date(grantForm.expiresAt).toISOString(),
-        allowActiveTesting: Boolean(grantForm.allowActiveTesting) && grantForm.allowedProfiles.includes("deep")
+        allowedProfiles: grantForm.allowedProfiles,
+        allowActiveTesting: Boolean(grantForm.allowActiveTesting) && grantForm.allowedProfiles.includes("deep"),
+        allowHosts: [.../* @__PURE__ */ new Set([grantSite.hostname, ...extraHosts])]
       });
       toast("Client authorization grant recorded");
       setGrantSite(null);
@@ -29004,10 +29001,9 @@ function WebsitesView({ onSelectScan }) {
           ] })
         ] }, "verify"),
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { children: latest && latest.postureScore != null ? /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("span", { className: `badge ${latest.postureScore >= 80 ? "sev-low" : latest.postureScore >= 50 ? "sev-medium" : "sev-critical"}`, children: [
-            latest.postureScore,
-            "/100 ",
-            summary && summary.grade ? `(${summary.grade})` : ""
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("span", { className: `badge ${summary && (summary.partial || summary.incomplete) ? "sev-medium" : latest.postureScore >= 80 ? "sev-low" : latest.postureScore >= 50 ? "sev-medium" : "sev-critical"}`, children: [
+            summary && (summary.partial || summary.incomplete) ? `${latest.postureScore} partial` : `${latest.postureScore}/100`,
+            summary && summary.grade && !(summary.partial || summary.incomplete) ? ` (${summary.grade})` : ""
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { marginTop: "0.3rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(SeverityBar, { counts }) })
         ] }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "muted", children: "No scan yet" }) }, "posture"),
@@ -29129,73 +29125,75 @@ function WebsitesView({ onSelectScan }) {
           )
         ] })
       ] }) }),
-      scanProfile === "deep" && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "deep-scan-opts", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("p", { className: "small muted", style: { margin: "0 0 12px" }, children: "Authorized Deep only. Session values are sent with crawls and ZAP, never written to CSV or the scan JSON. Origin must be this host or a subdomain. A different Azure/Lambda host is its own website." }),
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "deep-scan-grid", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("label", { className: "small muted", htmlFor: "deep-cookie", children: [
-            "Session cookie",
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-              "input",
-              {
-                id: "deep-cookie",
-                type: "password",
-                autoComplete: "off",
-                value: deepOpts.sessionCookie,
-                onChange: (e) => setDeepOpts({ ...deepOpts, sessionCookie: e.target.value }),
-                placeholder: "name=value"
-              }
-            )
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("label", { className: "small muted", htmlFor: "deep-header", children: [
-            "Session header",
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-              "input",
-              {
-                id: "deep-header",
-                type: "password",
-                autoComplete: "off",
-                value: deepOpts.sessionHeader,
-                onChange: (e) => setDeepOpts({ ...deepOpts, sessionHeader: e.target.value }),
-                placeholder: "Authorization: Bearer \u2026"
-              }
-            )
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("label", { className: "small muted", htmlFor: "deep-origin", children: [
-            "Origin URL",
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-              "input",
-              {
-                id: "deep-origin",
-                type: "url",
-                value: deepOpts.originUrl,
-                onChange: (e) => setDeepOpts({ ...deepOpts, originUrl: e.target.value }),
-                placeholder: "https://origin.example.com"
-              }
-            )
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("label", { className: "small muted", htmlFor: "deep-seeds", style: { gridColumn: "1 / -1" }, children: [
-            "API seed URLs",
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-              "textarea",
-              {
-                id: "deep-seeds",
-                rows: 3,
-                value: deepOpts.seedUrls,
-                onChange: (e) => setDeepOpts({ ...deepOpts, seedUrls: e.target.value }),
-                placeholder: "https://example.com/api/users\nhttps://example.com/openapi.json"
-              }
-            )
+      loading && !websites.length ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { padding: "1rem 0" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ScanSkeletonLoader, { cards: 4, hasTabs: false, rows: 4 }) }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(import_jsx_runtime12.Fragment, { children: [
+        scanProfile === "deep" && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "deep-scan-opts", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("p", { className: "small muted", style: { margin: "0 0 12px" }, children: "Authorized Deep only. Session values are sealed in the job store and stripped from the API. Origin may be this host, a subdomain, or a hostname listed on the site grant." }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "deep-scan-grid", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("label", { className: "small muted", htmlFor: "deep-cookie", children: [
+              "Session cookie",
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+                "input",
+                {
+                  id: "deep-cookie",
+                  type: "password",
+                  autoComplete: "off",
+                  value: deepOpts.sessionCookie,
+                  onChange: (e) => setDeepOpts({ ...deepOpts, sessionCookie: e.target.value }),
+                  placeholder: "name=value"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("label", { className: "small muted", htmlFor: "deep-header", children: [
+              "Session header",
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+                "input",
+                {
+                  id: "deep-header",
+                  type: "password",
+                  autoComplete: "off",
+                  value: deepOpts.sessionHeader,
+                  onChange: (e) => setDeepOpts({ ...deepOpts, sessionHeader: e.target.value }),
+                  placeholder: "Authorization: Bearer token"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("label", { className: "small muted", htmlFor: "deep-origin", children: [
+              "Origin URL",
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+                "input",
+                {
+                  id: "deep-origin",
+                  type: "url",
+                  value: deepOpts.originUrl,
+                  onChange: (e) => setDeepOpts({ ...deepOpts, originUrl: e.target.value }),
+                  placeholder: "https://origin.example.com"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("label", { className: "small muted", htmlFor: "deep-seeds", style: { gridColumn: "1 / -1" }, children: [
+              "API seed URLs",
+              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+                "textarea",
+                {
+                  id: "deep-seeds",
+                  rows: 3,
+                  value: deepOpts.seedUrls,
+                  onChange: (e) => setDeepOpts({ ...deepOpts, seedUrls: e.target.value }),
+                  placeholder: "https://example.com/api/users\nhttps://example.com/openapi.json"
+                }
+              )
+            ] })
           ] })
-        ] })
-      ] }),
-      loading && !websites.length ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { padding: "1rem 0" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ScanSkeletonLoader, { cards: 4, hasTabs: false, rows: 4 }) }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-        DataTable,
-        {
-          headers,
-          rows,
-          empty: "No website targets registered yet. Add a URL above to start security scanning."
-        }
-      )
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+          DataTable,
+          {
+            headers,
+            rows,
+            empty: "No website targets registered yet. Add a URL above to start security scanning."
+          }
+        )
+      ] })
     ] }),
     verifyingSite && /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "modal-backdrop", role: "dialog", "aria-modal": "true", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "card modal-card", style: { maxWidth: "640px", width: "90%" }, children: [
       /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "card-head", children: [
@@ -29326,6 +29324,20 @@ function WebsitesView({ onSelectScan }) {
               style: { width: "100%" }
             }
           )
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("label", { className: "small muted", htmlFor: "ev-hosts", children: "Extra origin hosts" }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+            "input",
+            {
+              id: "ev-hosts",
+              value: grantForm.extraHosts,
+              onChange: (e) => setGrantForm({ ...grantForm, extraHosts: e.target.value }),
+              placeholder: "origin.example.com, dxxx.cloudfront.net",
+              style: { width: "100%" }
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("p", { className: "small muted", style: { margin: "4px 0 0" }, children: "Optional concrete hostnames this grant also covers, such as an Azure Container Apps or CloudFront origin. Wildcards and IPs are rejected." })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("fieldset", { style: { border: "1px solid var(--border)", borderRadius: "6px", padding: "8px 12px" }, children: [
           /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("legend", { className: "small muted", children: "Allowed profiles" }),
@@ -29496,11 +29508,10 @@ function EdgePanel({ edge, emailDns, hostname }) {
       /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
         SimpleTable,
         {
-          head: ["Source", "Provider", "What was observed"],
+          head: ["Source", "What was observed"],
           empty: "No CDN or WAF signals were observed.",
           rows: (e.signals || []).map((sig, i) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("tr", { children: [
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: sig.source }),
-            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("strong", { children: sig.provider }) }),
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("code", { children: sig.detail }) })
           ] }, i))
         }
@@ -29860,7 +29871,7 @@ function WebsiteScanView({ websiteId, scanId }) {
       ] }),
       s.partial && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "card", style: { marginBottom: "16px", padding: "12px 16px", borderColor: "var(--color-warning, #b54708)" }, children: [
         /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("strong", { children: "Incomplete assessment" }),
-        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { className: "small", style: { margin: "4px 0 0" }, children: "One or more engines were skipped, blocked, or stopped before finishing. Findings below are only from engines that ran. This is not a clean bill of health. Check engine status for authorization, cancellation, or host-drop reasons." })
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { className: "small", style: { margin: "4px 0 0" }, children: "One or more engines were skipped, blocked, or stopped before finishing. Findings below are only from engines that ran. Any number shown as posture is a partial score, not a complete assessment." })
       ] }),
       (() => {
         const story = s.story && s.story.stages && s.story.stages.length ? s.story : Array.isArray(s.engines) && s.engines.length ? (0, import_scan_story.buildScanStory)({
@@ -29917,8 +29928,8 @@ function WebsiteScanView({ websiteId, scanId }) {
         /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
           StatCard,
           {
-            num: scan.postureScore != null ? `${scan.postureScore}/100` : "N/A",
-            label: s.partial ? `Security posture (incomplete${s.grade ? `, grade ${s.grade}` : ""})` : `Security Posture (Grade ${s.grade || "N/A"})`
+            num: scan.postureScore != null ? s.partial ? `${scan.postureScore} partial` : `${scan.postureScore}/100` : "N/A",
+            label: s.partial ? "Partial score, not a complete assessment" : `Security Posture (Grade ${s.grade || "N/A"})`
           }
         ),
         /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
@@ -30333,7 +30344,7 @@ function WebsiteScanView({ websiteId, scanId }) {
                 unique.length,
                 ")"
               ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { className: "small muted", style: { margin: "0 0 8px" }, children: "In-scope JavaScript URLs from the headless browser (not Chrome DevTools, not Cloudflare challenge scripts)." }),
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { className: "small muted", style: { margin: "0 0 8px" }, children: "In-scope JavaScript URLs from the headless browser (not Chrome DevTools, not edge challenge scripts)." }),
               /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("ul", { style: { margin: 0, paddingLeft: "1.25rem", display: "grid", gap: "0.35rem" }, children: unique.slice(0, 80).map((ep) => /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("li", { className: "small", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("a", { href: ep.url, target: "_blank", rel: "noopener noreferrer", children: ep.url }) }, ep.url)) })
             ] });
           })()
