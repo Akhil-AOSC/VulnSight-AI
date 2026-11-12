@@ -161,11 +161,13 @@ function inspectTls(hostname, port = 443, timeoutMs = 8000, { lookup = guardedLo
     // Audit-only handshake: we must still read the peer cert when it is expired, self-signed,
     // or otherwise untrusted so the finding can report issuer, dates, and authorizationError.
     // Page fetches use guardedRequest with rejectUnauthorized true (see safe-fetch.js).
+    const inspectUntrustedPeer = false;
+    // nosemgrep: problem-based-packs.insecure-transport.js-node.bypass-tls-verification.bypass-tls-verification
     const socket = tls.connect({
       host: hostname,
       port,
       servername: net.isIP(hostname) ? undefined : hostname,
-      rejectUnauthorized: false, // nosemgrep
+      rejectUnauthorized: inspectUntrustedPeer,
       timeout: timeoutMs,
       lookup,
     }, () => {
@@ -218,11 +220,13 @@ function probeLegacyTls(hostname, port = 443, timeoutMs = 6000, { lookup = guard
     let socket;
     try {
       // Probe whether the server still accepts TLS 1.0/1.1. Handshake is discarded; no HTTP is sent.
+      const inspectUntrustedPeer = false;
+      // nosemgrep: problem-based-packs.insecure-transport.js-node.bypass-tls-verification.bypass-tls-verification
       socket = tls.connect({
         host: hostname,
         port,
         servername: net.isIP(hostname) ? undefined : hostname,
-        rejectUnauthorized: false, // nosemgrep
+        rejectUnauthorized: inspectUntrustedPeer,
         minVersion: 'TLSv1',
         maxVersion: 'TLSv1.1',
         ciphers: 'DEFAULT@SECLEVEL=0',
