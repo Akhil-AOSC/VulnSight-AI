@@ -2132,6 +2132,119 @@ main:focus { outline: none; }
   }
 }
 
+.scan-progress-bar-fill {
+  height: 100%;
+  background: var(--brand);
+  border-radius: 3px;
+  transition: width 150ms ease;
+}
+
+.scan-live-pipeline {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+  display: grid;
+  gap: 4px;
+}
+
+.scan-live-step {
+  display: grid;
+  grid-template-columns: 8px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  font-size: 13px;
+}
+
+.scan-live-tick {
+  width: 8px;
+  height: 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 22%, transparent);
+}
+
+.scan-live-step.is-done .scan-live-tick {
+  background: var(--brand);
+}
+
+.scan-live-step.is-current .scan-live-tick {
+  background: var(--brand);
+}
+
+.scan-live-label {
+  color: var(--text);
+}
+
+.scan-live-state {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+}
+
+.scan-live-step.is-waiting .scan-live-label,
+.scan-live-step.is-waiting .scan-live-state {
+  color: var(--muted, #6b7280);
+}
+
+.scan-live-log {
+  margin-top: 8px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 3%, transparent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.scan-live-log-head {
+  margin-bottom: 8px;
+  color: var(--muted, #6b7280);
+  font-family: inherit;
+}
+
+.scan-live-log-row {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 12px;
+}
+
+.scan-live-log-time {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted, #6b7280);
+}
+
+.deep-scan-opts {
+  padding: 16px 20px 20px;
+  border-top: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.deep-scan-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.deep-scan-grid label {
+  display: grid;
+  gap: 4px;
+}
+
+.deep-scan-grid input,
+.deep-scan-grid textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 6px;
+  min-height: 32px;
+}
+
+@media (max-width: 720px) {
+  .deep-scan-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .scan-story {
   margin-bottom: 16px;
   padding: 16px 20px;

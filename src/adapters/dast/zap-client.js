@@ -67,7 +67,30 @@ function hostRegex(host) {
   return `https?://(www\\.)?${h}.*`;
 }
 
-async function prepareZapSession({ scope = {}, proxyUrl, maxRps = 1 } = {}) {
+async function applyZapSessionHeaders({ sessionCookie, sessionHeader } = {}) {
+  if (sessionCookie) {
+    await zapGet('/JSON/replacer/action/addRule/', {
+      description: 'vs-session-cookie',
+      enabled: 'true',
+      matchType: 'REQ_HEADER',
+      matchRegex: 'false',
+      matchString: 'Cookie',
+      replacement: sessionCookie,
+    }).catch(() => {});
+  }
+  if (sessionHeader && sessionHeader.name && sessionHeader.value) {
+    await zapGet('/JSON/replacer/action/addRule/', {
+      description: 'vs-session-header',
+      enabled: 'true',
+      matchType: 'REQ_HEADER',
+      matchRegex: 'false',
+      matchString: sessionHeader.name,
+      replacement: sessionHeader.value,
+    }).catch(() => {});
+  }
+}
+
+async function prepareZapSession({ scope = {}, proxyUrl, maxRps = 1, sessionCookie, sessionHeader } = {}) {
   const name = `vs-${Date.now()}`;
   await zapGet('/JSON/core/action/newSession/', { name, overwrite: 'true' });
   const contextName = `vs-ctx-${Date.now()}`;

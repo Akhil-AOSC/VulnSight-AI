@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildScanStory, explainEngine } = require('../src/adapters/dast/scan-story');
+const { buildScanStory, explainEngine, livePipelineState } = require('../src/adapters/dast/scan-story');
 
 test('scan story explains an incomplete ascan run in plain language', () => {
   const story = buildScanStory({
@@ -63,4 +63,14 @@ test('scan story explains a firewall IP ban instead of reporting empty results a
   assert.match(passive.why, /banned the scanner IP/);
   const nuclei = story.stages.find((s) => s.name === 'nuclei');
   assert.match(nuclei.why, /Not run/);
+});
+
+test('live pipeline marks ZAP ascan as current during deep', () => {
+  const queued = livePipelineState('deep', { status: 'queued', progress: { stage: 'queued' } });
+  assert.equal(queued[0].state, 'current');
+  assert.equal(queued[1].state, 'waiting');
+  const ascan = livePipelineState('deep', { status: 'running', progress: { stage: 'ascan', engine: 'owasp-zap-ascan', percent: 22 } });
+  const zap = ascan.find((s) => s.id === 'ascan');
+  assert.equal(zap.state, 'current');
+  assert.equal(ascan.find((s) => s.id === 'passive').state, 'done');
 });

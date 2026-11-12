@@ -109,4 +109,49 @@ function buildScanStory({
   };
 }
 
-module.exports = { ENGINES, explainEngine, buildScanStory };
+function livePipeline(profile) {
+  const key = String(profile || 'passive');
+  const needs = {
+    publicDiscovery: key === 'public' || key === 'public_assessment',
+    browser: ['public', 'public_assessment', 'discovery', 'standard', 'deep', 'ascan', 'exploit', 'crawl_js'].includes(key),
+    crawl: ['discovery', 'standard', 'deep', 'ascan', 'exploit', 'crawl', 'crawl_js'].includes(key),
+    nuclei: ['standard', 'deep', 'ascan', 'exploit'].includes(key),
+    ascan: ['deep', 'ascan', 'exploit'].includes(key),
+  };
+  const steps = [
+    { id: 'queued', stage: 'queued', engine: 'worker', label: 'Inspection worker' },
+    { id: 'passive', stage: 'passive', engine: 'vulnsight-passive', label: 'Passive recon' },
+  ];
+  if (needs.browser || needs.publicDiscovery) {
+    steps.push({ id: 'browser', stage: 'crawling', engine: 'vulnsight-browser', label: 'Browser crawl' });
+  }
+  if (needs.crawl) {
+    steps.push({ id: 'spider', stage: 'zap-spider', engine: 'owasp-zap-spider', label: 'ZAP spider' });
+  }
+  if (needs.nuclei) {
+    steps.push({ id: 'nuclei', stage: 'nuclei', engine: 'nuclei', label: 'Nuclei templates' });
+  }
+  if (needs.crawl) {
+    steps.push({ id: 'checks', stage: 'checks', engine: 'vulnsight-checks', label: 'Exposure checks' });
+  }
+  if (needs.ascan) {
+    steps.push({ id: 'ascan', stage: 'zap-ascan', engine: 'owasp-zap-ascan', label: 'ZAP active scan' });
+  }
+  return steps;
+}
+
+function livePipelineState(profile, { status, progress } = {}) {
+  const steps = livePipeline(profile);
+  const STAGE_ALIAS = { ascan: 'zap-ascan', initializing: 'passive', spider: 'zap-spider', browser: 'crawling' };
+  const rawStage = (progress && progress.stage) || (status === 'queued' ? 'queued' : 'passive');
+  const stage = STAGE_ALIAS[rawStage] || rawStage;
+  const engine = (progress && progress.engine) || '';
+  let idx = steps.findIndex((s) => s.stage === stage || s.engine === engine);
+  if (idx < 0) idx = status === 'queued' ? 0 : 1;
+  return steps.map((s, i) => ({
+    ...s,
+    state: i < idx ? 'done' : i === idx ? 'current' : 'waiting',
+  }));
+}
+
+module.exports = { ENGINES, explainEngine, buildScanStory, livePipeline, livePipelineState };

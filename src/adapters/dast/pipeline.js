@@ -7,6 +7,7 @@ const { normalizeProfile, normalizeLimits, normalizeScope, urlInScope, normalize
 const { evaluateScanAuthorization, scopeFromAccess } = require('../../platform/authorization-policy');
 const { createEgressProxy } = require('../../platform/egress-proxy');
 const { buildScanStory } = require('./scan-story');
+const { playwrightHeaders, mergeSeedUrls } = require('./deep-options');
 const { classifyNetworkError, droppedMessage, probeReachable, HOST_FIREWALL } = require('./net-guard');
 
 const SEV_RANK = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
@@ -21,25 +22,48 @@ function isVerificationFresh(verifiedAt, now = Date.now()) {
 
 function findingKey(f) {
   const id = f.identifiers || {};
+  const scanner = String((f.scanner && f.scanner.name) || '');
+  const loc = f.location || {};
+  const url = loc.url || loc.path || '';
+  const param = loc.parameter || '';
+  // Keep each ZAP plugin hit (same CWE on the same path used to collapse 213 alerts into tens of rows).
+  if (scanner === 'owasp-zap-ascan') {
+    const rule = String((f.scanner && f.scanner.ruleId) || id.primary || f.title || '');
+    return `zap|${rule}|${url}|${param}`;
+  }
   const cwe = (id.cwe && id.cwe[0]) || '';
   const family = String(id.primary || (f.scanner && f.scanner.ruleId) || f.title || '')
     .replace(/[-_]\d+$/, '')
     .toLowerCase();
-  const loc = f.location || {};
   let path = loc.path || '';
   try {
     if (loc.url) path = new URL(loc.url).pathname || path;
   } catch {
     /* keep path */
   }
-  return `${cwe || family}|${path}|${loc.parameter || ''}`;
+  return `${cwe || family}|${path}|${param}`;
+}
+
+function countBySeverity(findings) {
+  const out = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const f of findings || []) {
+    const sev = String(f.severity || 'low');
+    if (Object.prototype.hasOwnProperty.call(out, sev)) out[sev] += 1;
+    else out.low += 1;
+  }
+  return out;
 }
 
 function dedupeDastFindings(findings) {
   const map = new Map();
+  const ascan = [];
   for (const f of findings || []) {
-    const key = findingKey(f);
     const name = f.scanner && f.scanner.name;
+    if (name === 'owasp-zap-ascan') {
+      ascan.push({ ...f, confirmedBy: ['owasp-zap-ascan'] });
+      continue;
+    }
+    const key = findingKey(f);
     const existing = map.get(key);
     if (!existing) {
       map.set(key, { ...f, confirmedBy: name ? [name] : [] });
@@ -49,7 +73,7 @@ function dedupeDastFindings(findings) {
     const keep = (SEV_RANK[f.severity] || 0) > (SEV_RANK[existing.severity] || 0) ? { ...f } : existing;
     map.set(key, { ...keep, confirmedBy: [...names] });
   }
-  return [...map.values()];
+  return [...map.values(), ...ascan];
 }
 
 function collectUrls(inventory, fallback, scope, maxPages) {
@@ -124,6 +148,7 @@ async function runStage(name, fn) {
         status,
         durationMs: Date.now() - t0,
         findings: count,
+        bySeverity: countBySeverity(result && result.findings),
         error,
         ...(blockReason ? { blockReason } : {}),
       },
@@ -228,7 +253,14 @@ async function runDastPipeline(site, scan, deps = {}) {
     }
   })();
   const siteConfig = scan.siteConfig || {};
-  const limits = normalizeLimits({ ...siteConfig, ...(scan.limits || {}) });
+  const rawLimits = scan.limits || {};
+  const limits = {
+    ...normalizeLimits({ ...siteConfig, ...rawLimits }),
+    sessionCookie: rawLimits.sessionCookie || null,
+    sessionHeader: rawLimits.sessionHeader || null,
+    seedUrls: Array.isArray(rawLimits.seedUrls) ? rawLimits.seedUrls : [],
+    originUrl: rawLimits.originUrl || null,
+  };
   let scope = normalizeScope(site.hostname, siteConfig);
   const stages = profileNeeds(profile);
 
@@ -270,6 +302,10 @@ async function runDastPipeline(site, scan, deps = {}) {
   let blockedBy = null;
   let partial = false;
 
+  if (typeof deps.onProgress === 'function') {
+    await deps.onProgress({ stage: 'passive', engine: 'vulnsight-passive', pages: 0 });
+  }
+
   const passive = await runStage('vulnsight-passive', () => dastPassive(site.target_url || site.targetUrl, {
     timeoutMs: 25000,
     verified,
@@ -278,7 +314,7 @@ async function runDastPipeline(site, scan, deps = {}) {
 
   // Once the host starts dropping our connections (usually a firewall IP ban), every further
   // request only extends the ban and produces empty "ok" results. Check between stages and stop.
-  const target = site.target_url || site.targetUrl;
+  const target = limits.originUrl || site.target_url || site.targetUrl;
   // Real runs probe the network; runs with injected fake engines (tests) don't, unless given a probe.
   const fakeEngines = Boolean(deps.dastPassive && deps.dastPassive !== runPassiveScan);
   const probe = deps.probeReachable || (fakeEngines ? async () => ({ ok: true }) : probeReachable);
@@ -391,6 +427,9 @@ async function runDastPipeline(site, scan, deps = {}) {
         clientSpider: false,
         onProgress: deps.onProgress,
         shouldStop: deps.shouldStop,
+        extraHTTPHeaders: playwrightHeaders(limits),
+        sessionCookie: limits.sessionCookie,
+        sessionHeader: limits.sessionHeader,
       };
 
       const crawlName = process.env.ZAP_API_URL ? 'owasp-zap-spider' : 'builtin-get';
@@ -479,7 +518,12 @@ async function runDastPipeline(site, scan, deps = {}) {
           authStopped = true;
         } else {
           await reportStage('nuclei', 'nuclei');
-          const urls = collectUrls(inventory, target, scope, limits.maxPages);
+          const urls = mergeSeedUrls(
+            collectUrls(inventory, target, scope, limits.maxPages),
+            limits.seedUrls,
+            scope,
+            limits.maxPages,
+          );
           const nu = await runStage('nuclei', () => dastNuclei(urls, {
             limits,
             proxy: egress && egress.proxyUrl,
@@ -538,13 +582,20 @@ async function runDastPipeline(site, scan, deps = {}) {
           engines.push(notRun('owasp-zap-ascan', `${stopReason()} No attack payloads were sent.`));
         } else {
           await reportStage('zap-ascan', 'owasp-zap-ascan');
-          const seedUrls = collectUrls(inventory, target, scope, limits.maxPages);
+          const seedUrls = mergeSeedUrls(
+            collectUrls(inventory, target, scope, limits.maxPages),
+            limits.seedUrls,
+            scope,
+            limits.maxPages,
+          );
           const as = await runStage('owasp-zap-ascan', () => dastAscan(target, {
             scope,
             ...limits,
             proxy: egress && egress.proxyUrl,
             zapSession: (cr.result && cr.result.zapSession) || (inventory && inventory.zapSession),
             seedUrls,
+            sessionCookie: limits.sessionCookie,
+            sessionHeader: limits.sessionHeader,
             allowActive: true,
             onProgress: deps.onProgress,
             shouldStop: deps.shouldStop,

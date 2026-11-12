@@ -30,6 +30,7 @@ const { runWebsiteCrawl } = require('../adapters/dast/zap-spider');
 const { runZapActiveScan } = require('../adapters/dast/zap-ascan');
 const { plainEnglishForFinding } = require('../adapters/dast/plain-english');
 const { normalizeProfile, normalizeLimits, normalizeScope, profileNeeds } = require('../adapters/dast/scope');
+const { parseDeepScanOptions, redactDeepLimits } = require('../adapters/dast/deep-options');
 const { runDastPipeline, isVerificationFresh } = require('../adapters/dast/pipeline');
 const { generateVerificationToken, checkOwnership, isOwnershipProven } = require('./dast-verifier');
 const {
@@ -1592,6 +1593,42 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
     };
   }
 
+  function websiteScanQueueInfo(scanId) {
+    const job = db.prepare(
+      "SELECT id, status, created_at FROM jobs WHERE type = 'website_scan' AND payload LIKE ? AND status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 1",
+    ).get(`%"${scanId}"%`);
+    if (!job) return { jobsAhead: 0, jobStatus: null, blocking: null };
+    const ahead = db.prepare(
+      "SELECT COUNT(*) AS n FROM jobs WHERE type = 'website_scan' AND status IN ('queued', 'running') AND created_at < ?",
+    ).get(job.created_at).n;
+    let blocking = null;
+    if (ahead > 0) {
+      const older = db.prepare(
+        "SELECT payload, status FROM jobs WHERE type = 'website_scan' AND status IN ('queued', 'running') AND created_at < ? ORDER BY created_at LIMIT 1",
+      ).get(job.created_at);
+      if (older) {
+        let otherId = null;
+        try { otherId = JSON.parse(older.payload).scanId; } catch { /* ignore */ }
+        if (otherId) {
+          const other = db.prepare(
+            `SELECT website_scans.profile, website_scans.status, website_scans.engine, websites.hostname
+             FROM website_scans JOIN websites ON websites.id = website_scans.website_id
+             WHERE website_scans.id = ?`,
+          ).get(otherId);
+          if (other) {
+            blocking = {
+              hostname: other.hostname,
+              profile: other.profile,
+              status: other.status,
+              engine: other.engine,
+            };
+          }
+        }
+      }
+    }
+    return { jobsAhead: ahead, jobStatus: job.status, blocking };
+  }
+
   function websiteScanDocument(row) {
     return {
       id: row.id,
@@ -1606,13 +1643,14 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       error: row.error || null,
       requestedBy: row.requested_by || null,
       progress: parse(row.progress, null),
-      limits: parse(row.limits, null),
+      limits: redactDeepLimits(parse(row.limits, null)),
       engine: row.engine || null,
       authorizationId: row.authorization_id || null,
       authorizeActiveTesting: Boolean(row.authorize_active),
       createdAt: row.created_at,
       startedAt: row.started_at,
       finishedAt: row.finished_at,
+      queue: websiteScanQueueInfo(row.id),
     };
   }
 
@@ -1663,7 +1701,13 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         .run('Website was removed', nowIso(), scanId);
       return;
     }
-    db.prepare("UPDATE website_scans SET status = 'running', started_at = ?, error = NULL WHERE id = ?").run(nowIso(), scanId);
+    const started = nowIso();
+    db.prepare("UPDATE website_scans SET status = 'running', started_at = ?, error = NULL, progress = ?, engine = ? WHERE id = ?")
+      .run(started, JSON.stringify({
+        stage: 'passive',
+        engine: 'vulnsight-passive',
+        log: [{ at: started, stage: 'passive', engine: 'vulnsight-passive', message: 'Worker claimed the job' }],
+      }), 'vulnsight-passive', scanId);
 
     try {
       const pipeline = await runDastPipeline(site, {
@@ -1696,10 +1740,30 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
           });
         },
         onProgress: async (progress) => {
-          const latest = db.prepare('SELECT status FROM website_scans WHERE id = ?').get(scanId);
+          const latest = db.prepare('SELECT status, progress FROM website_scans WHERE id = ?').get(scanId);
           if (latest && latest.status === 'cancelled') return;
+          const prev = parse(latest && latest.progress, {});
+          const log = Array.isArray(prev.log) ? prev.log.slice(-48) : [];
+          const event = {
+            at: nowIso(),
+            stage: progress.stage || null,
+            engine: progress.engine || null,
+            percent: progress.percent != null ? Number(progress.percent) : null,
+            pages: progress.pages != null ? Number(progress.pages) : null,
+          };
+          const last = log[log.length - 1] || {};
+          const same = last.stage === event.stage
+            && last.engine === event.engine
+            && last.percent === event.percent
+            && last.pages === event.pages;
+          if (!same) {
+            const bits = [event.engine || event.stage || 'pipeline'];
+            if (event.pages != null) bits.push(`${event.pages} pages`);
+            if (event.percent != null) bits.push(`${event.percent}%`);
+            log.push({ ...event, message: bits.join(' · ') });
+          }
           db.prepare('UPDATE website_scans SET progress = ?, engine = ? WHERE id = ?')
-            .run(JSON.stringify(progress), progress.engine || null, scanId);
+            .run(JSON.stringify({ ...progress, log }), progress.engine || null, scanId);
         },
         shouldStop: async () => {
           const latest = db.prepare('SELECT status FROM website_scans WHERE id = ?').get(scanId);
@@ -2065,6 +2129,10 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       attestAuthorization,
       manual,
       manualAuthorization,
+      sessionCookie,
+      sessionHeader,
+      seedUrls,
+      originUrl,
     } = {}) {
       authorize(ctx, 'scans:run');
       if (attestAuthorization || manual || manualAuthorization) {
@@ -2103,12 +2171,21 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       if (active >= 5) {
         throw new ValidationError('Too many website scans are currently running. Please wait for one to finish.');
       }
-      const limits = normalizeLimits({ ...site.limits, ...limitPatch });
+      const storedActive = access.assessmentKind === 'public_assessment' ? false : Boolean(access.allowActive);
+      let deepOpts = {};
+      try {
+        deepOpts = parseDeepScanOptions(
+          { sessionCookie, sessionHeader, seedUrls, originUrl },
+          { siteHostname: site.hostname || raw.hostname, authorizedDeep: storedActive && normalized === 'deep' },
+        );
+      } catch (err) {
+        throw new ValidationError(err.message);
+      }
+      const limits = { ...normalizeLimits({ ...limitPatch }), ...deepOpts };
       const scanId = uuid();
       const nowStr = nowIso();
-      const storedActive = access.assessmentKind === 'public_assessment' ? false : Boolean(access.allowActive);
-      db.prepare(`INSERT INTO website_scans (id, org_id, website_id, profile, status, requested_by, created_at, limits, authorization_id, authorize_active)
-                  VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`)
+      db.prepare(`INSERT INTO website_scans (id, org_id, website_id, profile, status, requested_by, created_at, limits, authorization_id, authorize_active, progress)
+                  VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)`)
         .run(
           scanId,
           ctx.orgId,
@@ -2119,6 +2196,11 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
           JSON.stringify(limits),
           crawl && grant && grant.status === 'active' ? grant.id : null,
           storedActive ? 1 : 0,
+          JSON.stringify({
+            stage: 'queued',
+            engine: 'worker',
+            log: [{ at: nowStr, stage: 'queued', engine: 'worker', message: 'Queued. One worker runs one website job at a time.' }],
+          }),
         );
 
       queue.enqueue('website_scan', { scanId }, { orgId: ctx.orgId });

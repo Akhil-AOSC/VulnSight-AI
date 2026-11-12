@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api, fmtDate, pad, toast } from '../api.js';
 import { PageHead, StatCard, SevBadge, StatusBadge, AiBriefingCard, DataTable, Skeleton, ScanSkeletonLoader } from '../components/Common.jsx';
-import { buildScanStory } from '../../../src/adapters/dast/scan-story.js';
+import { buildScanStory, livePipelineState } from '../../../src/adapters/dast/scan-story.js';
 
 function TabSkeletonLoader({ tabKey }) {
   const titles = {
@@ -214,11 +214,30 @@ export function WebsiteScanView({ websiteId, scanId }) {
   const [activeTab, setActiveTab] = useState('findings');
   const [tabLoading, setTabLoading] = useState(false);
   const [sevFilter, setSevFilter] = useState('all');
+  const [scannerFilter, setScannerFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [findingPage, setFindingPage] = useState(1);
+  const FINDINGS_PAGE_SIZE = 30;
   const [expandedFinding, setExpandedFinding] = useState(null);
   const [crawlPages, setCrawlPages] = useState([]);
   const [crawlEndpoints, setCrawlEndpoints] = useState([]);
   const [crawlForms, setCrawlForms] = useState([]);
+
+  async function loadCrawlInventory(wid, sid, scanData) {
+    const [pages, endpointsList, formsList] = await Promise.all([
+      api.get(api.org(`/websites/${wid}/scans/${sid}/pages`)).catch(() => []),
+      api.get(api.org(`/websites/${wid}/scans/${sid}/endpoints`)).catch(() => []),
+      api.get(api.org(`/websites/${wid}/scans/${sid}/forms`)).catch(() => []),
+    ]);
+    let nextPages = pages || [];
+    if (!nextPages.length) {
+      const urls = (scanData && scanData.passiveResults && scanData.passiveResults.crawledUrls) || [];
+      nextPages = urls.filter(Boolean).map((url) => ({ url, urlHash: url, depth: 0, statusCode: 0, title: '' }));
+    }
+    setCrawlPages(nextPages);
+    setCrawlEndpoints(endpointsList || []);
+    setCrawlForms(formsList || []);
+  }
   const [explanations, setExplanations] = useState({});
   const [explainingId, setExplainingId] = useState(null);
 
@@ -241,15 +260,8 @@ export function WebsiteScanView({ websiteId, scanId }) {
         ]);
         setSite(siteData);
         setScan(scanData);
-        if (scanData && scanData.status === 'completed') {
-          const [pages, endpointsList, formsList] = await Promise.all([
-            api.get(api.org(`/websites/${websiteId}/scans/${scanId}/pages`)).catch(() => []),
-            api.get(api.org(`/websites/${websiteId}/scans/${scanId}/endpoints`)).catch(() => []),
-            api.get(api.org(`/websites/${websiteId}/scans/${scanId}/forms`)).catch(() => []),
-          ]);
-          setCrawlPages(pages || []);
-          setCrawlEndpoints(endpointsList || []);
-          setCrawlForms(formsList || []);
+        if (scanData && !['queued', 'running', 'paused'].includes(scanData.status)) {
+          await loadCrawlInventory(websiteId, scanId, scanData);
         }
       } catch (err) {
         toast(err.message || 'Failed to load website scan details', 'error');
@@ -267,12 +279,13 @@ export function WebsiteScanView({ websiteId, scanId }) {
         const scanData = await api.get(api.org(`/websites/${websiteId}/scans/${scanId}`));
         if (scanData) {
           setScan(scanData);
-          if (scanData.status !== 'queued' && scanData.status !== 'running') {
+          if (!['queued', 'running', 'paused'].includes(scanData.status)) {
+            await loadCrawlInventory(websiteId, scanId, scanData);
             toast('Website security scan complete');
           }
         }
       } catch {}
-    }, 2500);
+    }, 1500);
     return () => clearInterval(timer);
   }, [scan, websiteId, scanId]);
 
@@ -335,6 +348,9 @@ export function WebsiteScanView({ websiteId, scanId }) {
   const s = scan.summary || {};
   const passive = scan.passiveResults || {};
   const allFindings = passive.findings || [];
+  const zapEngine = (s.engines || []).find((eng) => eng && eng.name === 'owasp-zap-ascan') || null;
+  const zapAlertCount = zapEngine && zapEngine.findings != null ? Number(zapEngine.findings) : 0;
+  const zapBySeverity = zapEngine && zapEngine.bySeverity ? zapEngine.bySeverity : null;
   const tech = passive.technologies || [];
   const tls = passive.tls;
   const edge = passive.edgeIntel || null;
@@ -348,6 +364,7 @@ export function WebsiteScanView({ websiteId, scanId }) {
 
   const filteredFindings = allFindings.filter((f) => {
     if (sevFilter !== 'all' && f.severity !== sevFilter) return false;
+    if (scannerFilter === 'zap' && !(f.scanner && f.scanner.name === 'owasp-zap-ascan') && !(f.confirmedBy || []).includes('owasp-zap-ascan')) return false;
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       const matchTitle = f.title && f.title.toLowerCase().includes(q);
@@ -357,6 +374,12 @@ export function WebsiteScanView({ websiteId, scanId }) {
     }
     return true;
   });
+  const findingPages = Math.max(1, Math.ceil(filteredFindings.length / FINDINGS_PAGE_SIZE));
+  const findingPageSafe = Math.min(findingPage, findingPages);
+  const pagedFindings = filteredFindings.slice(
+    (findingPageSafe - 1) * FINDINGS_PAGE_SIZE,
+    findingPageSafe * FINDINGS_PAGE_SIZE,
+  );
 
   return (
     <div className="view">
@@ -438,41 +461,69 @@ export function WebsiteScanView({ websiteId, scanId }) {
 
       {(scan.status === 'queued' || scan.status === 'running') ? (
         <div className="fade-in">
-          <div className="card scan-progress-banner">
-            <div className="scan-progress-top">
-              <div className="scan-progress-title">
-                <span className="scan-radar-dot" aria-hidden="true" />
-                <span>
-                  {scan.status === 'queued'
-                    ? 'Website scan queued · Preparing inspection worker'
-                    : 'Website security scan in progress'}
-                </span>
+          {(() => {
+            const progress = scan.progress || {};
+            const pipeline = livePipelineState(scan.profile, { status: scan.status, progress });
+            const log = Array.isArray(progress.log) ? progress.log : [];
+            const percent = progress.percent != null ? Number(progress.percent) : null;
+            const ahead = scan.queue && scan.queue.jobsAhead != null ? scan.queue.jobsAhead : 0;
+            const current = pipeline.find((s) => s.state === 'current');
+            const headline = scan.status === 'queued'
+              ? (ahead > 0 ? `Queued behind ${ahead} other website job${ahead === 1 ? '' : 's'}` : 'Queued for the inspection worker')
+              : (current ? current.label : 'Inspection running');
+            const blocking = scan.queue && scan.queue.blocking;
+            const detail = scan.status === 'queued'
+              ? (blocking
+                ? `Waiting on ${blocking.hostname} (${blocking.profile}${blocking.engine ? ` · ${blocking.engine}` : ''})`
+                : 'One worker runs one website scan at a time. A long ZAP active scan holds the next job until it finishes.')
+              : [
+                progress.engine || scan.engine,
+                progress.pages != null ? `${progress.pages} pages` : null,
+                percent != null ? `${percent}% of ZAP ascan` : null,
+              ].filter(Boolean).join(' · ');
+            return (
+              <div className="card scan-progress-banner">
+                <div className="scan-progress-top">
+                  <div className="scan-progress-title">
+                    <span className="scan-radar-dot" aria-hidden="true" />
+                    <span>{headline}</span>
+                  </div>
+                  <span className="badge st-running">{scan.status === 'queued' ? 'Queued' : 'Running'}</span>
+                </div>
+                <p className="muted small" style={{ margin: 0 }}>{detail}</p>
+                <div className="scan-progress-bar-wrap">
+                  {percent != null && scan.status === 'running' ? (
+                    <div className="scan-progress-bar-fill" style={{ width: `${Math.max(0, Math.min(100, percent))}%` }} />
+                  ) : (
+                    <div className="scan-progress-bar-indeterminate" />
+                  )}
+                </div>
+                <ol className="scan-live-pipeline">
+                  {pipeline.map((step) => (
+                    <li key={step.id} className={`scan-live-step is-${step.state}`}>
+                      <span className="scan-live-tick" aria-hidden="true" />
+                      <span className="scan-live-label">{step.label}</span>
+                      <span className="scan-live-state">{step.state}</span>
+                    </li>
+                  ))}
+                </ol>
+                <div className="scan-live-log" role="log" aria-live="polite">
+                  <div className="scan-live-log-head">Engine log</div>
+                  {log.length ? log.slice().reverse().slice(0, 12).map((row, i) => (
+                    <div key={`${row.at || 't'}-${i}`} className="scan-live-log-row">
+                      <span className="scan-live-log-time">{row.at ? String(row.at).slice(11, 19) : '--:--:--'}</span>
+                      <span className="scan-live-log-msg">{row.message || row.engine || row.stage}</span>
+                    </div>
+                  )) : (
+                    <div className="scan-live-log-row">
+                      <span className="scan-live-log-time">--:--:--</span>
+                      <span className="scan-live-log-msg">Waiting for the first engine event</span>
+                    </div>
+                  )}
+                </div>
               </div>
-              <span className="badge st-running">Live Scanner Active</span>
-            </div>
-            <p className="muted small" style={{ margin: 0 }}>
-              {(() => {
-                if (scan.status === 'queued') return 'Queued. Waiting for a worker.';
-                if (scan.status === 'cancelled') return 'Cancelled.';
-                const stage = (scan.progress && scan.progress.stage) || scan.engine || '';
-                const labels = {
-                  initializing: 'Initializing',
-                  crawling: 'Crawling (Playwright)',
-                  'zap-spider': 'Running ZAP Spider',
-                  nuclei: 'Running Nuclei',
-                  'zap-ascan': 'Running ZAP Active Scan',
-                  processing: 'Processing findings',
-                  browser: 'Crawling (Playwright)',
-                };
-                const label = labels[stage] || (stage ? `Running ${stage}` : 'Initializing');
-                const pages = scan.progress && scan.progress.pages != null ? ` · pages ${scan.progress.pages}` : '';
-                return `${label}${pages}`;
-              })()}
-            </p>
-            <div className="scan-progress-bar-wrap">
-              <div className="scan-progress-bar-indeterminate" />
-            </div>
-          </div>
+            );
+          })()}
 
           <div className="stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
             {['Security Posture', 'Critical Severity', 'High Severity', 'Medium & Low', 'Endpoints Inspected'].map((label, idx) => (
@@ -481,12 +532,6 @@ export function WebsiteScanView({ websiteId, scanId }) {
                 <span className="muted small">{label}</span>
               </div>
             ))}
-          </div>
-
-          <div className="card" style={{ padding: '2rem 1.5rem', textAlign: 'center' }}>
-            <p className="muted" style={{ margin: 0 }}>
-              Security telemetry and vulnerability findings will populate here once inspection completes.
-            </p>
           </div>
         </div>
       ) : (
@@ -564,7 +609,14 @@ export function WebsiteScanView({ websiteId, scanId }) {
                         <td>{eng.name}</td>
                         <td className="small muted">{eng.version || '-'}</td>
                         <td><StatusBadge status={eng.status} /></td>
-                        <td className="num">{eng.findings == null ? '-' : eng.findings}</td>
+                        <td className="num">
+                          {eng.findings == null ? '-' : eng.findings}
+                          {eng.bySeverity && (eng.findings || 0) > 0 && (
+                            <div className="small muted">
+                              {`C ${eng.bySeverity.critical || 0} · H ${eng.bySeverity.high || 0} · M ${eng.bySeverity.medium || 0} · L ${eng.bySeverity.low || 0}`}
+                            </div>
+                          )}
+                        </td>
                         <td className="small muted">{eng.error || '-'}</td>
                       </tr>
                     ))}
@@ -575,8 +627,10 @@ export function WebsiteScanView({ websiteId, scanId }) {
           )}
           <div className="stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
             <StatCard
-              num={s.partial ? 'n/a' : (scan.postureScore != null ? `${scan.postureScore}/100` : 'N/A')}
-              label={s.partial ? 'Security posture (incomplete scan)' : `Security Posture (Grade ${s.grade || 'N/A'})`}
+              num={scan.postureScore != null ? `${scan.postureScore}/100` : 'N/A'}
+              label={s.partial
+                ? `Security posture (incomplete${s.grade ? `, grade ${s.grade}` : ''})`
+                : `Security Posture (Grade ${s.grade || 'N/A'})`}
             />
             <StatCard
               className="stat-critical"
@@ -597,6 +651,14 @@ export function WebsiteScanView({ websiteId, scanId }) {
               num={pad(endpoints.length || 1)}
               label="Endpoints Inspected"
             />
+            {zapAlertCount > 0 && (
+              <StatCard
+                num={pad(zapAlertCount)}
+                label={zapBySeverity
+                  ? `ZAP alerts (C ${zapBySeverity.critical || 0} · H ${zapBySeverity.high || 0} · M ${zapBySeverity.medium || 0} · L ${zapBySeverity.low || 0})`
+                  : 'ZAP active scan alerts'}
+              />
+            )}
           </div>
 
       {scan.aiAnalysis && (
@@ -607,7 +669,9 @@ export function WebsiteScanView({ websiteId, scanId }) {
 
       <div className="tab-nav" style={{ display: 'flex', gap: '0.5rem', borderBottom: '1px solid var(--color-border)', marginBottom: '1rem' }}>
         {[
-          ['findings', `Vulnerabilities (${allFindings.length})`],
+          ['findings', zapAlertCount > 0
+            ? `Vulnerabilities (${allFindings.length} unique · ${zapAlertCount} ZAP alerts)`
+            : `Vulnerabilities (${allFindings.length})`],
           ['headers', 'Security Headers & CORS'],
           ['cookies', `Cookies (${cookiesList.length})`],
           ['tls', 'TLS / SSL Configuration'],
@@ -650,22 +714,40 @@ export function WebsiteScanView({ websiteId, scanId }) {
                     key={level}
                     type="button"
                     className={`btn btn-sm ${sevFilter === level ? 'btn-primary' : 'btn-subtle'}`}
-                    onClick={() => setSevFilter(level)}
+                    onClick={() => { setSevFilter(level); setFindingPage(1); }}
                   >
                     {level.toUpperCase()}
                   </button>
                 ))}
+                {zapAlertCount > 0 && (
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${scannerFilter === 'zap' ? 'btn-primary' : 'btn-subtle'}`}
+                    onClick={() => { setScannerFilter(scannerFilter === 'zap' ? 'all' : 'zap'); setFindingPage(1); }}
+                  >
+                    ZAP only
+                  </button>
+                )}
               </div>
               <input
                 type="search"
                 placeholder="Search findings..."
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => { setSearchQuery(e.target.value); setFindingPage(1); }}
                 style={{ minWidth: '220px' }}
               />
             </div>
           </div>
 
+          {zapAlertCount > allFindings.length && (
+            <p className="small muted" style={{ margin: '0 0 12px' }}>
+              This saved scan stored {allFindings.length} unique issues. ZAP reported {zapAlertCount} alerts
+              {zapBySeverity
+                ? ` (critical ${zapBySeverity.critical || 0}, high ${zapBySeverity.high || 0}, medium ${zapBySeverity.medium || 0}, low ${zapBySeverity.low || 0})`
+                : ''}
+              . Re-run Deep to list every ZAP alert with its severity in this table.
+            </p>
+          )}
           {!filteredFindings.length ? (
             <div className="empty">No security findings match the selected filters.</div>
           ) : (
@@ -683,7 +765,7 @@ export function WebsiteScanView({ websiteId, scanId }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredFindings.map((f) => (
+                  {pagedFindings.map((f) => (
                     <React.Fragment key={f.id}>
                       <tr
                         className="clickable"
@@ -767,6 +849,36 @@ export function WebsiteScanView({ websiteId, scanId }) {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+          {filteredFindings.length > 0 && (
+            <div className="pager" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', padding: '12px 16px', borderTop: '1px solid var(--color-border)' }}>
+              <span className="small muted">
+                {((findingPageSafe - 1) * FINDINGS_PAGE_SIZE) + 1}
+                –
+                {Math.min(findingPageSafe * FINDINGS_PAGE_SIZE, filteredFindings.length)}
+                {' '}of {filteredFindings.length}
+                {' '}· page {findingPageSafe} of {findingPages}
+                {' '}({FINDINGS_PAGE_SIZE} per page)
+              </span>
+              <div className="row" style={{ gap: '8px' }}>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-subtle"
+                  disabled={findingPageSafe <= 1}
+                  onClick={() => setFindingPage((p) => Math.max(1, p - 1))}
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-subtle"
+                  disabled={findingPageSafe >= findingPages}
+                  onClick={() => setFindingPage((p) => Math.min(findingPages, p + 1))}
+                >
+                  Next
+                </button>
+              </div>
             </div>
           )}
         </section>
@@ -1059,7 +1171,7 @@ export function WebsiteScanView({ websiteId, scanId }) {
             <h2 className="m-0">Discovered pages ({crawlPages.length})</h2>
           </div>
           {!crawlPages.length ? (
-            <div className="empty">No crawl pages stored. Run Crawl site after the domain is verified.</div>
+            <div className="empty">No page URLs were stored for this scan. The endpoint count above comes from the engine summary, not this list.</div>
           ) : (
             <ul style={{ margin: 0, paddingLeft: '1.25rem', display: 'grid', gap: '0.35rem' }}>
               {crawlPages.map((page) => (
@@ -1070,6 +1182,28 @@ export function WebsiteScanView({ websiteId, scanId }) {
               ))}
             </ul>
           )}
+          {(() => {
+            const loadedScripts = (crawlEndpoints || []).filter((ep) => (
+              /javascript|ecmascript/i.test(ep.contentType || '') || /\.js(\?|$)/i.test(ep.url || '')
+            ));
+            const unique = [...new Map(loadedScripts.map((ep) => [ep.url, ep])).values()];
+            if (!unique.length) return null;
+            return (
+              <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--color-border)' }}>
+                <h3 className="m-0" style={{ fontSize: '14px', marginBottom: '8px' }}>Loaded scripts ({unique.length})</h3>
+                <p className="small muted" style={{ margin: '0 0 8px' }}>
+                  In-scope JavaScript URLs from the headless browser (not Chrome DevTools, not Cloudflare challenge scripts).
+                </p>
+                <ul style={{ margin: 0, paddingLeft: '1.25rem', display: 'grid', gap: '0.35rem' }}>
+                  {unique.slice(0, 80).map((ep) => (
+                    <li key={ep.url} className="small">
+                      <a href={ep.url} target="_blank" rel="noopener noreferrer">{ep.url}</a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })()}
         </section>
       )}
 

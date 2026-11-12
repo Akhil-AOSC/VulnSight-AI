@@ -5,21 +5,68 @@ const assert = require('node:assert/strict');
 const { mapZapAlert, runZapActiveScan } = require('../src/adapters/dast/zap-ascan');
 const { resetZapSession, flattenZapList, pickTreeUrl } = require('../src/adapters/dast/zap-client');
 
-test('mapZapAlert converts ZAP high alerts to high DAST findings with redacted evidence', () => {
+test('mapZapAlert promotes ZAP high SQL injection to critical and redacts evidence', () => {
   const finding = mapZapAlert({
     risk: 'High',
     alert: 'SQL Injection',
     description: 'The page is vulnerable',
     pluginId: '40018',
+    cweid: '89',
     url: 'https://example.com/search',
     param: 'q',
     evidence: 'Authorization: Bearer secret-token',
     solution: 'Use parameterised queries',
   });
-  assert.equal(finding.severity, 'high');
+  assert.equal(finding.severity, 'critical');
   assert.equal(finding.scanner.name, 'owasp-zap-ascan');
   assert.equal(finding.location.parameter, 'q');
   assert.match(finding.evidence, /\[redacted\]/);
+});
+
+test('mapZapAlert keeps distinct ZAP alerts of the same plugin', () => {
+  const a = mapZapAlert({
+    id: '11', risk: 'Medium', alert: 'Absence of Anti-CSRF Tokens', pluginId: '10202',
+    url: 'https://example.com/a', param: 'x', evidence: 'form-a',
+  });
+  const b = mapZapAlert({
+    id: '12', risk: 'Medium', alert: 'Absence of Anti-CSRF Tokens', pluginId: '10202',
+    url: 'https://example.com/a', param: 'x', evidence: 'form-b',
+  });
+  assert.notEqual(a.id, b.id);
+});
+
+test('mapZapAlert promotes CSRF, IDOR and SSRF into high or critical', () => {
+  const csrf = mapZapAlert({
+    risk: 'Medium', alert: 'Absence of Anti-CSRF Tokens', pluginId: '10202', cweid: '352',
+    url: 'https://example.com/form',
+  });
+  const idor = mapZapAlert({
+    risk: 'High', alert: 'Insecure Direct Object References', pluginId: '40003', cweid: '639',
+    url: 'https://example.com/orders/1',
+  });
+  const ssrf = mapZapAlert({
+    risk: 'High', alert: 'Server Side Request Forgery', pluginId: '40046', cweid: '918',
+    url: 'https://example.com/fetch', param: 'url',
+  });
+  assert.equal(csrf.severity, 'high');
+  assert.equal(idor.severity, 'critical');
+  assert.equal(ssrf.severity, 'critical');
+});
+
+test('mapZapAlert drops User Agent Fuzzer and Modern Web Application noise', () => {
+  assert.equal(mapZapAlert({ risk: 'Low', alert: 'User Agent Fuzzer', pluginId: '10104', url: 'https://example.com' }), null);
+  assert.equal(mapZapAlert({ risk: 'Low', alert: 'Modern Web Application', pluginId: '10109', url: 'https://example.com' }), null);
+});
+
+test('mapZapAlert keeps ZAP high XSS as high', () => {
+  const finding = mapZapAlert({
+    risk: 'High',
+    alert: 'Cross Site Scripting (Reflected)',
+    cweid: '79',
+    pluginId: '40012',
+    url: 'https://example.com/q',
+  });
+  assert.equal(finding.severity, 'high');
 });
 
 function mockZapFetch(calls, extra = {}) {
@@ -68,6 +115,8 @@ test('runZapActiveScan uses header API key, newSession, contextId and timeouts',
     assert.ok(calls.some((c) => c.url.includes('newSession')));
     assert.ok(calls.some((c) => c.url.includes('newContext')));
     assert.ok(calls.some((c) => c.url.includes('contextId=9')));
+    assert.ok(calls.some((c) => c.url.includes('ascan/action/enableAllScanners')));
+    assert.ok(calls.some((c) => c.url.includes('ascan/action/enableScanners') && c.url.includes('40046')));
     assert.ok(calls.every((c) => c.signal));
   } finally {
     global.fetch = orig;

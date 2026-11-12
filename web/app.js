@@ -24066,7 +24066,12 @@ var require_scan_story = __commonJS({
       findings = 0
     } = {}) {
       const stages = (engines || []).map(explainEngine);
-      const unfinished = stages.filter((s) => ["error", "blocked", "skipped", "partial"].includes(s.status));
+      const unfinished = stages.filter((s) => {
+        if (!["error", "blocked", "skipped", "partial"].includes(s.status)) return false;
+        if (s.status === "skipped" && /Public Website Assessment does not execute/i.test(s.detail || "")) return false;
+        if (profile === "public" && s.name === "vulnsight-passive" && s.status === "blocked") return false;
+        return true;
+      });
       if (!partial) {
         return {
           headline: "Inspection finished",
@@ -24088,7 +24093,50 @@ var require_scan_story = __commonJS({
         stages
       };
     }
-    module.exports = { ENGINES, explainEngine, buildScanStory: buildScanStory2 };
+    function livePipeline(profile) {
+      const key = String(profile || "passive");
+      const needs = {
+        publicDiscovery: key === "public" || key === "public_assessment",
+        browser: ["public", "public_assessment", "discovery", "standard", "deep", "ascan", "exploit", "crawl_js"].includes(key),
+        crawl: ["discovery", "standard", "deep", "ascan", "exploit", "crawl", "crawl_js"].includes(key),
+        nuclei: ["standard", "deep", "ascan", "exploit"].includes(key),
+        ascan: ["deep", "ascan", "exploit"].includes(key)
+      };
+      const steps = [
+        { id: "queued", stage: "queued", engine: "worker", label: "Inspection worker" },
+        { id: "passive", stage: "passive", engine: "vulnsight-passive", label: "Passive recon" }
+      ];
+      if (needs.browser || needs.publicDiscovery) {
+        steps.push({ id: "browser", stage: "crawling", engine: "vulnsight-browser", label: "Browser crawl" });
+      }
+      if (needs.crawl) {
+        steps.push({ id: "spider", stage: "zap-spider", engine: "owasp-zap-spider", label: "ZAP spider" });
+      }
+      if (needs.nuclei) {
+        steps.push({ id: "nuclei", stage: "nuclei", engine: "nuclei", label: "Nuclei templates" });
+      }
+      if (needs.crawl) {
+        steps.push({ id: "checks", stage: "checks", engine: "vulnsight-checks", label: "Exposure checks" });
+      }
+      if (needs.ascan) {
+        steps.push({ id: "ascan", stage: "zap-ascan", engine: "owasp-zap-ascan", label: "ZAP active scan" });
+      }
+      return steps;
+    }
+    function livePipelineState2(profile, { status, progress } = {}) {
+      const steps = livePipeline(profile);
+      const STAGE_ALIAS = { ascan: "zap-ascan", initializing: "passive", spider: "zap-spider", browser: "crawling" };
+      const rawStage = progress && progress.stage || (status === "queued" ? "queued" : "passive");
+      const stage = STAGE_ALIAS[rawStage] || rawStage;
+      const engine = progress && progress.engine || "";
+      let idx = steps.findIndex((s) => s.stage === stage || s.engine === engine);
+      if (idx < 0) idx = status === "queued" ? 0 : 1;
+      return steps.map((s, i) => ({
+        ...s,
+        state: i < idx ? "done" : i === idx ? "current" : "waiting"
+      }));
+    }
+    module.exports = { ENGINES, explainEngine, buildScanStory: buildScanStory2, livePipeline, livePipelineState: livePipelineState2 };
   }
 });
 
@@ -28775,6 +28823,12 @@ function WebsitesView({ onSelectScan }) {
     allowedProfiles: ["discovery", "standard"],
     allowActiveTesting: false
   });
+  const [deepOpts, setDeepOpts] = (0, import_react12.useState)({
+    sessionCookie: "",
+    sessionHeader: "",
+    seedUrls: "",
+    originUrl: ""
+  });
   const canWrite = hasPermission(session.me, session.orgId, "repos:write");
   const canScan = hasPermission(session.me, session.orgId, "scans:run");
   const canAuthorize = hasPermission(session.me, session.orgId, "org:settings");
@@ -28845,7 +28899,14 @@ function WebsitesView({ onSelectScan }) {
     }
     try {
       setScanningSiteId(site.id);
-      const scan = await api.post(api.org(`/websites/${site.id}/scans`), { profile });
+      const body = { profile };
+      if (profile === "deep") {
+        if (deepOpts.sessionCookie.trim()) body.sessionCookie = deepOpts.sessionCookie.trim();
+        if (deepOpts.sessionHeader.trim()) body.sessionHeader = deepOpts.sessionHeader.trim();
+        if (deepOpts.seedUrls.trim()) body.seedUrls = deepOpts.seedUrls;
+        if (deepOpts.originUrl.trim()) body.originUrl = deepOpts.originUrl.trim();
+      }
+      const scan = await api.post(api.org(`/websites/${site.id}/scans`), body);
       toast(`${profile} scan queued`);
       await loadWebsites();
       if (onSelectScan) {
@@ -29068,6 +29129,65 @@ function WebsitesView({ onSelectScan }) {
           )
         ] })
       ] }) }),
+      scanProfile === "deep" && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "deep-scan-opts", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("p", { className: "small muted", style: { margin: "0 0 12px" }, children: "Authorized Deep only. Session values are sent with crawls and ZAP, never written to CSV or the scan JSON. Origin must be this host or a subdomain. A different Azure/Lambda host is its own website." }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "deep-scan-grid", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("label", { className: "small muted", htmlFor: "deep-cookie", children: [
+            "Session cookie",
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+              "input",
+              {
+                id: "deep-cookie",
+                type: "password",
+                autoComplete: "off",
+                value: deepOpts.sessionCookie,
+                onChange: (e) => setDeepOpts({ ...deepOpts, sessionCookie: e.target.value }),
+                placeholder: "name=value"
+              }
+            )
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("label", { className: "small muted", htmlFor: "deep-header", children: [
+            "Session header",
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+              "input",
+              {
+                id: "deep-header",
+                type: "password",
+                autoComplete: "off",
+                value: deepOpts.sessionHeader,
+                onChange: (e) => setDeepOpts({ ...deepOpts, sessionHeader: e.target.value }),
+                placeholder: "Authorization: Bearer \u2026"
+              }
+            )
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("label", { className: "small muted", htmlFor: "deep-origin", children: [
+            "Origin URL",
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+              "input",
+              {
+                id: "deep-origin",
+                type: "url",
+                value: deepOpts.originUrl,
+                onChange: (e) => setDeepOpts({ ...deepOpts, originUrl: e.target.value }),
+                placeholder: "https://origin.example.com"
+              }
+            )
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("label", { className: "small muted", htmlFor: "deep-seeds", style: { gridColumn: "1 / -1" }, children: [
+            "API seed URLs",
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+              "textarea",
+              {
+                id: "deep-seeds",
+                rows: 3,
+                value: deepOpts.seedUrls,
+                onChange: (e) => setDeepOpts({ ...deepOpts, seedUrls: e.target.value }),
+                placeholder: "https://example.com/api/users\nhttps://example.com/openapi.json"
+              }
+            )
+          ] })
+        ] })
+      ] }),
       loading && !websites.length ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { padding: "1rem 0" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ScanSkeletonLoader, { cards: 4, hasTabs: false, rows: 4 }) }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
         DataTable,
         {
@@ -29456,11 +29576,29 @@ function WebsiteScanView({ websiteId, scanId }) {
   const [activeTab, setActiveTab] = (0, import_react13.useState)("findings");
   const [tabLoading, setTabLoading] = (0, import_react13.useState)(false);
   const [sevFilter, setSevFilter] = (0, import_react13.useState)("all");
+  const [scannerFilter, setScannerFilter] = (0, import_react13.useState)("all");
   const [searchQuery, setSearchQuery] = (0, import_react13.useState)("");
+  const [findingPage, setFindingPage] = (0, import_react13.useState)(1);
+  const FINDINGS_PAGE_SIZE = 30;
   const [expandedFinding, setExpandedFinding] = (0, import_react13.useState)(null);
   const [crawlPages, setCrawlPages] = (0, import_react13.useState)([]);
   const [crawlEndpoints, setCrawlEndpoints] = (0, import_react13.useState)([]);
   const [crawlForms, setCrawlForms] = (0, import_react13.useState)([]);
+  async function loadCrawlInventory(wid, sid, scanData) {
+    const [pages, endpointsList, formsList] = await Promise.all([
+      api.get(api.org(`/websites/${wid}/scans/${sid}/pages`)).catch(() => []),
+      api.get(api.org(`/websites/${wid}/scans/${sid}/endpoints`)).catch(() => []),
+      api.get(api.org(`/websites/${wid}/scans/${sid}/forms`)).catch(() => [])
+    ]);
+    let nextPages = pages || [];
+    if (!nextPages.length) {
+      const urls = scanData && scanData.passiveResults && scanData.passiveResults.crawledUrls || [];
+      nextPages = urls.filter(Boolean).map((url) => ({ url, urlHash: url, depth: 0, statusCode: 0, title: "" }));
+    }
+    setCrawlPages(nextPages);
+    setCrawlEndpoints(endpointsList || []);
+    setCrawlForms(formsList || []);
+  }
   const [explanations, setExplanations] = (0, import_react13.useState)({});
   const [explainingId, setExplainingId] = (0, import_react13.useState)(null);
   function handleTabChange(nextKey) {
@@ -29481,15 +29619,8 @@ function WebsiteScanView({ websiteId, scanId }) {
         ]);
         setSite(siteData);
         setScan(scanData);
-        if (scanData && scanData.status === "completed") {
-          const [pages, endpointsList, formsList] = await Promise.all([
-            api.get(api.org(`/websites/${websiteId}/scans/${scanId}/pages`)).catch(() => []),
-            api.get(api.org(`/websites/${websiteId}/scans/${scanId}/endpoints`)).catch(() => []),
-            api.get(api.org(`/websites/${websiteId}/scans/${scanId}/forms`)).catch(() => [])
-          ]);
-          setCrawlPages(pages || []);
-          setCrawlEndpoints(endpointsList || []);
-          setCrawlForms(formsList || []);
+        if (scanData && !["queued", "running", "paused"].includes(scanData.status)) {
+          await loadCrawlInventory(websiteId, scanId, scanData);
         }
       } catch (err) {
         toast(err.message || "Failed to load website scan details", "error");
@@ -29506,13 +29637,14 @@ function WebsiteScanView({ websiteId, scanId }) {
         const scanData = await api.get(api.org(`/websites/${websiteId}/scans/${scanId}`));
         if (scanData) {
           setScan(scanData);
-          if (scanData.status !== "queued" && scanData.status !== "running") {
+          if (!["queued", "running", "paused"].includes(scanData.status)) {
+            await loadCrawlInventory(websiteId, scanId, scanData);
             toast("Website security scan complete");
           }
         }
       } catch {
       }
-    }, 2500);
+    }, 1500);
     return () => clearInterval(timer);
   }, [scan, websiteId, scanId]);
   async function handleExplain(finding, event) {
@@ -29562,6 +29694,9 @@ function WebsiteScanView({ websiteId, scanId }) {
   const s = scan.summary || {};
   const passive = scan.passiveResults || {};
   const allFindings = passive.findings || [];
+  const zapEngine = (s.engines || []).find((eng) => eng && eng.name === "owasp-zap-ascan") || null;
+  const zapAlertCount = zapEngine && zapEngine.findings != null ? Number(zapEngine.findings) : 0;
+  const zapBySeverity = zapEngine && zapEngine.bySeverity ? zapEngine.bySeverity : null;
   const tech = passive.technologies || [];
   const tls = passive.tls;
   const edge = passive.edgeIntel || null;
@@ -29574,6 +29709,7 @@ function WebsiteScanView({ websiteId, scanId }) {
   const exposedFiles = passive.exposedFiles || [];
   const filteredFindings = allFindings.filter((f) => {
     if (sevFilter !== "all" && f.severity !== sevFilter) return false;
+    if (scannerFilter === "zap" && !(f.scanner && f.scanner.name === "owasp-zap-ascan") && !(f.confirmedBy || []).includes("owasp-zap-ascan")) return false;
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       const matchTitle = f.title && f.title.toLowerCase().includes(q);
@@ -29583,6 +29719,12 @@ function WebsiteScanView({ websiteId, scanId }) {
     }
     return true;
   });
+  const findingPages = Math.max(1, Math.ceil(filteredFindings.length / FINDINGS_PAGE_SIZE));
+  const findingPageSafe = Math.min(findingPage, findingPages);
+  const pagedFindings = filteredFindings.slice(
+    (findingPageSafe - 1) * FINDINGS_PAGE_SIZE,
+    findingPageSafe * FINDINGS_PAGE_SIZE
+  );
   return /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "view", children: [
     /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "row", style: { justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }, children: [
       /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { children: [
@@ -29666,38 +29808,51 @@ function WebsiteScanView({ websiteId, scanId }) {
       ] })
     ] }),
     scan.status === "queued" || scan.status === "running" ? /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "fade-in", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "card scan-progress-banner", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "scan-progress-top", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "scan-progress-title", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "scan-radar-dot", "aria-hidden": "true" }),
-            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { children: scan.status === "queued" ? "Website scan queued \xB7 Preparing inspection worker" : "Website security scan in progress" })
+      (() => {
+        const progress = scan.progress || {};
+        const pipeline = (0, import_scan_story.livePipelineState)(scan.profile, { status: scan.status, progress });
+        const log = Array.isArray(progress.log) ? progress.log : [];
+        const percent = progress.percent != null ? Number(progress.percent) : null;
+        const ahead = scan.queue && scan.queue.jobsAhead != null ? scan.queue.jobsAhead : 0;
+        const current = pipeline.find((s2) => s2.state === "current");
+        const headline = scan.status === "queued" ? ahead > 0 ? `Queued behind ${ahead} other website job${ahead === 1 ? "" : "s"}` : "Queued for the inspection worker" : current ? current.label : "Inspection running";
+        const blocking = scan.queue && scan.queue.blocking;
+        const detail = scan.status === "queued" ? blocking ? `Waiting on ${blocking.hostname} (${blocking.profile}${blocking.engine ? ` \xB7 ${blocking.engine}` : ""})` : "One worker runs one website scan at a time. A long ZAP active scan holds the next job until it finishes." : [
+          progress.engine || scan.engine,
+          progress.pages != null ? `${progress.pages} pages` : null,
+          percent != null ? `${percent}% of ZAP ascan` : null
+        ].filter(Boolean).join(" \xB7 ");
+        return /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "card scan-progress-banner", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "scan-progress-top", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "scan-progress-title", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "scan-radar-dot", "aria-hidden": "true" }),
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { children: headline })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "badge st-running", children: scan.status === "queued" ? "Queued" : "Running" })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "badge st-running", children: "Live Scanner Active" })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { className: "muted small", style: { margin: 0 }, children: (() => {
-          if (scan.status === "queued") return "Queued. Waiting for a worker.";
-          if (scan.status === "cancelled") return "Cancelled.";
-          const stage = scan.progress && scan.progress.stage || scan.engine || "";
-          const labels = {
-            initializing: "Initializing",
-            crawling: "Crawling (Playwright)",
-            "zap-spider": "Running ZAP Spider",
-            nuclei: "Running Nuclei",
-            "zap-ascan": "Running ZAP Active Scan",
-            processing: "Processing findings",
-            browser: "Crawling (Playwright)"
-          };
-          const label = labels[stage] || (stage ? `Running ${stage}` : "Initializing");
-          const pages = scan.progress && scan.progress.pages != null ? ` \xB7 pages ${scan.progress.pages}` : "";
-          return `${label}${pages}`;
-        })() }),
-        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "scan-progress-bar-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "scan-progress-bar-indeterminate" }) })
-      ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { className: "muted small", style: { margin: 0 }, children: detail }),
+          /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "scan-progress-bar-wrap", children: percent != null && scan.status === "running" ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "scan-progress-bar-fill", style: { width: `${Math.max(0, Math.min(100, percent))}%` } }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "scan-progress-bar-indeterminate" }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("ol", { className: "scan-live-pipeline", children: pipeline.map((step) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("li", { className: `scan-live-step is-${step.state}`, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "scan-live-tick", "aria-hidden": "true" }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "scan-live-label", children: step.label }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "scan-live-state", children: step.state })
+          ] }, step.id)) }),
+          /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "scan-live-log", role: "log", "aria-live": "polite", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "scan-live-log-head", children: "Engine log" }),
+            log.length ? log.slice().reverse().slice(0, 12).map((row, i) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "scan-live-log-row", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "scan-live-log-time", children: row.at ? String(row.at).slice(11, 19) : "--:--:--" }),
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "scan-live-log-msg", children: row.message || row.engine || row.stage })
+            ] }, `${row.at || "t"}-${i}`)) : /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "scan-live-log-row", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "scan-live-log-time", children: "--:--:--" }),
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "scan-live-log-msg", children: "Waiting for the first engine event" })
+            ] })
+          ] })
+        ] });
+      })(),
       /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "stats", style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }, children: ["Security Posture", "Critical Severity", "High Severity", "Medium & Low", "Endpoints Inspected"].map((label, idx) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "card skeleton-stat-card", children: [
         /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(Skeleton, { width: "48px", height: "2rem", style: { marginBottom: "0.4rem" }, radius: "4px" }),
         /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "muted small", children: label })
-      ] }, idx)) }),
-      /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "card", style: { padding: "2rem 1.5rem", textAlign: "center" }, children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { className: "muted", style: { margin: 0 }, children: "Security telemetry and vulnerability findings will populate here once inspection completes." }) })
+      ] }, idx)) })
     ] }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)(import_jsx_runtime13.Fragment, { children: [
       scan.status === "failed" && scan.error && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "card", style: { marginBottom: "1rem", padding: "12px 16px", borderColor: "var(--color-danger, #b42318)" }, children: [
         /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("strong", { children: "Scan failed" }),
@@ -29750,7 +29905,10 @@ function WebsiteScanView({ websiteId, scanId }) {
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: eng.name }),
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { className: "small muted", children: eng.version || "-" }),
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(StatusBadge, { status: eng.status }) }),
-            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { className: "num", children: eng.findings == null ? "-" : eng.findings }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("td", { className: "num", children: [
+              eng.findings == null ? "-" : eng.findings,
+              eng.bySeverity && (eng.findings || 0) > 0 && /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "small muted", children: `C ${eng.bySeverity.critical || 0} \xB7 H ${eng.bySeverity.high || 0} \xB7 M ${eng.bySeverity.medium || 0} \xB7 L ${eng.bySeverity.low || 0}` })
+            ] }),
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { className: "small muted", children: eng.error || "-" })
           ] }, `${eng.name}-${eng.version || "na"}`)) })
         ] }) })
@@ -29759,8 +29917,8 @@ function WebsiteScanView({ websiteId, scanId }) {
         /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
           StatCard,
           {
-            num: s.partial ? "n/a" : scan.postureScore != null ? `${scan.postureScore}/100` : "N/A",
-            label: s.partial ? "Security posture (incomplete scan)" : `Security Posture (Grade ${s.grade || "N/A"})`
+            num: scan.postureScore != null ? `${scan.postureScore}/100` : "N/A",
+            label: s.partial ? `Security posture (incomplete${s.grade ? `, grade ${s.grade}` : ""})` : `Security Posture (Grade ${s.grade || "N/A"})`
           }
         ),
         /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
@@ -29793,11 +29951,18 @@ function WebsiteScanView({ websiteId, scanId }) {
             num: pad(endpoints.length || 1),
             label: "Endpoints Inspected"
           }
+        ),
+        zapAlertCount > 0 && /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
+          StatCard,
+          {
+            num: pad(zapAlertCount),
+            label: zapBySeverity ? `ZAP alerts (C ${zapBySeverity.critical || 0} \xB7 H ${zapBySeverity.high || 0} \xB7 M ${zapBySeverity.medium || 0} \xB7 L ${zapBySeverity.low || 0})` : "ZAP active scan alerts"
+          }
         )
       ] }),
       scan.aiAnalysis && /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { style: { marginBottom: "1.5rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(AiBriefingCard, { ai: scan.aiAnalysis }) }),
       /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "tab-nav", style: { display: "flex", gap: "0.5rem", borderBottom: "1px solid var(--color-border)", marginBottom: "1rem" }, children: [
-        ["findings", `Vulnerabilities (${allFindings.length})`],
+        ["findings", zapAlertCount > 0 ? `Vulnerabilities (${allFindings.length} unique \xB7 ${zapAlertCount} ZAP alerts)` : `Vulnerabilities (${allFindings.length})`],
         ["headers", "Security Headers & CORS"],
         ["cookies", `Cookies (${cookiesList.length})`],
         ["tls", "TLS / SSL Configuration"],
@@ -29833,11 +29998,26 @@ function WebsiteScanView({ websiteId, scanId }) {
                 {
                   type: "button",
                   className: `btn btn-sm ${sevFilter === level ? "btn-primary" : "btn-subtle"}`,
-                  onClick: () => setSevFilter(level),
+                  onClick: () => {
+                    setSevFilter(level);
+                    setFindingPage(1);
+                  },
                   children: level.toUpperCase()
                 },
                 level
-              ))
+              )),
+              zapAlertCount > 0 && /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
+                "button",
+                {
+                  type: "button",
+                  className: `btn btn-sm ${scannerFilter === "zap" ? "btn-primary" : "btn-subtle"}`,
+                  onClick: () => {
+                    setScannerFilter(scannerFilter === "zap" ? "all" : "zap");
+                    setFindingPage(1);
+                  },
+                  children: "ZAP only"
+                }
+              )
             ] }),
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
               "input",
@@ -29845,11 +30025,23 @@ function WebsiteScanView({ websiteId, scanId }) {
                 type: "search",
                 placeholder: "Search findings...",
                 value: searchQuery,
-                onChange: (e) => setSearchQuery(e.target.value),
+                onChange: (e) => {
+                  setSearchQuery(e.target.value);
+                  setFindingPage(1);
+                },
                 style: { minWidth: "220px" }
               }
             )
           ] }) }),
+          zapAlertCount > allFindings.length && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("p", { className: "small muted", style: { margin: "0 0 12px" }, children: [
+            "This saved scan stored ",
+            allFindings.length,
+            " unique issues. ZAP reported ",
+            zapAlertCount,
+            " alerts",
+            zapBySeverity ? ` (critical ${zapBySeverity.critical || 0}, high ${zapBySeverity.high || 0}, medium ${zapBySeverity.medium || 0}, low ${zapBySeverity.low || 0})` : "",
+            ". Re-run Deep to list every ZAP alert with its severity in this table."
+          ] }),
           !filteredFindings.length ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "empty", children: "No security findings match the selected filters." }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("table", { children: [
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("thead", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("tr", { children: [
               /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", style: { width: "100px" }, children: "Severity" }),
@@ -29860,7 +30052,7 @@ function WebsiteScanView({ websiteId, scanId }) {
               /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", style: { width: "80px" }, children: "Details" }),
               /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", style: { width: "120px" }, children: "Description" })
             ] }) }),
-            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("tbody", { children: filteredFindings.map((f) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)(import_react13.default.Fragment, { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("tbody", { children: pagedFindings.map((f) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)(import_react13.default.Fragment, { children: [
               /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)(
                 "tr",
                 {
@@ -29915,7 +30107,48 @@ function WebsiteScanView({ websiteId, scanId }) {
                 ] })
               ] }) }) })
             ] }, f.id)) })
-          ] }) })
+          ] }) }),
+          filteredFindings.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "pager", style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", padding: "12px 16px", borderTop: "1px solid var(--color-border)" }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: "small muted", children: [
+              (findingPageSafe - 1) * FINDINGS_PAGE_SIZE + 1,
+              "\u2013",
+              Math.min(findingPageSafe * FINDINGS_PAGE_SIZE, filteredFindings.length),
+              " ",
+              "of ",
+              filteredFindings.length,
+              " ",
+              "\xB7 page ",
+              findingPageSafe,
+              " of ",
+              findingPages,
+              " ",
+              "(",
+              FINDINGS_PAGE_SIZE,
+              " per page)"
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "row", style: { gap: "8px" }, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-sm btn-subtle",
+                  disabled: findingPageSafe <= 1,
+                  onClick: () => setFindingPage((p) => Math.max(1, p - 1)),
+                  children: "Previous"
+                }
+              ),
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-sm btn-subtle",
+                  disabled: findingPageSafe >= findingPages,
+                  onClick: () => setFindingPage((p) => Math.min(findingPages, p + 1)),
+                  children: "Next"
+                }
+              )
+            ] })
+          ] })
         ] }),
         activeTab === "headers" && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { style: { display: "grid", gap: "1.5rem" }, children: [
           /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("section", { className: "card", children: [
@@ -30079,7 +30312,7 @@ function WebsiteScanView({ websiteId, scanId }) {
             crawlPages.length,
             ")"
           ] }) }),
-          !crawlPages.length ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "empty", children: "No crawl pages stored. Run Crawl site after the domain is verified." }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("ul", { style: { margin: 0, paddingLeft: "1.25rem", display: "grid", gap: "0.35rem" }, children: crawlPages.map((page) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("li", { className: "small", children: [
+          !crawlPages.length ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "empty", children: "No page URLs were stored for this scan. The endpoint count above comes from the engine summary, not this list." }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("ul", { style: { margin: 0, paddingLeft: "1.25rem", display: "grid", gap: "0.35rem" }, children: crawlPages.map((page) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("li", { className: "small", children: [
             "depth ",
             page.depth,
             " \xB7 ",
@@ -30089,7 +30322,21 @@ function WebsiteScanView({ websiteId, scanId }) {
             " \xB7",
             " ",
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("a", { href: page.url, target: "_blank", rel: "noopener noreferrer", children: page.url })
-          ] }, page.urlHash || page.url)) })
+          ] }, page.urlHash || page.url)) }),
+          (() => {
+            const loadedScripts = (crawlEndpoints || []).filter((ep) => /javascript|ecmascript/i.test(ep.contentType || "") || /\.js(\?|$)/i.test(ep.url || ""));
+            const unique = [...new Map(loadedScripts.map((ep) => [ep.url, ep])).values()];
+            if (!unique.length) return null;
+            return /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { style: { marginTop: "16px", paddingTop: "16px", borderTop: "1px solid var(--color-border)" }, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("h3", { className: "m-0", style: { fontSize: "14px", marginBottom: "8px" }, children: [
+                "Loaded scripts (",
+                unique.length,
+                ")"
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { className: "small muted", style: { margin: "0 0 8px" }, children: "In-scope JavaScript URLs from the headless browser (not Chrome DevTools, not Cloudflare challenge scripts)." }),
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("ul", { style: { margin: 0, paddingLeft: "1.25rem", display: "grid", gap: "0.35rem" }, children: unique.slice(0, 80).map((ep) => /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("li", { className: "small", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("a", { href: ep.url, target: "_blank", rel: "noopener noreferrer", children: ep.url }) }, ep.url)) })
+            ] });
+          })()
         ] }),
         activeTab === "technologies" && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("section", { className: "card", children: [
           /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("h2", { className: "m-0", children: [

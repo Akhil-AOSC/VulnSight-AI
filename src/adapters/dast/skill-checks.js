@@ -241,6 +241,7 @@ async function checkVerboseErrors(originUrl, { lookup = guardedLookup, timeoutMs
 
 const SECRET_PARAM = /^(pass(word|wd)?|pwd|secret|token|access_?token|auth(_?token)?|api_?key|apikey|session(_?id)?|sid|jwt|bearer|credit_?card|card_?number|cvv|ssn)$/i;
 const PASSWORD_FIELD = /pass(word|wd)?$|^pwd$/i;
+const SSRF_PARAM = /^(url|uri|webhook|proxy|dest|destination|callback|fetch|target)$/i;
 
 function reviewInventory(inventory) {
   const findings = [];
@@ -267,12 +268,62 @@ function reviewInventory(inventory) {
       }));
     }
   }
+  const seenSsrf = new Set();
+  for (const raw of urls) {
+    let u;
+    try { u = new URL(raw); } catch { continue; }
+    for (const name of u.searchParams.keys()) {
+      if (!SSRF_PARAM.test(name)) continue;
+      const key = `${u.pathname}|${name.toLowerCase()}`;
+      if (seenSsrf.has(key)) continue;
+      seenSsrf.add(key);
+      findings.push(finding({
+        severity: 'high', ruleId: 'possible-ssrf-surface', cwe: 'CWE-918', owasp: 'OWASP-A10:2025',
+        url: `${u.origin}${u.pathname}`, parameter: name,
+        title: `URL-fetch parameter (${name}) — SSRF surface`,
+        description: `The crawl saw ${u.pathname} with a "${name}" query parameter that often feeds a server-side HTTP client. This is an SSRF review surface, not a confirmed open fetch.`,
+        advice: 'Allow only a fixed scheme and host list for server-side fetches; do not take a destination URL from the request.',
+        evidence: `${u.pathname}?${name}=[redacted]`,
+      }));
+    }
+  }
+  const seenIdor = new Set();
+  for (const raw of urls) {
+    let u;
+    try { u = new URL(raw); } catch { continue; }
+    if (!/\/(?:users?|accounts?|profiles?|orders?|invoices?|documents?|files?|records?)\/\d+(?:\/|$)/i.test(u.pathname)) continue;
+    const key = u.pathname.replace(/\/\d+(?=\/|$)/g, '/{id}');
+    if (seenIdor.has(key)) continue;
+    seenIdor.add(key);
+    findings.push(finding({
+      severity: 'high', ruleId: 'possible-idor-surface', cwe: 'CWE-639', owasp: 'OWASP-A01:2025',
+      url: `${u.origin}${u.pathname}`,
+      title: 'Object identifier in URL (IDOR surface)',
+      description: `${u.pathname} includes a numeric object id. This is an access-control review surface (CWE-639), not a confirmed IDOR. Authorization is not tested by swapping ids.`,
+      advice: 'Authorize every object fetch server-side by the caller, not by the id in the URL alone.',
+      evidence: u.pathname,
+    }));
+  }
   for (const form of (inventory && inventory.forms) || []) {
     const fields = form.fieldNames || [];
     const pw = fields.filter((f) => PASSWORD_FIELD.test(f));
-    if (!pw.length) continue;
     let action;
     try { action = new URL(form.action); } catch { continue; }
+    const method = String(form.method || 'GET').toUpperCase();
+    if (/^(POST|PUT|PATCH|DELETE)$/.test(method)) {
+      const hasCsrf = fields.some((f) => /csrf|xsrf|authenticity_token|__requestverificationtoken|_csrf/i.test(f));
+      if (!hasCsrf) {
+        findings.push(finding({
+          severity: 'high', ruleId: 'form-missing-csrf', cwe: 'CWE-352', owasp: 'OWASP-A01:2025',
+          url: action.href,
+          title: 'State-changing form has no CSRF token field',
+          description: `A ${method} form at ${action.pathname || action.href} has no csrf/xsrf/_token field in the crawled HTML. That is a CSRF control gap, not a confirmed exploit.`,
+          advice: 'Add a per-session CSRF token (header or hidden field) and reject state-changing requests that omit it.',
+          evidence: `<form method="${method}" action="${action.href}"> fields: ${fields.join(', ') || '(none)'}`,
+        }));
+      }
+    }
+    if (!pw.length) continue;
     if (action.protocol === 'http:') {
       findings.push(finding({
         severity: 'high', ruleId: 'password-form-over-http', cwe: 'CWE-319', owasp: 'OWASP-A04:2025',
@@ -283,7 +334,7 @@ function reviewInventory(inventory) {
         evidence: `<form method="${form.method}" action="${action.href}"> fields: ${fields.join(', ')}`,
       }));
     }
-    if (String(form.method || 'GET').toUpperCase() === 'GET') {
+    if (method === 'GET') {
       findings.push(finding({
         severity: 'medium', ruleId: 'password-form-get', cwe: 'CWE-598', owasp: 'OWASP-A04:2025',
         url: action.href,

@@ -25,6 +25,18 @@ test('mapNucleiResult maps severity, CWE, CVE and redacts evidence', () => {
   assert.ok(!finding.evidence.includes('supersecretvalue'));
 });
 
+test('mapNucleiResult promotes high SQL injection templates to critical', () => {
+  const finding = mapNucleiResult({
+    'template-id': 'sqli-error',
+    info: {
+      name: 'Error-based SQL Injection',
+      severity: 'high',
+      classification: { 'cwe-id': ['CWE-89'] },
+    },
+  });
+  assert.equal(finding.severity, 'critical');
+});
+
 test('nuclei argv includes rate-limit, dos etags and no-interactsh', () => {
   const args = nucleiArgs({ listFile: '/tmp/urls.txt', proxy: 'http://127.0.0.1:9', mode: 'safe', maxRps: 2 });
   assert.ok(args.includes('-rate-limit'));

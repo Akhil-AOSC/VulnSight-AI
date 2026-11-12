@@ -110,11 +110,17 @@ test('checkVerboseErrors reports a leaking 404 page and stays quiet on a WAF cha
 
 test('reviewInventory flags secrets in URLs and unsafe password forms, with values redacted', () => {
   const findings = reviewInventory({
-    pages: [{ url: 'https://shop.example/reset?token=abc123SECRET&lang=en' }],
+    pages: [
+      { url: 'https://shop.example/reset?token=abc123SECRET&lang=en' },
+      { url: 'https://shop.example/orders/42' },
+      { url: 'https://shop.example/fetch?url=https://internal' },
+    ],
     endpoints: [{ url: 'https://shop.example/api/items?api_key=K-999' }, { url: 'https://shop.example/search?q=shoes' }],
     forms: [
       { action: 'http://shop.example/login', method: 'GET', fieldNames: ['email', 'password'] },
       { action: 'https://shop.example/search', method: 'GET', fieldNames: ['q'] },
+      { action: 'https://shop.example/profile', method: 'POST', fieldNames: ['email', 'name'] },
+      { action: 'https://shop.example/safe', method: 'POST', fieldNames: ['email', '_csrf'] },
     ],
   });
   const params = findings.filter((f) => f.scanner.ruleId === 'sensitive-data-in-url').map((f) => f.location.parameter).sort();
@@ -123,6 +129,9 @@ test('reviewInventory flags secrets in URLs and unsafe password forms, with valu
   assert.ok(rule(findings, 'password-form-get'));
   assert.ok(!JSON.stringify(findings).includes('abc123SECRET'), 'parameter values must not be stored');
   assert.ok(!JSON.stringify(findings).includes('K-999'));
+  assert.ok(rule(findings, 'possible-idor-surface'));
+  assert.ok(rule(findings, 'possible-ssrf-surface'));
+  assert.ok(!JSON.stringify(findings).includes('https://internal'));
 });
 
 test('new exposed-path matchers accept the real formats and reject a generic home page', () => {

@@ -40,6 +40,7 @@ async function runBrowserCrawl(targetUrl, {
   osvClient,
   allowAnyPort = false,
   publicMode = false,
+  extraHTTPHeaders = {},
 } = {}) {
   const pw = loadPlaywright();
   if (!pw) {
@@ -76,11 +77,15 @@ async function runBrowserCrawl(targetUrl, {
     throw skip;
   }
   try {
+    const headerBag = extraHTTPHeaders && Object.keys(extraHTTPHeaders).length
+      ? extraHTTPHeaders
+      : undefined;
     const context = await browser.newContext({
       javaScriptEnabled: true,
       serviceWorkers: 'block',
       acceptDownloads: false,
       ignoreHTTPSErrors: true,
+      ...(headerBag ? { extraHTTPHeaders: headerBag } : {}),
     });
     context.on('dialog', (dialog) => dialog.dismiss().catch(() => {}));
 
@@ -234,10 +239,37 @@ async function runBrowserCrawl(targetUrl, {
         // Do not click submit buttons; navigation-only anchors already queued from hrefs.
       }
 
+      if (!publicMode) {
+        const scriptUrls = await page.evaluate(() => {
+          const fromDom = [...document.querySelectorAll('script[src]')].map((el) => el.src).filter(Boolean);
+          const fromPerf = (performance.getEntriesByType('resource') || [])
+            .filter((entry) => entry.initiatorType === 'script' || /\.js(\?|$)/i.test(entry.name))
+            .map((entry) => entry.name);
+          return [...new Set([...fromDom, ...fromPerf])];
+        }).catch(() => []);
+        inventory.scripts = inventory.scripts || [];
+        for (const raw of scriptUrls) {
+          try {
+            const scriptUrl = new URL(raw, parsed.href);
+            if (/\/cdn-cgi\//i.test(scriptUrl.pathname)) continue;
+            if (!scoped(scriptUrl, scope, allowAnyPort)) continue;
+            pushEndpoint(inventory, scriptUrl, {
+              method: 'GET',
+              statusCode: 0,
+              contentType: 'application/javascript',
+            });
+            if (!inventory.scripts.includes(scriptUrl.href)) inventory.scripts.push(scriptUrl.href);
+          } catch {
+            /* skip */
+          }
+        }
+      }
+
       await collectRuntimeFindings(page, parsed, findings, osvClient);
     }
 
-    for (const bundle of bundleBodies.slice(0, 40)) {
+    const bundleCap = publicMode ? 20 : 80;
+    for (const bundle of bundleBodies.slice(0, bundleCap)) {
       scanBundleSecrets(bundle, findings);
     }
   } finally {

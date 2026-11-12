@@ -22,6 +22,12 @@ export function WebsitesView({ onSelectScan }) {
     allowedProfiles: ['discovery', 'standard'],
     allowActiveTesting: false,
   });
+  const [deepOpts, setDeepOpts] = useState({
+    sessionCookie: '',
+    sessionHeader: '',
+    seedUrls: '',
+    originUrl: '',
+  });
 
   const canWrite = hasPermission(session.me, session.orgId, 'repos:write');
   const canScan = hasPermission(session.me, session.orgId, 'scans:run');
@@ -368,6 +374,58 @@ export function WebsitesView({ onSelectScan }) {
         ) : (
           <DataTable
             headers={headers}
+        {scanProfile === 'deep' && (
+          <div className="deep-scan-opts">
+            <p className="small muted" style={{ margin: '0 0 12px' }}>
+              Authorized Deep only. Session values are sent with crawls and ZAP, never written to CSV or the scan JSON. Origin must be this host or a subdomain. A different Azure/Lambda host is its own website.
+            </p>
+            <div className="deep-scan-grid">
+              <label className="small muted" htmlFor="deep-cookie">
+                Session cookie
+                <input
+                  id="deep-cookie"
+                  type="password"
+                  autoComplete="off"
+                  value={deepOpts.sessionCookie}
+                  onChange={(e) => setDeepOpts({ ...deepOpts, sessionCookie: e.target.value })}
+                  placeholder="name=value"
+                />
+              </label>
+              <label className="small muted" htmlFor="deep-header">
+                Session header
+                <input
+                  id="deep-header"
+                  type="password"
+                  autoComplete="off"
+                  value={deepOpts.sessionHeader}
+                  onChange={(e) => setDeepOpts({ ...deepOpts, sessionHeader: e.target.value })}
+                  placeholder="Authorization: Bearer …"
+                />
+              </label>
+              <label className="small muted" htmlFor="deep-origin">
+                Origin URL
+                <input
+                  id="deep-origin"
+                  type="url"
+                  value={deepOpts.originUrl}
+                  onChange={(e) => setDeepOpts({ ...deepOpts, originUrl: e.target.value })}
+                  placeholder="https://origin.example.com"
+                />
+              </label>
+              <label className="small muted" htmlFor="deep-seeds" style={{ gridColumn: '1 / -1' }}>
+                API seed URLs
+                <textarea
+                  id="deep-seeds"
+                  rows={3}
+                  value={deepOpts.seedUrls}
+                  onChange={(e) => setDeepOpts({ ...deepOpts, seedUrls: e.target.value })}
+                  placeholder={'https://example.com/api/users\nhttps://example.com/openapi.json'}
+                />
+              </label>
+            </div>
+          </div>
+        )}
+
             rows={rows}
             empty="No website targets registered yet. Add a URL above to start security scanning."
           />

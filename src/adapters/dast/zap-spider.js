@@ -44,10 +44,17 @@ async function runWebsiteCrawl(targetUrl, options = {}) {
 
 async function runZapSpider(targetUrl, ctx) {
   const {
-    zapGet, withZapMutex, prepareZapSession, flattenZapList, rememberZapUrls, countZapResponses,
+    zapGet, withZapMutex, prepareZapSession, flattenZapList, rememberZapUrls, countZapResponses, seedZapUrls,
   } = require('./zap-client');
   return withZapMutex(async () => {
-  const session = ctx.zapSession || await prepareZapSession({ scope: ctx.scope, proxyUrl: ctx.proxy, maxRps: ctx.limits.maxRps });
+  const session = ctx.zapSession || await prepareZapSession({
+    scope: ctx.scope,
+    proxyUrl: ctx.proxy,
+    maxRps: ctx.limits.maxRps,
+    sessionCookie: ctx.sessionCookie || (ctx.limits && ctx.limits.sessionCookie),
+    sessionHeader: ctx.sessionHeader || (ctx.limits && ctx.limits.sessionHeader),
+  });
+  await seedZapUrls(ctx.seedUrls || (ctx.limits && ctx.limits.seedUrls) || []);
   await zapGet('/JSON/spider/action/setOptionPostForm/', { Boolean: 'false' });
   await zapGet('/JSON/spider/action/setOptionProcessForm/', { Boolean: 'false' });
   await zapGet('/JSON/spider/action/setOptionMaxDepth/', { Integer: ctx.limits.maxDepth });

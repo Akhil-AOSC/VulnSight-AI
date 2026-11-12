@@ -9,6 +9,7 @@ function emptyInventory(engine) {
     endpoints: [],
     forms: [],
     links: [],
+    scripts: [],
     findings: [],
     stopped: false,
   };

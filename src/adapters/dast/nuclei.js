@@ -7,6 +7,7 @@ const { createFinding } = require('../../findings');
 const { execTool } = require('../runner');
 const { redactEvidence } = require('./net-guard');
 const { urlInScope, normalizeUrl } = require('./scope');
+const { elevateToCritical } = require('./severity-class');
 
 const SAFE_ETAGS = 'dos,fuzz,intrusive,brute-force,oast,rce';
 const FULL_ETAGS = 'dos,fuzz,brute-force,oast,rce';
@@ -42,12 +43,14 @@ function mapNucleiResult(row) {
   if (!row || typeof row !== 'object') return null;
   const info = row.info || {};
   const sevRaw = String(info.severity || 'info').toLowerCase();
-  const severity = ['critical', 'high', 'medium', 'low'].includes(sevRaw) ? sevRaw : 'low';
+  const baseSeverity = ['critical', 'high', 'medium', 'low'].includes(sevRaw) ? sevRaw : 'low';
   const classification = info.classification || {};
   const cwes = []
     .concat(classification['cwe-id'] || classification.cwe_id || [])
     .map(normalizeCwe)
     .filter(Boolean);
+  const title = String(info.name || '').slice(0, 200);
+  const severity = elevateToCritical(baseSeverity, { cwes, title });
   const cves = []
     .concat(classification['cve-id'] || classification.cve_id || info.classification && info.classification['cve-id'] || [])
     .map(String)
@@ -60,7 +63,7 @@ function mapNucleiResult(row) {
   return createFinding({
     category: 'dast',
     severity,
-    title: String(info.name || templateId).slice(0, 200),
+    title: title || String(templateId).slice(0, 200),
     description: String(info.description || '').slice(0, 2000),
     identifiers: {
       primary: templateId,

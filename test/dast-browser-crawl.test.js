@@ -42,10 +42,16 @@ test('browser crawl finds SPA endpoints, blocks POST, and emits runtime findings
       res.end('[{"id":1}]');
       return;
     }
+    if (req.url === '/app.js') {
+      res.writeHead(200, { 'content-type': 'application/javascript' });
+      res.end('console.log("ok");');
+      return;
+    }
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end(`<!doctype html><html><head><title>SPA</title></head><body>
       <a href="/about" id="spa-link">About</a>
       <form action="/login" method="POST"><input name="user"><button type="submit">Save</button></form>
+      <script src="/app.js"></script>
       <script>
         window.jQuery = { fn: { jquery: '1.12.4' } };
         history.pushState({}, '', '/about');
