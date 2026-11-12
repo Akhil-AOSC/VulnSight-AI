@@ -6,6 +6,12 @@
       "runtimeExecutable": "node",
       "runtimeArgs": ["bin/vulnsight.js", "serve", "--port=4400"],
       "port": 4400
+    },
+    {
+      "name": "vulnsight-serve-node22",
+      "runtimeExecutable": "C:\\Users\\hp\\AppData\\Local\\Temp\\node22\\node-v22.14.0-win-x64\\node.exe",
+      "runtimeArgs": ["bin/vulnsight.js", "serve", "--port=4400"],
+      "port": 4400
     }
   ]
 }

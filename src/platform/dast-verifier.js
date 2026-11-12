@@ -2,17 +2,14 @@
 
 const crypto = require('node:crypto');
 const dns = require('node:dns/promises');
-const https = require('node:https');
-const http = require('node:http');
 const { validateTargetUrl } = require('../adapters/dast/passive');
+const { guardedRequest } = require('../adapters/dast/net-guard');
 
 /**
  * Generate a unique verification token for domain ownership verification.
  */
-function generateVerificationToken(websiteId, orgId) {
-  const seed = `${websiteId}:${orgId}:${Date.now()}:${crypto.randomBytes(16).toString('hex')}`;
-  const hash = crypto.createHash('sha256').update(seed).digest('hex').slice(0, 32);
-  return `vs-verify-${hash}`;
+function generateVerificationToken() {
+  return `vs-verify-${crypto.randomBytes(16).toString('hex')}`;
 }
 
 /**
@@ -30,7 +27,7 @@ async function verifyViaDnsTxt(hostname, token) {
       const records = await dns.resolveTxt(candidate);
       for (const chunk of records) {
         const text = Array.isArray(chunk) ? chunk.join('') : String(chunk);
-        if (text.trim() === token.trim()) {
+        if (text.trim() === String(token).trim()) {
           return { verified: true, method: 'dns_txt', verifiedAt: new Date().toISOString() };
         }
       }
@@ -44,9 +41,12 @@ async function verifyViaDnsTxt(hostname, token) {
 
 /**
  * Verify domain ownership via HTTP well-known file.
- * Requests /.well-known/vulnsight-verify.txt with strict SSRF protection.
+ * GET /.well-known/vulnsight-verify.txt on the site's own origin. No redirects are followed (a
+ * redirect could hand verification to another host), DNS is pinned at connect time, an HTTPS site
+ * must present a trusted certificate (so an on-path attacker can't answer for it), and the token
+ * must be the file's exact content or one of its lines.
  */
-async function verifyViaHttpToken(targetUrl, token) {
+async function verifyViaHttpToken(targetUrl, token, { lookup } = {}) {
   let base;
   try {
     const validated = await validateTargetUrl(targetUrl);
@@ -54,60 +54,29 @@ async function verifyViaHttpToken(targetUrl, token) {
   } catch (err) {
     return { verified: false, method: 'http_token', error: err.message };
   }
-
   const verifyUrl = new URL('/.well-known/vulnsight-verify.txt', base.origin);
-
-  const transport = verifyUrl.protocol === 'https:' ? https : http;
-
-  return new Promise((resolve) => {
-    const req = transport.request(
-      verifyUrl,
-      {
-        method: 'GET',
-        timeout: 6000,
-        headers: {
-          'User-Agent': 'VulnSight-Ownership-Verifier/1.0',
-          'Accept': 'text/plain',
-        },
-        rejectUnauthorized: false,
-      },
-      (res) => {
-        if (res.statusCode !== 200) {
-          return resolve({
-            verified: false,
-            method: 'http_token',
-            error: `Verification file returned HTTP status ${res.statusCode} (expected 200).`,
-          });
-        }
-
-        let body = '';
-        res.setEncoding('utf8');
-        res.on('data', (chunk) => {
-          if (body.length < 1000) body += chunk;
-        });
-        res.on('end', () => {
-          if (body.trim().includes(token.trim())) {
-            resolve({ verified: true, method: 'http_token', verifiedAt: new Date().toISOString() });
-          } else {
-            resolve({
-              verified: false,
-              method: 'http_token',
-              error: 'Verification file content does not match the expected token.',
-            });
-          }
-        });
-      }
-    );
-
-    req.on('error', (err) => {
-      resolve({ verified: false, method: 'http_token', error: `HTTP request failed: ${err.message}` });
+  let res;
+  try {
+    res = await guardedRequest(verifyUrl, {
+      timeoutMs: 6000,
+      maxBytes: 4096,
+      rejectUnauthorized: verifyUrl.protocol === 'https:',
+      headers: { Accept: 'text/plain' },
+      userAgent: 'VulnSight-Ownership-Verifier/1.0',
+      ...(lookup ? { lookup } : {}),
     });
-    req.on('timeout', () => {
-      req.destroy();
-      resolve({ verified: false, method: 'http_token', error: 'Connection timed out while fetching verification file.' });
-    });
-    req.end();
-  });
+  } catch (err) {
+    return { verified: false, method: 'http_token', error: `HTTP request failed: ${err.message}` };
+  }
+  if (res.statusCode !== 200) {
+    return { verified: false, method: 'http_token', error: `Verification file returned HTTP status ${res.statusCode} (expected 200).` };
+  }
+  const expected = String(token).trim();
+  const lines = String(res.body).split(/\r?\n/).map((l) => l.trim());
+  if (expected && lines.includes(expected)) {
+    return { verified: true, method: 'http_token', verifiedAt: new Date().toISOString() };
+  }
+  return { verified: false, method: 'http_token', error: 'Verification file content does not match the expected token.' };
 }
 
 /**
@@ -148,7 +117,21 @@ async function checkOwnership(hostname, targetUrlOrToken, maybeToken) {
   };
 }
 
+// Only these methods prove control of the domain. Rows marked verified another way (the removed
+// "manual_authorization" self-attestation, or no recorded method) are treated as unverified, so
+// they can't run crawls or active scans until the owner adds the DNS record or token file.
+const PROVEN_METHODS = new Set(['dns_txt', 'http_token']);
+
+function isOwnershipProven(site) {
+  if (!site) return false;
+  const flag = Boolean(site.is_verified ?? site.isVerified);
+  const method = site.verification_method ?? site.verificationMethod;
+  return flag && PROVEN_METHODS.has(method);
+}
+
 module.exports = {
+  isOwnershipProven,
+  PROVEN_METHODS,
   generateVerificationToken,
   verifyViaDnsTxt,
   verifyViaHttpToken,

@@ -93,7 +93,7 @@ test('websites platform service: create, list, verify, scan, report, and delete'
   // 5. Active scan on unverified domain is blocked
   assert.throws(
     () => platform.websites.startScan(ctx, site.id, { profile: 'standard' }),
-    (err) => err.message.includes('requires domain ownership verification')
+    (err) => /engagement policy|lab allowlist|site grant|DNS\/HTTP|ownership|authorization/i.test(err.message)
   );
 
   // 6. Passive scan is allowed immediately
@@ -222,18 +222,44 @@ test('crawl profile persists GET-only inventory and rejects ascan', async () => 
     links: [{ fromHash: 'abc123', toHash: 'def456', kind: 'a' }],
     findings: [],
   });
-  const { platform, drain } = setupPlatform({ dastCrawl });
+  const dastPassive = async () => ({
+    findings: [],
+    inventory: { engine: 'vulnsight-recon', pages: [], endpoints: [], forms: [], links: [] },
+    technologies: [],
+  });
+  const { platform, drain, db } = setupPlatform({
+    dastCrawl,
+    dastPassive,
+    dastBrowser: null,
+    dastNuclei: null,
+    dastAscan: async () => ({ engine: 'zap-ascan', findings: [] }),
+  });
   const { ctx } = await createOrg(platform, 'crawl@example.com');
   const site = await platform.websites.create(ctx, { url: 'https://example.com', name: 'Example' });
-  await platform.websites.verify(ctx, site.id, { manual: true });
+  await assert.rejects(
+    () => platform.websites.verify(ctx, site.id, { manual: true }),
+    /Manual verification is not allowed/
+  );
+  db.prepare('UPDATE websites SET is_verified = 1, verification_method = ?, verified_at = ? WHERE id = ?')
+    .run('http_token', new Date().toISOString(), site.id);
   assert.throws(
     () => platform.websites.startScan(ctx, site.id, { profile: 'ascan' }),
-    (err) => err.message.includes('authorizeActiveTesting')
+    (err) => /allowActiveTesting|Deep assessment/.test(err.message)
   );
-  const ascan = platform.websites.startScan(ctx, site.id, { profile: 'ascan', authorizeActiveTesting: true });
-  assert.equal(ascan.profile, 'ascan');
+  platform.dastPolicies.create(ctx, {
+    kind: 'engagement',
+    allowedProfiles: ['deep', 'standard', 'discovery'],
+    allowActiveTesting: true,
+    expiresAt: new Date(Date.now() + 48 * 3600 * 1000).toISOString(),
+    evidenceKind: 'engagement_id',
+    evidenceRef: 'ENG-WEB-44001',
+    allowHosts: ['example.com'],
+  });
+  const ascan = platform.websites.startScan(ctx, site.id, { profile: 'ascan' });
+  assert.equal(ascan.profile, 'deep');
+  assert.equal(ascan.authorizeActiveTesting, true);
   const scan = platform.websites.startScan(ctx, site.id, { profile: 'crawl', limits: { maxPages: 10 } });
-  assert.equal(scan.profile, 'crawl');
+  assert.equal(scan.profile, 'discovery');
   await drain();
   const done = platform.websites.getScan(ctx, site.id, scan.id);
   assert.equal(done.status, 'completed');
@@ -244,4 +270,68 @@ test('crawl profile persists GET-only inventory and rejects ascan', async () => 
   const forms = platform.websites.listForms(ctx, site.id, scan.id);
   assert.equal(forms[0].submitted, false);
   assert.equal(forms[0].method, 'POST');
+});
+
+test('unverified extra hosts are dropped on create and pipeline survives a failing engine', async () => {
+  const dastPassive = async () => ({
+    findings: [{
+      title: 'Reflected XSS',
+      severity: 'low',
+      identifiers: { cwe: ['CWE-79'], primary: 'xss' },
+      location: { url: 'https://example.com/search', parameter: 'q' },
+      scanner: { name: 'vulnsight-passive', ruleId: 'xss' },
+    }],
+    inventory: { engine: 'recon', pages: [], endpoints: [], forms: [], links: [] },
+  });
+  const dastCrawl = async () => { throw new Error('crawl boom'); };
+  const dastNuclei = async () => ({
+    engine: 'nuclei',
+    findings: [{
+      title: 'Reflected XSS',
+      severity: 'high',
+      identifiers: { cwe: ['CWE-79'], primary: 'xss' },
+      location: { url: 'https://example.com/search', parameter: 'q' },
+      scanner: { name: 'nuclei', ruleId: 'xss' },
+    }],
+  });
+  const { platform, drain, db } = setupPlatform({
+    dastPassive, dastCrawl, dastNuclei, dastBrowser: null, dastAscan: async () => ({ findings: [] }),
+  });
+  const { ctx } = await createOrg(platform, 'pipe@example.com');
+  const site = await platform.websites.create(ctx, {
+    url: 'https://example.com',
+    name: 'Example',
+    config: { extraHosts: ['victim.org', 'cdn.example.com'] },
+  });
+  assert.deepEqual(site.scope.extraHosts, ['cdn.example.com']);
+  db.prepare('UPDATE websites SET is_verified = 1, verification_method = ?, verified_at = ? WHERE id = ?')
+    .run('http_token', new Date().toISOString(), site.id);
+  const scan = platform.websites.startScan(ctx, site.id, { profile: 'standard' });
+  await drain();
+  const done = platform.websites.getScan(ctx, site.id, scan.id);
+  assert.equal(done.status, 'completed');
+  assert.ok(Array.isArray(done.summary.engines));
+  assert.ok(done.summary.engines.some((e) => e.status === 'error' && (e.name === 'builtin-get' || e.name === 'owasp-zap-spider')));
+  const xss = done.passiveResults.findings.filter((f) => f.identifiers && f.identifiers.primary === 'xss');
+  assert.equal(xss.length, 1);
+  assert.equal(xss[0].severity, 'high');
+  assert.ok(xss[0].confirmedBy.includes('nuclei'));
+});
+
+test('WAF-blocked passive scan marks partial results', async () => {
+  const dastPassive = async () => ({
+    findings: [],
+    blocked: true,
+    blockedBy: 'Cloudflare',
+    inventory: { engine: 'recon', pages: [], endpoints: [], forms: [], links: [] },
+  });
+  const { platform, drain } = setupPlatform({ dastPassive, dastBrowser: null, dastNuclei: null });
+  const { ctx } = await createOrg(platform, 'waf@example.com');
+  const site = await platform.websites.create(ctx, { url: 'https://example.com' });
+  const scan = platform.websites.startScan(ctx, site.id, { profile: 'passive' });
+  await drain();
+  const done = platform.websites.getScan(ctx, site.id, scan.id);
+  assert.equal(done.status, 'completed');
+  assert.equal(done.summary.partial, true);
+  assert.equal(done.summary.blockedBy, 'Cloudflare');
 });

@@ -31,7 +31,7 @@ const check = (name, ok, detail = '') => { results.push({ name, ok, detail }); }
   const b = (await call('POST', '/api/v1/auth/signup', { body: { email: 'b@example.com', password: PASSWORD, orgName: 'B' } })).json;
 
   // seed org A with a repo, scan and findings directly
-  const crypto = require('crypto');
+  const crypto = require('crypto');z
   const repoId = crypto.randomUUID(); const scanId = crypto.randomUUID(); const findingRow = crypto.randomUUID();
   const now = new Date().toISOString();
   app.db.prepare("INSERT INTO repositories (id, org_id, provider, full_name, clone_url, default_branch, webhook_secret, created_at) VALUES (?, ?, 'github', 'acme/app', 'https://github.com/acme/app.git', 'main', ?, ?)").run(repoId, a.orgId, app.secretBox.encrypt('s'), now);

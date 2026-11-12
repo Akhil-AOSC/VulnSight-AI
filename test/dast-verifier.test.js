@@ -30,3 +30,14 @@ test('checkOwnership checks DNS and HTTP verification endpoints', async () => {
   assert.equal(res.verified, false);
   assert.ok(res.error.includes('Domain ownership verification failed'));
 });
+
+test('only DNS TXT or the HTTP token file counts as proof of ownership', () => {
+  const { isOwnershipProven } = require('../src/platform/dast-verifier');
+  assert.equal(isOwnershipProven({ is_verified: 1, verification_method: 'dns_txt' }), true);
+  assert.equal(isOwnershipProven({ isVerified: true, verificationMethod: 'http_token' }), true);
+  // Rows marked verified by the removed self-attestation, or with no method, are not proof.
+  assert.equal(isOwnershipProven({ is_verified: 1, verification_method: 'manual_authorization' }), false);
+  assert.equal(isOwnershipProven({ is_verified: 1, verification_method: null }), false);
+  assert.equal(isOwnershipProven({ is_verified: 0, verification_method: 'dns_txt' }), false);
+  assert.equal(isOwnershipProven(null), false);
+});

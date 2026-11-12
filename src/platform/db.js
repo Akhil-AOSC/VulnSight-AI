@@ -184,6 +184,64 @@ const MIGRATIONS = [
   CREATE INDEX crawl_endpoints_scan ON crawl_endpoints (org_id, scan_id);
   CREATE INDEX crawl_forms_scan ON crawl_forms (org_id, scan_id);
   `,
+  // 6: ownership verification expiry
+  `
+  ALTER TABLE websites ADD COLUMN verified_at TEXT;
+  UPDATE websites SET verified_at = created_at WHERE is_verified = 1 AND verified_at IS NULL;
+  `,
+  // 7: independently validated client authorization grants (not self-attestation)
+  `
+  CREATE TABLE dast_authorizations (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    website_id TEXT NOT NULL REFERENCES websites(id) ON DELETE CASCADE,
+    granted_by TEXT NOT NULL,
+    granted_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    revoked_by TEXT,
+    revoke_reason TEXT,
+    allowed_profiles TEXT NOT NULL,
+    allow_active_testing INTEGER NOT NULL DEFAULT 0,
+    allow_hosts TEXT NOT NULL DEFAULT '[]',
+    allow_paths TEXT NOT NULL DEFAULT '["/"]',
+    deny_paths TEXT NOT NULL DEFAULT '[]',
+    ports TEXT NOT NULL DEFAULT '[80,443]',
+    evidence_kind TEXT NOT NULL,
+    evidence_ref TEXT NOT NULL,
+    note TEXT,
+    UNIQUE (org_id, website_id, granted_at)
+  );
+  CREATE INDEX dast_auth_site ON dast_authorizations (org_id, website_id, expires_at);
+  ALTER TABLE website_scans ADD COLUMN authorization_id TEXT;
+  ALTER TABLE website_scans ADD COLUMN authorize_active INTEGER NOT NULL DEFAULT 0;
+  `,
+  // 8: organization engagement policies and separate lab allowlists
+  `
+  CREATE TABLE dast_org_policies (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    granted_by TEXT NOT NULL,
+    granted_at TEXT NOT NULL,
+    starts_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    revoked_by TEXT,
+    revoke_reason TEXT,
+    allowed_profiles TEXT NOT NULL,
+    allow_active_testing INTEGER NOT NULL DEFAULT 0,
+    allow_hosts TEXT NOT NULL DEFAULT '[]',
+    deny_hosts TEXT NOT NULL DEFAULT '[]',
+    allow_paths TEXT NOT NULL DEFAULT '["/"]',
+    deny_paths TEXT NOT NULL DEFAULT '[]',
+    ports TEXT NOT NULL DEFAULT '[80,443]',
+    evidence_kind TEXT NOT NULL,
+    evidence_ref TEXT NOT NULL,
+    note TEXT
+  );
+  CREATE INDEX dast_org_policies_org ON dast_org_policies (org_id, kind, expires_at);
+  `,
 ];
 
 function openDatabase(file = ':memory:') {

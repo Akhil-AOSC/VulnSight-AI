@@ -1,7 +1,10 @@
 'use strict';
 
 const { createFinding } = require('../../findings');
-const { redactEvidence } = require('./safe-fetch');
+const { redactEvidence, droppedMessage } = require('./net-guard');
+const {
+  zapGet, withZapMutex, prepareZapSession, getZapSession, ensureInScanTree, countZapResponses,
+} = require('./zap-client');
 
 const RISK_TO_SEVERITY = {
   3: 'high',
@@ -16,54 +19,120 @@ const RISK_TO_SEVERITY = {
 
 /**
  * OWASP ZAP active scan (ascan). Sends attack payloads. Requires ZAP_API_URL.
- * Do not call this without verified ownership and authorizeActiveTesting.
+ * Pipeline must pass allowActive after stored allowActiveTesting is confirmed.
  */
 async function runZapActiveScan(targetUrl, options = {}) {
-  const zapUrl = process.env.ZAP_API_URL;
-  if (!zapUrl) {
+  if (options.allowActive !== true) {
+    const err = new Error('Active ZAP scanning requires stored allowActiveTesting on the current authorization');
+    err.code = 'UNAUTHORIZED';
+    throw err;
+  }
+  if (!process.env.ZAP_API_URL) {
     throw new Error('Active exploit scanning needs OWASP ZAP. Start ZAP and set ZAP_API_URL (optional ZAP_API_KEY). The GET-only crawler cannot run exploits.');
   }
 
   const onProgress = options.onProgress || (async () => {});
   const shouldStop = options.shouldStop || (async () => false);
-  const base = zapUrl.replace(/\/$/, '');
-  const key = process.env.ZAP_API_KEY || '';
-  const qs = (path, extra = {}) => {
-    const u = new URL(path, `${base}/`);
-    if (key) u.searchParams.set('apikey', key);
-    for (const [k, v] of Object.entries(extra)) u.searchParams.set(k, String(v));
-    return u.href;
-  };
-  const getJson = async (path, extra) => {
-    const res = await fetch(qs(path, extra), { method: 'GET' });
-    if (!res.ok) throw new Error(`ZAP API ${path} returned ${res.status}`);
-    return res.json();
-  };
 
-  await onProgress({ engine: 'zap-ascan', stage: 'ascan', percent: 0 });
-  const started = await getJson('/JSON/ascan/action/scan/', { url: targetUrl, recurse: 'true' });
-  const scanId = started.scan;
-  const deadline = Date.now() + (options.maxDurationSec || 180) * 1000;
+  return withZapMutex(async () => {
+    const session = options.zapSession || getZapSession() || await prepareZapSession({
+      scope: options.scope,
+      proxyUrl: options.proxy,
+      maxRps: options.maxRps || 1,
+    });
+    const seeds = [...new Set([
+      targetUrl,
+      ...((session && session.urls) || []),
+      ...(options.seedUrls || []),
+    ])].filter(Boolean);
 
-  while (true) {
-    if (await shouldStop()) {
-      await getJson('/JSON/ascan/action/stop/', { scanId }).catch(() => {});
-      break;
+    async function startScan(url) {
+      const scanArgs = { url, recurse: 'true' };
+      if (session && session.contextId) scanArgs.contextId = session.contextId;
+      try {
+        return await zapGet('/JSON/ascan/action/scan/', scanArgs);
+      } catch (err) {
+        if (!/400/.test(String(err.message))) throw err;
+        return zapGet('/JSON/ascan/action/scan/', { url, recurse: 'true' });
+      }
     }
-    const status = await getJson('/JSON/ascan/view/status/', { scanId });
-    const pct = Number(status.status || 0);
-    await onProgress({ engine: 'zap-ascan', stage: 'ascan', percent: pct });
-    if (pct >= 100) break;
-    if (Date.now() > deadline) {
-      await getJson('/JSON/ascan/action/stop/', { scanId }).catch(() => {});
-      break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-  }
 
-  const raw = await getJson('/JSON/core/view/alerts/', { baseurl: targetUrl });
-  const findings = (raw.alerts || []).map(mapZapAlert).filter(Boolean);
-  return { engine: 'zap-ascan', findings };
+    let started;
+    let scanUrl;
+    let lastErr;
+    for (const url of seeds) {
+      try {
+        started = await startScan(url);
+        scanUrl = url;
+        break;
+      } catch (err) {
+        lastErr = err;
+        if (!/400/.test(String(err.message))) throw err;
+      }
+    }
+    if (!started) {
+      scanUrl = await ensureInScanTree(targetUrl, { timeoutMs: 6000, seedUrls: seeds });
+      if (scanUrl) {
+        try {
+          started = await startScan(scanUrl);
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+    }
+    if (!started) {
+      // Tell the user WHY there is nothing to attack. Zero stored responses means ZAP's requests
+      // never got an answer: the host (usually its firewall) is dropping them.
+      const responses = await countZapResponses(targetUrl);
+      if (responses === 0) {
+        let host = targetUrl;
+        try { host = new URL(targetUrl).hostname; } catch { /* keep raw */ }
+        const err = new Error(`${droppedMessage(host, 'ZAP stored no responses from the host')} No attack payloads were sent.`);
+        err.code = 'HOST_DROPPED';
+        throw err;
+      }
+      throw lastErr || new Error('ZAP sites tree still empty after spider. The origin may be blocking ZAP; active scan cannot start.');
+    }
+
+    await onProgress({ engine: 'zap-ascan', stage: 'ascan', percent: 0 });
+    const scanId = started.scan;
+    const maxDurationSec = options.maxDurationSec || 180;
+    const deadline = Date.now() + maxDurationSec * 1000;
+    // An active scan cut off by its time limit has only run part of its attack checks; the
+    // pipeline reports it as partial instead of ok.
+    let percent = 0;
+    let timedOut = false;
+
+    while (true) {
+      if (await shouldStop()) {
+        await zapGet('/JSON/ascan/action/stop/', { scanId }).catch(() => {});
+        break;
+      }
+      const status = await zapGet('/JSON/ascan/view/status/', { scanId });
+      const pct = Number(status.status || 0);
+      percent = pct;
+      await onProgress({ engine: 'zap-ascan', stage: 'ascan', percent: pct });
+      if (pct >= 100) break;
+      if (Date.now() > deadline) {
+        timedOut = true;
+        await zapGet('/JSON/ascan/action/stop/', { scanId }).catch(() => {});
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+
+    const raw = await zapGet('/JSON/core/view/alerts/', {
+      baseurl: targetUrl,
+      contextId: session.contextId,
+    });
+    const findings = (raw.alerts || []).map(mapZapAlert).filter(Boolean);
+    return {
+      engine: 'zap-ascan',
+      findings,
+      version: 'owasp-zap',
+      ...(timedOut ? { timedOut: true, percent, maxDurationSec } : {}),
+    };
+  });
 }
 
 function mapZapAlert(alert) {

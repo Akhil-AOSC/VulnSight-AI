@@ -125,6 +125,12 @@ function createApi({ platform, trustProxy = false, hsts = false, limiter = creat
   route('GET', org('/websites/:site'), async (req, p) => platform.websites.get(ctxOf(req, p), p.site));
   route('DELETE', org('/websites/:site'), async (req, p) => { await platform.websites.remove(ctxOf(req, p), p.site); return { ok: true }; });
   route('POST', org('/websites/:site/verify'), async (req, p, b) => platform.websites.verify(ctxOf(req, p), p.site, b));
+  route('GET', org('/websites/:site/authorizations'), async (req, p) => platform.websites.listAuthorizations(ctxOf(req, p), p.site));
+  route('POST', org('/websites/:site/authorizations'), async (req, p, b) => platform.websites.createAuthorization(ctxOf(req, p), p.site, b), { status: 201 });
+  route('POST', org('/websites/:site/authorizations/:auth/revoke'), async (req, p, b) => platform.websites.revokeAuthorization(ctxOf(req, p), p.site, p.auth, b));
+  route('GET', org('/dast-policies'), async (req, p) => platform.dastPolicies.list(ctxOf(req, p)));
+  route('POST', org('/dast-policies'), async (req, p, b) => platform.dastPolicies.create(ctxOf(req, p), b), { status: 201 });
+  route('POST', org('/dast-policies/:policy/revoke'), async (req, p, b) => platform.dastPolicies.revoke(ctxOf(req, p), p.policy, b));
   route('PATCH', org('/websites/:site'), async (req, p, b) => platform.websites.updateScope(ctxOf(req, p), p.site, b));
   route('POST', org('/websites/:site/scans'), async (req, p, b) => platform.websites.startScan(ctxOf(req, p), p.site, b), { status: 202 });
   route('GET', org('/websites/:site/scans'), async (req, p, b, q) => platform.websites.listScans(ctxOf(req, p), p.site, q));

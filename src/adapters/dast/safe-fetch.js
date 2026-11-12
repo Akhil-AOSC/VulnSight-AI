@@ -1,7 +1,6 @@
 'use strict';
 
-const http = require('node:http');
-const https = require('node:https');
+const { guardedRequest, redactEvidence } = require('./net-guard');
 const { validateTargetUrl } = require('./passive');
 const { normalizeUrl, urlInScope } = require('./scope');
 
@@ -39,42 +38,13 @@ async function safeGet(rawUrl, { scope, timeoutMs = 8000, method = 'GET' } = {})
   return { blocked: true, reason: 'too_many_redirects', url: current, hops: MAX_REDIRECTS };
 }
 
-function requestOnce(urlObj, timeoutMs) {
-  const transport = urlObj.protocol === 'https:' ? https : http;
-  return new Promise((resolve) => {
-    const req = transport.request(
-      urlObj,
-      {
-        method: 'GET',
-        timeout: timeoutMs,
-        headers: {
-          'User-Agent': 'VulnSight-SafeCrawler/1.0',
-          Accept: 'text/html,application/json,text/plain,*/*;q=0.8',
-        },
-        rejectUnauthorized: true,
-      },
-      (res) => {
-        let body = '';
-        res.setEncoding('utf8');
-        res.on('data', (chunk) => {
-          if (body.length < 150000) body += chunk;
-        });
-        res.on('end', () => {
-          resolve({
-            statusCode: res.statusCode,
-            headers: sanitizeHeaders(res.headers),
-            body,
-          });
-        });
-      }
-    );
-    req.on('error', () => resolve(null));
-    req.on('timeout', () => {
-      req.destroy();
-      resolve(null);
-    });
-    req.end();
-  });
+async function requestOnce(urlObj, timeoutMs) {
+  try {
+    const res = await guardedRequest(urlObj, { timeoutMs, maxBytes: 150000, rejectUnauthorized: true, userAgent: 'VulnSight-SafeCrawler/1.0' });
+    return { statusCode: res.statusCode, headers: sanitizeHeaders(res.headers), body: res.body };
+  } catch {
+    return null;
+  }
 }
 
 function sanitizeHeaders(headers) {
@@ -88,12 +58,6 @@ function sanitizeHeaders(headers) {
     out[name] = value;
   }
   return out;
-}
-
-function redactEvidence(text, max = 200) {
-  return String(text || '')
-    .replace(/(authorization|cookie|set-cookie|api[_-]?key|token|password)\s*[:=]\s*[^\s&]+/gi, '$1=[redacted]')
-    .slice(0, max);
 }
 
 module.exports = { safeGet, sanitizeHeaders, redactEvidence, MAX_REDIRECTS };

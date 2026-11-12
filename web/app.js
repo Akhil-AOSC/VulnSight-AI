@@ -23833,6 +23833,265 @@ var require_jsx_runtime = __commonJS({
   }
 });
 
+// src/platform/website-auth-ui.js
+var require_website_auth_ui = __commonJS({
+  "src/platform/website-auth-ui.js"(exports, module) {
+    "use strict";
+    function isPublicAssessmentProfile2(profile) {
+      const key = String(profile || "");
+      return key === "public" || key === "public_assessment" || key === "PUBLIC_ASSESSMENT" || key === "passive";
+    }
+    function profileNeedsCrawl(profile) {
+      return !isPublicAssessmentProfile2(profile);
+    }
+    function profileNeedsActive(profile) {
+      return String(profile || "") === "deep" || String(profile || "") === "ascan";
+    }
+    function authorizationPresentation2(site = {}, profile = "standard") {
+      const a = site.authorization || {};
+      const status = a.status || "none";
+      if (status === "denied" || a.denied) {
+        return {
+          status: "denied",
+          label: "Outside approved scope",
+          tone: "sev-high",
+          reason: a.reason || "This hostname, path or profile is outside the approved engagement or lab scope."
+        };
+      }
+      if (isPublicAssessmentProfile2(profile)) {
+        return {
+          status: "public",
+          label: "Not required",
+          tone: "sev-low",
+          reason: "Public Website Assessment does not need an engagement ID, DNS/HTTP proof, or a site grant.",
+          allowActiveTesting: false,
+          allowedProfiles: null
+        };
+      }
+      if (status === "revoked") {
+        return {
+          status: "revoked",
+          label: "Revoked",
+          tone: "sev-high",
+          reason: "The authorization record for this target was revoked."
+        };
+      }
+      if (status === "expired") {
+        return {
+          status: "expired",
+          label: "Expired",
+          tone: "sev-medium",
+          reason: "The authorization record for this target has expired."
+        };
+      }
+      if (site.isVerified || status === "verified" || status === "active" || status === "authorized") {
+        const source = a.source === "dns_http" ? "Domain control verified (DNS/HTTP). Deep assessment still needs stored active-testing permission." : a.source === "lab" ? "Covered by a lab allowlist." : a.source === "org_engagement" ? "Covered by an organization engagement policy." : "Covered by a recorded authorization.";
+        return {
+          status: "authorized",
+          label: "Authorized",
+          tone: "sev-low",
+          reason: source,
+          expiresAt: a.expiresAt || null,
+          allowActiveTesting: Boolean(a.allowActiveTesting),
+          allowedProfiles: a.allowedProfiles || null
+        };
+      }
+      return {
+        status: "none",
+        label: "Not configured",
+        tone: "sev-medium",
+        reason: "No engagement policy, lab allowlist, site grant, or optional DNS/HTTP verification covers this host."
+      };
+    }
+    function scanStartDecision2(site = {}, profile = "standard") {
+      const presentation = authorizationPresentation2(site, profile);
+      const a = site.authorization || {};
+      const allowedProfiles = a.allowedProfiles;
+      const crawl = profileNeedsCrawl(profile);
+      const active = profileNeedsActive(profile);
+      if (!crawl) {
+        if (presentation.status === "denied") {
+          return {
+            allow: false,
+            openVerifyModal: false,
+            confirmActive: false,
+            reason: presentation.reason,
+            presentation
+          };
+        }
+        return {
+          allow: true,
+          openVerifyModal: false,
+          confirmActive: false,
+          reason: null,
+          presentation
+        };
+      }
+      if (presentation.status === "revoked" || presentation.status === "expired" || presentation.status === "denied") {
+        return {
+          allow: false,
+          openVerifyModal: false,
+          confirmActive: false,
+          reason: presentation.reason,
+          presentation
+        };
+      }
+      if (presentation.status !== "authorized") {
+        return {
+          allow: false,
+          openVerifyModal: false,
+          confirmActive: false,
+          reason: `${profile} assessment is not authorized for this host. ${presentation.reason}`,
+          presentation
+        };
+      }
+      if (Array.isArray(allowedProfiles) && allowedProfiles.length && !allowedProfiles.includes(profile) && profile !== "passive") {
+        if (!(profile === "deep" && allowedProfiles.includes("ascan"))) {
+          return {
+            allow: false,
+            openVerifyModal: false,
+            confirmActive: false,
+            reason: `Profile ${profile} is not in the allowed profiles for this authorization.`,
+            presentation
+          };
+        }
+      }
+      if (active && !a.allowActiveTesting) {
+        return {
+          allow: false,
+          openVerifyModal: false,
+          confirmActive: false,
+          reason: "Deep assessment requires stored allowActiveTesting on an engagement, lab, or site grant. Domain ownership alone is not enough.",
+          presentation
+        };
+      }
+      return {
+        allow: true,
+        openVerifyModal: false,
+        confirmActive: false,
+        reason: null,
+        presentation
+      };
+    }
+    module.exports = {
+      authorizationPresentation: authorizationPresentation2,
+      scanStartDecision: scanStartDecision2,
+      profileNeedsCrawl,
+      profileNeedsActive,
+      isPublicAssessmentProfile: isPublicAssessmentProfile2
+    };
+  }
+});
+
+// src/adapters/dast/scan-story.js
+var require_scan_story = __commonJS({
+  "src/adapters/dast/scan-story.js"(exports, module) {
+    "use strict";
+    var ENGINES = {
+      "vulnsight-passive": {
+        label: "Passive recon",
+        does: "Reads TLS, cookies, and security headers from this machine. No crawl and no attack payloads."
+      },
+      "vulnsight-browser": {
+        label: "Browser crawl",
+        does: "Chromium loads JavaScript-rendered pages and records in-scope URLs. Forms are not submitted."
+      },
+      "owasp-zap-spider": {
+        label: "ZAP spider",
+        does: "OWASP ZAP maps in-scope GET pages through its own HTTP client."
+      },
+      "builtin-get": {
+        label: "GET crawler",
+        does: "Follows HTML links with GET only when ZAP is not configured."
+      },
+      "vulnsight-checks": {
+        label: "Exposure checks",
+        does: "Requests known debug, API-doc, config-backup and directory-listing paths, and reviews crawled URLs and forms. GET only, rate-limited, authorized sites only."
+      },
+      nuclei: {
+        label: "Nuclei templates",
+        does: "Runs pinned Nuclei templates on discovered URLs. Interactsh and DoS templates stay off."
+      },
+      "owasp-zap-ascan": {
+        label: "ZAP active scan",
+        does: "Sends ZAP attack payloads at URLs already in the ZAP sites tree. Ownership verification is required."
+      }
+    };
+    function explainEngine(eng = {}) {
+      const meta = ENGINES[eng.name] || { label: eng.name || "Engine", does: "Inspection engine." };
+      const err = String(eng.error || "");
+      let why = "Finished.";
+      if (eng.status === "skipped") {
+        why = err || "Not installed, or not selected for this profile.";
+      } else if (eng.status === "blocked") {
+        if (eng.blockReason === "connection_dropped" || /stopped answering|dropping connections/i.test(err)) {
+          why = "The host stopped answering this machine: connections timed out with no HTTP response. Its firewall has most likely banned the scanner IP, so results from this stage are missing or incomplete.";
+        } else if (eng.blockReason === "waf" || /^blocked by /i.test(err)) {
+          const provider = err.replace(/^blocked by /i, "").trim();
+          const named = provider && provider.toUpperCase() !== "WAF" ? ` (${provider})` : "";
+          why = `The site's firewall${named} answered with a bot challenge instead of the page, so header, cookie and technology checks were skipped. TLS results were kept. To scan your own site fully, allow the scanner IP in that firewall.`;
+        } else {
+          why = err || "The origin blocked this engine.";
+        }
+      } else if (eng.status === "partial") {
+        why = err || "Stopped before every check ran. Findings so far are real; the rest is untested.";
+      } else if (eng.status === "error") {
+        if (/ETIMEDOUT|timed out|timeout/i.test(err)) {
+          why = "Requests to the host timed out. The host may be down or rate-limiting this machine.";
+        } else if (/No page loaded/i.test(err)) {
+          why = "The engine ran but no page loaded, so its zero findings say nothing about the site.";
+        } else if (/sites tree|scan tree|url_not_found/i.test(err)) {
+          why = "ZAP had no pages from this host in its sites tree, so no attack payloads were sent.";
+        } else {
+          why = err || "Engine failed.";
+        }
+      }
+      return {
+        name: eng.name,
+        label: meta.label,
+        does: meta.does,
+        status: eng.status || "unknown",
+        findings: eng.findings || 0,
+        detail: err || null,
+        why,
+        durationMs: eng.durationMs || 0
+      };
+    }
+    function buildScanStory2({
+      engines = [],
+      partial = false,
+      blockedBy = null,
+      profile = null,
+      pages = 0,
+      findings = 0
+    } = {}) {
+      const stages = (engines || []).map(explainEngine);
+      const unfinished = stages.filter((s) => ["error", "blocked", "skipped", "partial"].includes(s.status));
+      if (!partial) {
+        return {
+          headline: "Inspection finished",
+          readout: `Profile ${profile || "scan"} finished with ${findings} finding${findings === 1 ? "" : "s"} across ${pages} page${pages === 1 ? "" : "s"}.`,
+          profile: profile || null,
+          stages
+        };
+      }
+      let blockedBit = "";
+      if (blockedBy === "host firewall") {
+        blockedBit = " The host started dropping connections from this machine (likely a firewall IP ban), so the scan stopped early. Allowlist the scanner IP in the hosting firewall or wait for the ban to expire, then scan again.";
+      } else if (blockedBy) {
+        blockedBit = ` An engine stopped after a ${blockedBy} challenge.`;
+      }
+      return {
+        headline: "Incomplete inspection",
+        readout: `${unfinished.length} engine${unfinished.length === 1 ? "" : "s"} did not finish.${blockedBit} Posture is not a clean bill of health.`,
+        profile: profile || null,
+        stages
+      };
+    }
+    module.exports = { ENGINES, explainEngine, buildScanStory: buildScanStory2 };
+  }
+});
+
 // web/src/main.jsx
 var import_react15 = __toESM(require_react());
 var import_client = __toESM(require_client());
@@ -24152,6 +24411,79 @@ var import_jsx_runtime2 = __toESM(require_jsx_runtime());
 function SevBadge({ severity }) {
   return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: `badge sev-${severity || "unknown"}`, children: severity || "unknown" });
 }
+function IconSearch({ size = 16, className = "" }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("circle", { cx: "11", cy: "11", r: "8" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("line", { x1: "21", y1: "21", x2: "16.65", y2: "16.65" })
+  ] });
+}
+function IconClose({ size = 16, className = "" }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("line", { x1: "18", y1: "6", x2: "6", y2: "18" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("line", { x1: "6", y1: "6", x2: "18", y2: "18" })
+  ] });
+}
+function IconCopy({ size = 16, className = "" }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("rect", { x: "9", y: "9", width: "13", height: "13", rx: "2", ry: "2" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { d: "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" })
+  ] });
+}
+function IconCheck({ size = 16, className = "" }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("polyline", { points: "20 6 9 17 4 12" }) });
+}
+function IconEye({ size = 16, className = "" }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { d: "M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("circle", { cx: "12", cy: "12", r: "3" })
+  ] });
+}
+function IconEyeOff({ size = 16, className = "" }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { d: "M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("line", { x1: "1", y1: "1", x2: "23", y2: "23" })
+  ] });
+}
+function IconDownload({ size = 16, className = "" }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("polyline", { points: "7 10 12 15 17 10" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("line", { x1: "12", y1: "15", x2: "12", y2: "3" })
+  ] });
+}
+function IconTable({ size = 16, className = "" }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("rect", { x: "3", y: "3", width: "18", height: "18", rx: "2" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("line", { x1: "3", y1: "9", x2: "21", y2: "9" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("line", { x1: "3", y1: "15", x2: "21", y2: "15" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("line", { x1: "9", y1: "3", x2: "9", y2: "21" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("line", { x1: "15", y1: "3", x2: "15", y2: "21" })
+  ] });
+}
+function IconFileText({ size = 16, className = "" }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { d: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("polyline", { points: "14 2 14 8 20 8" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("line", { x1: "16", y1: "13", x2: "8", y2: "13" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("line", { x1: "16", y1: "17", x2: "8", y2: "17" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("polyline", { points: "10 9 9 9 8 9" })
+  ] });
+}
+function IconPackage({ size = 16, className = "" }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("line", { x1: "16.5", y1: "9.4", x2: "7.55", y2: "4.21" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { d: "M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("polyline", { points: "3.27 6.96 12 12.01 20.73 6.96" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("line", { x1: "12", y1: "22.08", x2: "12", y2: "12" })
+  ] });
+}
+function IconEmptyState({ size = 32, className = "" }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { d: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("line", { x1: "12", y1: "8", x2: "12", y2: "12" }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("line", { x1: "12", y1: "16", x2: "12.01", y2: "16" })
+  ] });
+}
 function StatusBadge({ status }) {
   return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: `badge st-${status || "unknown"}`, children: status || "unknown" });
 }
@@ -24220,7 +24552,7 @@ function AiAnswer({ result, loading, loadingLabel = "Writing an answer..." }) {
     /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "ai-answer-head", children: [
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "ai-head-title", children: [
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("h3", { className: "m-0", children: title }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "ai-badge", children: "AI Powered" })
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "ai-badge", children: "AI Analysis" })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "row", children: [
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "badge ai-label", children: provider }),
@@ -24250,7 +24582,7 @@ function AiBriefingCard({ ai }) {
     /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "card-head", children: [
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "ai-head-title", children: [
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("h2", { className: "m-0", children: "AI Security Summary" }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "ai-badge", children: "AI Powered" })
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "ai-badge", children: "AI Analysis" })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("span", { className: `ai-risk-tag ai-risk-${risk}`, children: [
         "Risk: ",
@@ -24651,7 +24983,7 @@ function RepoSeverityBreakdown({ repositories }) {
       /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "muted small", children: "Vertical bar comparison across scanned repositories" })
     ] }) }),
     !scannedRepos.length ? /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "overview-chart-empty", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "empty-icon", children: "\u{1F4CA}" }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "empty-icon", children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(IconEmptyState, { size: 36 }) }),
       /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("h3", { children: "No scan data yet" }),
       /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("p", { className: "muted small", children: "Run a scan on any repository to view vulnerability bar charts and severity distributions." }),
       /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("a", { className: "btn primary", href: "#/new-scan", children: "Scan a repository" })
@@ -25637,7 +25969,7 @@ function RepoDetailView({ repoId }) {
                 "aria-label": showSecret ? "Hide secret" : "Show secret",
                 title: showSecret ? "Hide secret" : "Show secret",
                 onClick: () => setShowSecret((v) => !v),
-                children: showSecret ? "\u{1F648}" : "\u{1F441}\uFE0F"
+                children: showSecret ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(IconEyeOff, { size: 14 }) : /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(IconEye, { size: 14 })
               }
             ),
             /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
@@ -25651,7 +25983,7 @@ function RepoDetailView({ repoId }) {
                   navigator.clipboard.writeText(webhook.secret);
                   toast("Secret copied to clipboard");
                 },
-                children: "\u{1F4CB}"
+                children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(IconCopy, { size: 14 })
               }
             )
           ] })
@@ -25672,33 +26004,35 @@ var import_react8 = __toESM(require_react());
 // web/src/components/ExportPreviewModal.jsx
 var import_react7 = __toESM(require_react());
 var import_jsx_runtime7 = __toESM(require_jsx_runtime());
+function FormatIcon({ format, size = 16 }) {
+  if (format === "csv") return /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(IconTable, { size });
+  if (format === "markdown") return /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(IconFileText, { size });
+  if (format === "cyclonedx") return /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(IconPackage, { size });
+  return /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { style: { fontFamily: "var(--font-mono)", fontSize: `${size * 0.75}px`, fontWeight: 600 }, children: "{ }" });
+}
 var EXPORT_FORMAT_META = {
   csv: {
     label: "CSV",
     title: "CSV Report Preview",
     ext: "csv",
-    icon: "\u{1F4CA}",
     desc: "Spreadsheet-ready tabular vulnerability report containing severity, CVE IDs, package versions, code locations, and triage states."
   },
   markdown: {
     label: "Markdown",
     title: "Markdown Report Preview",
     ext: "md",
-    icon: "\u{1F4DD}",
     desc: "Executive summary report with vulnerability distributions, risk posture, and actionable remediation steps formatted for documentation."
   },
   cyclonedx: {
     label: "SBOM (CycloneDX)",
     title: "CycloneDX SBOM Preview (v1.5)",
     ext: "cdx.json",
-    icon: "\u{1F4E6}",
     desc: "Industry-standard Software Bill of Materials in CycloneDX JSON format listing all detected dependencies, metadata, and advisory links."
   },
   json: {
     label: "JSON",
     title: "JSON Report Preview",
     ext: "json",
-    icon: "{ }",
     desc: "Complete structured JSON report payload containing scan metadata, tool execution results, findings, and remediation telemetry."
   }
 };
@@ -25836,7 +26170,7 @@ function ExportPreviewModal({ isOpen, onClose, initialFormat = "csv", scanId, re
     /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "modal-header", children: [
       /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "modal-title-group", children: [
         /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("h2", { id: "export-modal-title", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "export-format-icon", "aria-hidden": "true", children: meta.icon }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "export-format-icon", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(FormatIcon, { format, size: 18 }) }),
           meta.title
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "modal-subtitle", children: [
@@ -25853,7 +26187,7 @@ function ExportPreviewModal({ isOpen, onClose, initialFormat = "csv", scanId, re
           ] })
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { type: "button", className: "btn-modal-close", onClick: onClose, title: "Close dialog", "aria-label": "Close dialog", children: "\xD7" })
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { type: "button", className: "btn-modal-close", onClick: onClose, title: "Close dialog", "aria-label": "Close dialog", children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(IconClose, { size: 16 }) })
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "modal-body export-modal-body", children: [
       /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "export-format-selector-row", children: [
@@ -25866,7 +26200,7 @@ function ExportPreviewModal({ isOpen, onClose, initialFormat = "csv", scanId, re
             className: `modal-tab-btn ${format === fmtKey ? "active" : ""}`,
             onClick: () => setFormat(fmtKey),
             children: [
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { style: { marginRight: "0.35rem" }, children: fmtMeta.icon }),
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { style: { marginRight: "0.4rem", display: "inline-flex", verticalAlign: "middle" }, children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(FormatIcon, { format: fmtKey, size: 14 }) }),
               fmtMeta.label
             ]
           },
@@ -26017,7 +26351,13 @@ function ExportPreviewModal({ isOpen, onClose, initialFormat = "csv", scanId, re
             onClick: handleCopy,
             disabled: loading || !content,
             title: "Copy preview text to clipboard",
-            children: copied ? "\u2713 Copied!" : "\u{1F4CB} Copy"
+            children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { style: { display: "inline-flex", alignItems: "center", gap: "6px" }, children: copied ? /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(IconCheck, { size: 14 }),
+              " Copied"
+            ] }) : /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(IconCopy, { size: 14 }),
+              " Copy"
+            ] }) })
           }
         )
       ] }),
@@ -26031,7 +26371,11 @@ function ExportPreviewModal({ isOpen, onClose, initialFormat = "csv", scanId, re
             onClick: handleDownload,
             disabled: loading || downloading,
             title: `Generate and download ${meta.label} file`,
-            children: downloading ? "Generating..." : `\u26A1 Generate & Download ${meta.label}`
+            children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { style: { display: "inline-flex", alignItems: "center", gap: "6px" }, children: downloading ? "Generating..." : /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(IconDownload, { size: 14 }),
+              " Download ",
+              meta.label
+            ] }) })
           }
         )
       ] })
@@ -26296,7 +26640,7 @@ function generateRemediationPrompt({ repo, scan, findings, severityFilter = "all
   const pkgManager = scan.projects?.[0]?.packageManager || scan.projects?.[0]?.type || "npm";
   let prompt2 = "";
   if (severityFilter === "all") {
-    prompt2 += `# \u{1F6E1}\uFE0F Complete Security Remediation Plan for ${repo.fullName}
+    prompt2 += `# Security Remediation Plan for ${repo.fullName}
 `;
     prompt2 += `**Repository**: ${repo.fullName} (branch: \`${scan.branch}\`)
 `;
@@ -26305,13 +26649,13 @@ function generateRemediationPrompt({ repo, scan, findings, severityFilter = "all
     prompt2 += `**Severity Breakdown**: ${bySeverity.critical.length} Critical | ${bySeverity.high.length} High | ${bySeverity.medium.length} Medium | ${bySeverity.low.length} Low
 
 `;
-    prompt2 += `## \u{1F3AF} Objective:
+    prompt2 += `## Objective
 `;
     prompt2 += `Act as an expert DevSecOps and Application Security Engineer. You are tasked with resolving all ${findings.length} security vulnerabilities listed below in a single, safe, and backwards-compatible remediation pass.
 
 `;
     if (planSteps.length > 0) {
-      prompt2 += `## \u{1F4E6} Step 1: Package Upgrades (${pkgManager})
+      prompt2 += `## Step 1: Package Upgrades (${pkgManager})
 `;
       prompt2 += `Execute the following package upgrades in terminal to resolve dependency advisories:
 
@@ -26341,7 +26685,7 @@ function generateRemediationPrompt({ repo, scan, findings, severityFilter = "all
 `;
     }
     if (bySeverity.critical.length > 0) {
-      prompt2 += `## \u{1F6A8} Step 2: Critical Severity Remediation (${bySeverity.critical.length} issues - Urgent P0)
+      prompt2 += `## Step 2: Critical Severity Remediation (${bySeverity.critical.length} issues - Urgent P0)
 `;
       bySeverity.critical.forEach((f, idx) => {
         const id = f.identifiers?.primary || f.id;
@@ -26359,7 +26703,7 @@ function generateRemediationPrompt({ repo, scan, findings, severityFilter = "all
       });
     }
     if (bySeverity.high.length > 0) {
-      prompt2 += `## \u26A0\uFE0F Step 3: High Severity Remediation (${bySeverity.high.length} issues - P1)
+      prompt2 += `## Step 3: High Severity Remediation (${bySeverity.high.length} issues - P1)
 `;
       bySeverity.high.forEach((f, idx) => {
         const id = f.identifiers?.primary || f.id;
@@ -26375,7 +26719,7 @@ function generateRemediationPrompt({ repo, scan, findings, severityFilter = "all
       });
     }
     if (bySeverity.medium.length > 0) {
-      prompt2 += `## \u{1F7E1} Step 4: Medium Severity Remediation (${bySeverity.medium.length} issues - P2)
+      prompt2 += `## Step 4: Medium Severity Remediation (${bySeverity.medium.length} issues - P2)
 `;
       bySeverity.medium.forEach((f, idx) => {
         const id = f.identifiers?.primary || f.id;
@@ -26388,7 +26732,7 @@ function generateRemediationPrompt({ repo, scan, findings, severityFilter = "all
 `;
     }
     if (bySeverity.low.length > 0) {
-      prompt2 += `## \u2139\uFE0F Step 5: Low Severity Issues (${bySeverity.low.length} issues - P3)
+      prompt2 += `## Step 5: Low Severity Issues (${bySeverity.low.length} issues - P3)
 `;
       bySeverity.low.forEach((f, idx) => {
         const id = f.identifiers?.primary || f.id;
@@ -26399,7 +26743,7 @@ function generateRemediationPrompt({ repo, scan, findings, severityFilter = "all
       prompt2 += `
 `;
     }
-    prompt2 += `## \u{1F50D} Step 6: Verification & Validation
+    prompt2 += `## Step 6: Verification & Validation
 `;
     prompt2 += `1. Verify that all dependencies compile cleanly and all lockfiles are in sync.
 `;
@@ -26410,7 +26754,7 @@ function generateRemediationPrompt({ repo, scan, findings, severityFilter = "all
   } else {
     const sevList = bySeverity[severityFilter] || [];
     const sevUpper = severityFilter.toUpperCase();
-    prompt2 += `# \u{1F6E1}\uFE0F ${sevUpper} Severity Security Remediation for ${repo.fullName}
+    prompt2 += `# ${sevUpper} Severity Security Remediation for ${repo.fullName}
 `;
     prompt2 += `**Target**: ${repo.fullName} | **Severity**: ${sevUpper} (${sevList.length} issues)
 
@@ -26515,7 +26859,7 @@ function AiPromptModal({ scan, repo, initialFindings = [], onClose }) {
   return /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "modal-backdrop", onClick: onClose, role: "dialog", "aria-modal": "true", "aria-label": "AI Remediation Prompt Generator", children: /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "modal-dialog", onClick: (e) => e.stopPropagation(), children: [
     /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "modal-header", children: [
       /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "modal-title-group", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { children: "\u26A1 AI Remediation Master Prompt" }),
+        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { children: "Remediation Master Prompt" }),
         /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "modal-subtitle", children: [
           "Universal prompt to fix all ",
           findings.length,
@@ -26532,7 +26876,7 @@ function AiPromptModal({ scan, repo, initialFindings = [], onClose }) {
           onClick: onClose,
           "aria-label": "Close dialog",
           title: "Close (Esc)",
-          children: "\u2715"
+          children: /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(IconClose, { size: 16 })
         }
       )
     ] }),
@@ -26558,7 +26902,8 @@ function AiPromptModal({ scan, repo, initialFindings = [], onClose }) {
             className: `modal-tab-btn ${severityFilter === "critical" ? "active" : ""}`,
             onClick: () => setSeverityFilter("critical"),
             children: [
-              "\u{1F534} Critical (",
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "sev-dot sev-dot-critical", style: { marginRight: "6px", display: "inline-block" } }),
+              "Critical (",
               counts.critical,
               ")"
             ]
@@ -26571,7 +26916,8 @@ function AiPromptModal({ scan, repo, initialFindings = [], onClose }) {
             className: `modal-tab-btn ${severityFilter === "high" ? "active" : ""}`,
             onClick: () => setSeverityFilter("high"),
             children: [
-              "\u{1F7E0} High (",
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "sev-dot sev-dot-high", style: { marginRight: "6px", display: "inline-block" } }),
+              "High (",
               counts.high,
               ")"
             ]
@@ -26584,7 +26930,8 @@ function AiPromptModal({ scan, repo, initialFindings = [], onClose }) {
             className: `modal-tab-btn ${severityFilter === "medium" ? "active" : ""}`,
             onClick: () => setSeverityFilter("medium"),
             children: [
-              "\u{1F7E1} Medium (",
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "sev-dot sev-dot-medium", style: { marginRight: "6px", display: "inline-block" } }),
+              "Medium (",
               counts.medium,
               ")"
             ]
@@ -26597,7 +26944,8 @@ function AiPromptModal({ scan, repo, initialFindings = [], onClose }) {
             className: `modal-tab-btn ${severityFilter === "low" ? "active" : ""}`,
             onClick: () => setSeverityFilter("low"),
             children: [
-              "\u{1F535} Low (",
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "sev-dot sev-dot-low", style: { marginRight: "6px", display: "inline-block" } }),
+              "Low (",
               counts.low,
               ")"
             ]
@@ -26617,7 +26965,13 @@ function AiPromptModal({ scan, repo, initialFindings = [], onClose }) {
             className: "primary btn-ai-prompt",
             onClick: handleCopy,
             title: "Copy prompt to clipboard",
-            children: copied ? "\u2713 Copied to Clipboard!" : "\u{1F4CB} Copy Fix Prompt"
+            children: /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { style: { display: "inline-flex", alignItems: "center", gap: "6px" }, children: copied ? /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(IconCheck, { size: 14 }),
+              " Copied"
+            ] }) : /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(IconCopy, { size: 14 }),
+              " Copy fix prompt"
+            ] }) })
           }
         )
       ] })
@@ -26884,7 +27238,7 @@ function ScanView({ scanId }) {
                 className: "primary btn-ai-prompt",
                 onClick: () => setShowPromptModal(true),
                 title: "Generate a master prompt to fix all vulnerabilities in one go",
-                children: "\u26A1 Generate AI Fix Prompt"
+                children: "Generate Fix Prompt"
               }
             ),
             /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "findings-export-group", role: "group", "aria-label": "Export findings", children: [
@@ -26907,7 +27261,7 @@ function ScanView({ scanId }) {
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "findings-filter-bar", children: [
           /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "findings-search-wrapper", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "findings-search-icon", "aria-hidden": "true", children: "\u{1F50D}" }),
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "findings-search-icon", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(IconSearch, { size: 14 }) }),
             /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
               "input",
               {
@@ -26926,7 +27280,7 @@ function ScanView({ scanId }) {
                 className: "btn-clear-search",
                 onClick: () => setQ(""),
                 title: "Clear search",
-                children: "\u2715"
+                children: /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(IconClose, { size: 12 })
               }
             )
           ] }),
@@ -26942,10 +27296,10 @@ function ScanView({ scanId }) {
                 },
                 children: [
                   /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("option", { value: "", children: "All severities" }),
-                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("option", { value: "critical", children: "\u{1F6A8} Critical" }),
-                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("option", { value: "high", children: "\u26A0\uFE0F High" }),
-                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("option", { value: "medium", children: "\u{1F7E1} Medium" }),
-                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("option", { value: "low", children: "\u{1F535} Low" })
+                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("option", { value: "critical", children: "Critical" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("option", { value: "high", children: "High" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("option", { value: "medium", children: "Medium" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("option", { value: "low", children: "Low" })
                 ]
               }
             ),
@@ -27683,9 +28037,165 @@ function OrganisationTab({ onMeUpdated }) {
         /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("button", { className: "primary", type: "submit", disabled: ro || busy, children: "Save" })
       ] })
     ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(DastPoliciesPanel, { readOnly: ro }),
     org && org.role === "owner" && /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("section", { className: "card card-compact danger-zone-card", children: [
       /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("h2", { children: "Danger zone" }),
       /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("button", { className: "danger", type: "button", onClick: handleDeleteOrg, disabled: busy, children: "Delete organisation" })
+    ] })
+  ] });
+}
+function DastPoliciesPanel({ readOnly }) {
+  const [policies, setPolicies] = (0, import_react11.useState)([]);
+  const [busy, setBusy] = (0, import_react11.useState)(false);
+  const [form, setForm] = (0, import_react11.useState)({
+    kind: "engagement",
+    allowHosts: "",
+    denyHosts: "",
+    allowedProfiles: ["discovery", "standard"],
+    allowActiveTesting: false,
+    evidenceKind: "engagement_id",
+    evidenceRef: "",
+    expiresAt: ""
+  });
+  async function load() {
+    try {
+      setPolicies(await api.get(api.org("/dast-policies")));
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+  (0, import_react11.useEffect)(() => {
+    load();
+  }, [session.orgId]);
+  async function handleCreate(e) {
+    e.preventDefault();
+    try {
+      setBusy(true);
+      await api.post(api.org("/dast-policies"), {
+        kind: form.kind,
+        allowHosts: form.allowHosts.split(",").map((s) => s.trim()).filter(Boolean),
+        denyHosts: form.denyHosts.split(",").map((s) => s.trim()).filter(Boolean),
+        allowedProfiles: form.allowActiveTesting ? [.../* @__PURE__ */ new Set([...form.allowedProfiles, "deep"])] : form.allowedProfiles,
+        allowActiveTesting: form.allowActiveTesting,
+        evidenceKind: form.evidenceKind,
+        evidenceRef: form.evidenceRef,
+        expiresAt: new Date(form.expiresAt).toISOString()
+      });
+      toast("Authorization policy recorded");
+      setForm({ ...form, evidenceRef: "", allowHosts: "" });
+      await load();
+    } catch (err) {
+      toast(err.message || "Could not save policy", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function handleRevoke(id) {
+    try {
+      await api.post(api.org(`/dast-policies/${id}/revoke`), { reason: "revoked from settings" });
+      await load();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)(import_jsx_runtime11.Fragment, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("section", { className: "card card-compact", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("h2", { children: "Public website assessment" }),
+      /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("p", { className: "small muted", children: "Public Website Assessment does not use an engagement ID, DNS TXT record, or HTTP token. Register a public URL on the Websites page and run that profile. It never enables ZAP Active Scan or intrusive Nuclei templates." })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("section", { className: "card card-compact", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("h2", { children: "Authorized active DAST" }),
+      /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("p", { className: "small muted", children: "Discovery, Standard, and Deep require a stored engagement, lab allowlist, or site grant. Evidence is required here only. Active testing stays off unless you explicitly enable it. DNS/HTTP verification is optional domain-control proof and does not grant ZAP active scan." }),
+      policies.length ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("ul", { className: "stack", style: { margin: "12px 0", paddingLeft: "1.1rem" }, children: policies.map((p) => /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("li", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("strong", { children: p.kind }),
+        " ",
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "small muted", children: p.status }),
+        " \xB7 ",
+        (p.allowHosts || []).join(", "),
+        " \xB7 ",
+        (p.allowedProfiles || []).join(", "),
+        p.allowActiveTesting ? " \xB7 active testing" : "",
+        !readOnly && p.status === "active" && /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)(import_jsx_runtime11.Fragment, { children: [
+          " ",
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("button", { type: "button", className: "btn btn-sm btn-subtle", onClick: () => handleRevoke(p.id), children: "Revoke" })
+        ] })
+      ] }, p.id)) }) : /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("p", { className: "small muted", children: "No authorized DAST policies yet. Public assessment still works without one." }),
+      !readOnly && /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("form", { className: "stack", onSubmit: handleCreate, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("label", { children: [
+          "Kind",
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("select", { value: form.kind, onChange: (e) => setForm({ ...form, kind: e.target.value }), children: [
+            /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("option", { value: "engagement", children: "Engagement" }),
+            /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("option", { value: "lab", children: "Lab allowlist" })
+          ] })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("label", { children: [
+          "Allow hosts (comma-separated)",
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
+            "input",
+            {
+              required: true,
+              value: form.allowHosts,
+              onChange: (e) => setForm({ ...form, allowHosts: e.target.value }),
+              placeholder: form.kind === "lab" ? "staging.example.com" : "example.com"
+            }
+          )
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("label", { children: [
+          "Deny hosts (optional)",
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
+            "input",
+            {
+              value: form.denyHosts,
+              onChange: (e) => setForm({ ...form, denyHosts: e.target.value })
+            }
+          )
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("label", { children: [
+          "Evidence type",
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("select", { value: form.evidenceKind, onChange: (e) => setForm({ ...form, evidenceKind: e.target.value }), children: [
+            /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("option", { value: "engagement_id", children: "Engagement ID" }),
+            /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("option", { value: "change_ticket", children: "Change ticket" }),
+            /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("option", { value: "signed_document_sha256", children: "SHA-256 of signed document" })
+          ] })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("label", { children: [
+          "Evidence reference (required for authorized DAST only)",
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
+            "input",
+            {
+              required: true,
+              minLength: 8,
+              value: form.evidenceRef,
+              onChange: (e) => setForm({ ...form, evidenceRef: e.target.value }),
+              placeholder: "ENG-104821"
+            }
+          )
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("label", { children: [
+          "Expires",
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
+            "input",
+            {
+              type: "datetime-local",
+              required: true,
+              value: form.expiresAt,
+              onChange: (e) => setForm({ ...form, expiresAt: e.target.value })
+            }
+          )
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("label", { className: "inline", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
+            "input",
+            {
+              type: "checkbox",
+              checked: form.allowActiveTesting,
+              onChange: (e) => setForm({ ...form, allowActiveTesting: e.target.checked })
+            }
+          ),
+          "Allow deep active testing (ZAP ascan and intrusive Nuclei)"
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("button", { className: "primary", type: "submit", disabled: busy, children: busy ? "Saving..." : "Add authorized DAST policy" })
+      ] })
     ] })
   ] });
 }
@@ -28244,6 +28754,7 @@ function SettingsView({ tab = "profile", onThemeChange, onMeUpdated }) {
 
 // web/src/views/WebsitesView.jsx
 var import_react12 = __toESM(require_react());
+var import_website_auth_ui = __toESM(require_website_auth_ui());
 var import_jsx_runtime12 = __toESM(require_jsx_runtime());
 function WebsitesView({ onSelectScan }) {
   const [websites, setWebsites] = (0, import_react12.useState)([]);
@@ -28254,8 +28765,25 @@ function WebsitesView({ onSelectScan }) {
   const [verifyingSite, setVerifyingSite] = (0, import_react12.useState)(null);
   const [verifyLoading, setVerifyLoading] = (0, import_react12.useState)(false);
   const [scanningSiteId, setScanningSiteId] = (0, import_react12.useState)(null);
+  const [scanProfile, setScanProfile] = (0, import_react12.useState)("public");
+  const [grantSite, setGrantSite] = (0, import_react12.useState)(null);
+  const [grantBusy, setGrantBusy] = (0, import_react12.useState)(false);
+  const [grantForm, setGrantForm] = (0, import_react12.useState)({
+    evidenceKind: "engagement_id",
+    evidenceRef: "",
+    expiresAt: "",
+    allowedProfiles: ["discovery", "standard"],
+    allowActiveTesting: false
+  });
   const canWrite = hasPermission(session.me, session.orgId, "repos:write");
   const canScan = hasPermission(session.me, session.orgId, "scans:run");
+  const canAuthorize = hasPermission(session.me, session.orgId, "org:settings");
+  const PROFILES = [
+    { id: "public", label: "Public Website Assessment" },
+    { id: "discovery", label: "Discovery Assessment" },
+    { id: "standard", label: "Standard Vulnerability Assessment" },
+    { id: "deep", label: "Deep Security Assessment" }
+  ];
   async function loadWebsites() {
     try {
       setLoading(true);
@@ -28301,19 +28829,24 @@ function WebsitesView({ onSelectScan }) {
       toast(err.message || "Failed to delete website", "error");
     }
   }
-  async function handleStartScan(site, profile) {
-    const body = { profile };
-    if (profile === "ascan") {
-      const ok = window.confirm(
-        `Active exploit scanning sends attack payloads to ${site.hostname}. Use it only on a site you own or are contracted to test. Continue?`
-      );
-      if (!ok) return;
-      body.authorizeActiveTesting = true;
+  function authStatus(site) {
+    const view = (0, import_website_auth_ui.authorizationPresentation)(site, scanProfile);
+    if (view.status === "authorized" && view.expiresAt) {
+      return { label: `${view.label} until ${fmtDate(view.expiresAt)}`, cls: view.tone, reason: view.reason };
+    }
+    return { label: view.label, cls: view.tone, reason: view.reason };
+  }
+  async function handleStartScan(site) {
+    const profile = scanProfile;
+    const decision = (0, import_website_auth_ui.scanStartDecision)(site, profile);
+    if (!decision.allow) {
+      toast(decision.reason || "This assessment is not authorized for this host.", "error");
+      return;
     }
     try {
       setScanningSiteId(site.id);
-      const scan = await api.post(api.org(`/websites/${site.id}/scans`), body);
-      toast(`${profile.toUpperCase()} scan queued`);
+      const scan = await api.post(api.org(`/websites/${site.id}/scans`), { profile });
+      toast(`${profile} scan queued`);
       await loadWebsites();
       if (onSelectScan) {
         onSelectScan(site.id, scan.id);
@@ -28326,10 +28859,10 @@ function WebsitesView({ onSelectScan }) {
       setScanningSiteId(null);
     }
   }
-  async function handleVerify(site, isManual = false) {
+  async function handleVerify(site) {
     try {
       setVerifyLoading(true);
-      const res = await api.post(api.org(`/websites/${site.id}/verify`), { manual: isManual });
+      const res = await api.post(api.org(`/websites/${site.id}/verify`), {});
       if (res.verified) {
         toast(`Domain verified successfully via ${res.method}!`);
         setVerifyingSite(null);
@@ -28343,9 +28876,28 @@ function WebsitesView({ onSelectScan }) {
       setVerifyLoading(false);
     }
   }
+  async function handleCreateGrant(e) {
+    e.preventDefault();
+    if (!grantSite) return;
+    try {
+      setGrantBusy(true);
+      await api.post(api.org(`/websites/${grantSite.id}/authorizations`), {
+        ...grantForm,
+        expiresAt: new Date(grantForm.expiresAt).toISOString(),
+        allowActiveTesting: Boolean(grantForm.allowActiveTesting) && grantForm.allowedProfiles.includes("deep")
+      });
+      toast("Client authorization grant recorded");
+      setGrantSite(null);
+      await loadWebsites();
+    } catch (err) {
+      toast(err.message || "Could not record authorization", "error");
+    } finally {
+      setGrantBusy(false);
+    }
+  }
   const headers = [
     "Website target",
-    "Verification",
+    (0, import_website_auth_ui.isPublicAssessmentProfile)(scanProfile) ? "Public assessment" : "Authorized DAST",
     "Security posture",
     "Latest scan",
     { label: "Actions", num: true }
@@ -28353,6 +28905,8 @@ function WebsitesView({ onSelectScan }) {
   const rows = websites.map((site) => {
     const latest = site.latestScan;
     const summary = latest && latest.summary;
+    const authView = authStatus(site);
+    const startDecision = (0, import_website_auth_ui.scanStartDecision)(site, scanProfile);
     const counts = summary ? {
       critical: summary.critical || 0,
       high: summary.high || 0,
@@ -28366,22 +28920,28 @@ function WebsitesView({ onSelectScan }) {
           /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "repo-name", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: site.name || site.hostname }) }),
           /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "small muted", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("a", { href: site.targetUrl, target: "_blank", rel: "noopener noreferrer", children: site.targetUrl }) })
         ] }, "target"),
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { children: site.isVerified ? /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("span", { className: "badge sev-low", title: `Verified by ${site.verificationMethod || "DNS/HTTP"}`, children: [
-          "Verified (",
-          site.verificationMethod === "dns_txt" ? "DNS" : "HTTP",
-          ")"
-        ] }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "row", style: { gap: "0.4rem", alignItems: "center" }, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "badge sev-medium", children: "Unverified" }),
-          canWrite && /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-            "button",
-            {
-              type: "button",
-              className: "btn btn-sm btn-subtle",
-              onClick: () => setVerifyingSite(site),
-              children: "Verify"
-            }
-          )
-        ] }) }, "verify"),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: `badge ${authView.cls}`, children: authView.label }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "small muted", style: { marginTop: "0.25rem", maxWidth: "220px" }, children: startDecision.allow ? authView.reason : startDecision.reason }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "row", style: { gap: "0.4rem", marginTop: "0.3rem", flexWrap: "wrap" }, children: [
+            canWrite && !site.isVerified && /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("button", { type: "button", className: "btn btn-sm btn-subtle", onClick: () => setVerifyingSite(site), children: "Optional DNS/HTTP" }),
+            canAuthorize && !(0, import_website_auth_ui.isPublicAssessmentProfile)(scanProfile) && /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+              "button",
+              {
+                type: "button",
+                className: "btn btn-sm btn-subtle",
+                onClick: () => {
+                  setGrantSite(site);
+                  setGrantForm((f) => ({
+                    ...f,
+                    expiresAt: new Date(Date.now() + 7 * 24 * 3600 * 1e3).toISOString().slice(0, 16)
+                  }));
+                },
+                children: "Record grant"
+              }
+            )
+          ] })
+        ] }, "verify"),
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { children: latest && latest.postureScore != null ? /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
           /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("span", { className: `badge ${latest.postureScore >= 80 ? "sev-low" : latest.postureScore >= 50 ? "sev-medium" : "sev-critical"}`, children: [
             latest.postureScore,
@@ -28409,43 +28969,17 @@ function WebsitesView({ onSelectScan }) {
               children: "Results"
             }
           ),
-          canScan && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "website-scan-group", role: "group", "aria-label": "Trigger scan options", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-              "button",
-              {
-                type: "button",
-                className: "website-scan-btn btn-active-primary",
-                disabled: scanningSiteId === site.id,
-                onClick: () => handleStartScan(site, "passive"),
-                title: "Runs Comprehensive Full Scan: TLS, security headers, technology stack, discovered pages, forms and sensitive files",
-                children: scanningSiteId === site.id ? "Scanning..." : "Full Scan"
-              }
-            ),
-            site.isVerified ? /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(import_jsx_runtime12.Fragment, { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-                "button",
-                {
-                  type: "button",
-                  className: "website-scan-btn",
-                  disabled: scanningSiteId === site.id,
-                  onClick: () => handleStartScan(site, "crawl"),
-                  title: "GET-only Traditional crawl. Does not submit forms or run active attacks.",
-                  children: "Crawl site"
-                }
-              ),
-              /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-                "button",
-                {
-                  type: "button",
-                  className: "website-scan-btn",
-                  disabled: scanningSiteId === site.id,
-                  onClick: () => handleStartScan(site, "ascan"),
-                  title: "OWASP ZAP active scan. Requires ZAP_API_URL and confirmation. Authorized sites only.",
-                  children: "Exploit scan"
-                }
-              )
-            ] }) : null
-          ] }),
+          canScan && /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+            "button",
+            {
+              type: "button",
+              className: "website-scan-btn btn-active-primary",
+              disabled: scanningSiteId === site.id,
+              onClick: () => handleStartScan(site),
+              title: (0, import_website_auth_ui.isPublicAssessmentProfile)(scanProfile) ? "Run Public Website Assessment without an engagement ID" : "Run the selected assessment against this authorized target",
+              children: scanningSiteId === site.id ? "Scanning..." : "Scan website"
+            }
+          ),
           canWrite && /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
             "button",
             {
@@ -28465,7 +28999,7 @@ function WebsitesView({ onSelectScan }) {
       PageHead,
       {
         title: "Website Security Scanner",
-        subtitle: "DAST vulnerability scanning, TLS/SSL configuration, HTTP headers, CORS policies, and AI risk analysis"
+        subtitle: "Public Website Assessment needs no engagement ID and no DNS proof. Discovery, Standard and Deep use an org policy or site grant. Deep also needs stored active-testing permission."
       }
     ),
     canWrite && /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("section", { className: "card", style: { marginBottom: "1.5rem" }, children: [
@@ -28510,16 +29044,29 @@ function WebsitesView({ onSelectScan }) {
           websites.length,
           ")"
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-          "button",
-          {
-            type: "button",
-            className: "btn btn-sm btn-subtle",
-            onClick: loadWebsites,
-            disabled: loading,
-            children: loading ? "Refreshing..." : "Refresh"
-          }
-        )
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "row", style: { gap: "0.5rem", alignItems: "center" }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("label", { className: "small muted", htmlFor: "scan-profile", children: "Profile" }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+            "select",
+            {
+              id: "scan-profile",
+              value: scanProfile,
+              onChange: (e) => setScanProfile(e.target.value),
+              style: { height: "32px", borderRadius: "6px" },
+              children: PROFILES.map((p) => /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("option", { value: p.id, children: p.label }, p.id))
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+            "button",
+            {
+              type: "button",
+              className: "btn btn-sm btn-subtle",
+              onClick: loadWebsites,
+              disabled: loading,
+              children: loading ? "Refreshing..." : "Refresh"
+            }
+          )
+        ] })
       ] }) }),
       loading && !websites.length ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { style: { padding: "1rem 0" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ScanSkeletonLoader, { cards: 4, hasTabs: false, rows: 4 }) }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
         DataTable,
@@ -28544,9 +29091,9 @@ function WebsitesView({ onSelectScan }) {
         )
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("p", { className: "small muted", children: [
-        "Active crawling and vulnerability probing require domain authorization to prevent unauthorized testing. Please complete one of the verification options below for ",
+        "Optional domain-control check for ",
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: verifyingSite.hostname }),
-        ":"
+        ". DNS TXT or the HTTP token prove you control the name. They do not by themselves permit ZAP active scan."
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { style: { margin: "1rem 0" }, children: [
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("h4", { children: "Option A: DNS TXT Record (Recommended)" }),
@@ -28581,42 +29128,122 @@ function WebsitesView({ onSelectScan }) {
           ] })
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { style: { margin: "1rem 0" }, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("h4", { children: "Option C: Authorized Security Assessment (Self-Certified)" }),
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("p", { className: "small muted", children: "If you are an authorised tester or domain administrator and cannot configure public DNS records or file uploads right now, you may confirm your testing authorization directly." })
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "row", style: { justifyContent: "space-between", gap: "0.5rem", marginTop: "1.25rem", flexWrap: "wrap" }, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "row", style: { justifyContent: "flex-end", gap: "0.5rem", marginTop: "1.25rem", flexWrap: "wrap" }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "row", style: { gap: "0.5rem" }, children: [
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
           "button",
           {
             type: "button",
             className: "btn btn-subtle",
-            disabled: verifyLoading,
-            onClick: () => handleVerify(verifyingSite, true),
-            title: "Self-certify authorization for this domain",
-            children: "Self-Certify Authorization"
+            onClick: () => setVerifyingSite(null),
+            children: "Cancel"
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "row", style: { gap: "0.5rem" }, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-            "button",
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+          "button",
+          {
+            type: "button",
+            className: "btn btn-primary",
+            disabled: verifyLoading,
+            onClick: () => handleVerify(verifyingSite),
+            children: verifyLoading ? "Checking..." : "Check DNS / HTTP"
+          }
+        )
+      ] }) })
+    ] }) }),
+    grantSite && /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "modal-backdrop", role: "dialog", "aria-modal": "true", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "card modal-card", style: { maxWidth: "640px", width: "90%" }, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "card-head", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("h2", { className: "m-0", children: "Record client authorization" }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("button", { type: "button", className: "btn btn-sm btn-subtle", onClick: () => setGrantSite(null), children: "Close" })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("p", { className: "small muted", children: [
+        "Use this only when an independent engagement, signed document, or change ticket already authorizes testing of ",
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("strong", { children: grantSite.hostname }),
+        ". A URL, email, or \u201CI own this\u201D click is not enough."
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("form", { onSubmit: handleCreateGrant, style: { display: "grid", gap: "12px" }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("label", { className: "small muted", htmlFor: "ev-kind", children: "Evidence type" }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(
+            "select",
             {
-              type: "button",
-              className: "btn btn-subtle",
-              onClick: () => setVerifyingSite(null),
-              children: "Cancel"
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-            "button",
-            {
-              type: "button",
-              className: "btn btn-primary",
-              disabled: verifyLoading,
-              onClick: () => handleVerify(verifyingSite, false),
-              children: verifyLoading ? "Checking..." : "Check DNS / HTTP"
+              id: "ev-kind",
+              value: grantForm.evidenceKind,
+              onChange: (e) => setGrantForm({ ...grantForm, evidenceKind: e.target.value }),
+              style: { width: "100%", height: "32px" },
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("option", { value: "engagement_id", children: "Engagement ID" }),
+                /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("option", { value: "change_ticket", children: "Change ticket" }),
+                /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("option", { value: "signed_document_sha256", children: "SHA-256 of signed document" })
+              ]
             }
           )
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("label", { className: "small muted", htmlFor: "ev-ref", children: "Evidence reference" }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+            "input",
+            {
+              id: "ev-ref",
+              required: true,
+              minLength: 8,
+              value: grantForm.evidenceRef,
+              onChange: (e) => setGrantForm({ ...grantForm, evidenceRef: e.target.value }),
+              placeholder: "ENG-104821 or 64-char hex digest",
+              style: { width: "100%" }
+            }
+          )
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("label", { className: "small muted", htmlFor: "ev-exp", children: "Expires" }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+            "input",
+            {
+              id: "ev-exp",
+              type: "datetime-local",
+              required: true,
+              value: grantForm.expiresAt,
+              onChange: (e) => setGrantForm({ ...grantForm, expiresAt: e.target.value }),
+              style: { width: "100%" }
+            }
+          )
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("fieldset", { style: { border: "1px solid var(--border)", borderRadius: "6px", padding: "8px 12px" }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("legend", { className: "small muted", children: "Allowed profiles" }),
+          PROFILES.filter((p) => p.id !== "public").map((p) => /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("label", { className: "small", style: { display: "block", marginBottom: "4px" }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+              "input",
+              {
+                type: "checkbox",
+                checked: grantForm.allowedProfiles.includes(p.id),
+                onChange: (e) => {
+                  const next = e.target.checked ? [...grantForm.allowedProfiles, p.id] : grantForm.allowedProfiles.filter((id) => id !== p.id);
+                  setGrantForm({ ...grantForm, allowedProfiles: next });
+                }
+              }
+            ),
+            " ",
+            p.label
+          ] }, p.id)),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("label", { className: "small", style: { display: "block", marginTop: "8px" }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+              "input",
+              {
+                type: "checkbox",
+                checked: grantForm.allowActiveTesting,
+                onChange: (e) => setGrantForm({
+                  ...grantForm,
+                  allowActiveTesting: e.target.checked,
+                  allowedProfiles: e.target.checked ? [.../* @__PURE__ */ new Set([...grantForm.allowedProfiles, "deep"])] : grantForm.allowedProfiles
+                })
+              }
+            ),
+            " ",
+            "Allow ZAP active scan and intrusive Nuclei (deep only)"
+          ] })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "row", style: { justifyContent: "flex-end", gap: "8px" }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("button", { type: "button", className: "btn btn-subtle", onClick: () => setGrantSite(null), children: "Cancel" }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("button", { type: "submit", className: "btn btn-primary", disabled: grantBusy, children: grantBusy ? "Saving..." : "Record grant" })
         ] })
       ] })
     ] }) })
@@ -28625,6 +29252,7 @@ function WebsitesView({ onSelectScan }) {
 
 // web/src/views/WebsiteScanView.jsx
 var import_react13 = __toESM(require_react());
+var import_scan_story = __toESM(require_scan_story());
 var import_jsx_runtime13 = __toESM(require_jsx_runtime());
 function TabSkeletonLoader({ tabKey }) {
   const titles = {
@@ -28632,6 +29260,7 @@ function TabSkeletonLoader({ tabKey }) {
     headers: "HTTP Security Headers Assessment",
     cookies: "Cookie Security Audit",
     tls: "TLS / SSL Configuration & Certificate Status",
+    edge: "Edge, CDN & DNS",
     crawl: "Endpoints & Forms Inventory",
     pages: "Discovered Pages",
     technologies: "Technology Stack & Fingerprints"
@@ -28650,6 +29279,174 @@ function TabSkeletonLoader({ tabKey }) {
       /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(Skeleton, { width: "22%", height: "1rem", radius: "4px" }),
       /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(Skeleton, { width: "18%", height: "1rem", radius: "4px" })
     ] }, i)) })
+  ] });
+}
+function EdgeField({ label, children }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "small muted", children: label }),
+    /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { style: { marginTop: "0.25rem" }, children })
+  ] });
+}
+function SimpleTable({ head, rows, empty }) {
+  if (!rows.length) return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "empty", children: empty });
+  return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("table", { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("thead", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("tr", { children: head.map((h) => /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", children: h }, h)) }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("tbody", { children: rows })
+  ] }) });
+}
+function EdgePanel({ edge, emailDns, hostname }) {
+  if (!edge && !emailDns) {
+    return /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("section", { className: "card", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("h2", { className: "m-0", children: "Edge & CDN" }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "empty", children: "Edge and DNS details are recorded for scans run after this feature was added. Run a new scan to see them." })
+    ] });
+  }
+  const e = edge || { signals: [], dns: {}, edgeHeaders: {}, cookieNames: [], botProtection: {} };
+  const bot = e.botProtection || {};
+  const ray = e.edgeHeaders && e.edgeHeaders.ray;
+  const records = [
+    ...(e.dns && e.dns.nameservers || []).map((v) => ({ type: "NS", value: v, owner: e.dnsHost })),
+    ...(e.dns && e.dns.ipv4 || []).map((r) => ({ type: "A", value: r.ip, owner: r.owner })),
+    ...(e.dns && e.dns.ipv6 || []).map((r) => ({ type: "AAAA", value: r.ip, owner: r.owner }))
+  ];
+  const headerRows = [
+    ["server", e.edgeHeaders && e.edgeHeaders.server],
+    ["cf-ray", ray && (ray.code ? `${ray.id}-${ray.code}` : ray.id)],
+    ["cf-cache-status", e.edgeHeaders && e.edgeHeaders.cacheStatus],
+    ["cf-mitigated", e.edgeHeaders && e.edgeHeaders.mitigated],
+    ["via", e.edgeHeaders && e.edgeHeaders.via]
+  ].filter(([, v]) => v);
+  const policyRows = emailDns ? [
+    ["SPF", emailDns.domain, emailDns.spf],
+    ["DMARC", `_dmarc.${emailDns.domain}`, emailDns.dmarc],
+    ...emailDns.caa && emailDns.caa.length ? emailDns.caa.map((c) => ["CAA", emailDns.domain, c]) : [["CAA", emailDns.domain, null]]
+  ] : [];
+  return /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { style: { display: "grid", gap: "1.5rem" }, children: [
+    edge && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("section", { className: "card", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("h2", { className: "m-0", children: "Edge & CDN" }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "1.25rem" }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(EdgeField, { label: "Provider in front of the site", children: e.provider ? /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("strong", { children: e.provider }),
+          " ",
+          /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "badge", children: e.confidence === "confirmed" ? "Confirmed" : "Likely" })
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "muted", children: "No CDN or WAF detected" }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(EdgeField, { label: "Origin server", children: e.originHidden ? /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { children: [
+          "Hidden behind ",
+          e.provider || "the edge"
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { children: "Public addresses are not all in a known CDN range" }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(EdgeField, { label: "Bot protection", children: bot.challenged ? /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "badge st-blocked", children: bot.kind || "Challenged" }),
+          /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: "small muted", children: [
+            " HTTP ",
+            bot.statusCode,
+            bot.pageTitle ? ` \xB7 "${bot.pageTitle}"` : ""
+          ] })
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { children: [
+          "Not challenged",
+          bot.statusCode ? /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: "small muted", children: [
+            " \xB7 HTTP ",
+            bot.statusCode
+          ] }) : null
+        ] }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(EdgeField, { label: "Data centre that answered", children: ray && ray.code ? /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("code", { children: ray.code }),
+          ray.city ? ` ${ray.city}` : ""
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "muted", children: "Not reported" }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(EdgeField, { label: "DNS hosted by", children: e.dnsHost ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { children: e.dnsHost }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "muted", children: "Unknown" }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(EdgeField, { label: "Edge certificate", children: e.tls ? /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: "small", children: [
+          e.tls.issuer || "Unknown issuer",
+          e.tls.protocol ? ` \xB7 ${e.tls.protocol}` : ""
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "muted", children: "Not available" }) })
+      ] }),
+      bot.challenged && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("p", { className: "small muted", style: { marginTop: "1.25rem", marginBottom: 0 }, children: [
+        bot.by || e.provider || "The edge",
+        " answered the scanner with a challenge, so checks that read the page were skipped.",
+        " ",
+        "To scan ",
+        hostname || "this site",
+        " fully, allow the scanner IP in that firewall."
+      ] })
+    ] }),
+    edge && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("section", { className: "card", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("h2", { className: "m-0", children: [
+        "Evidence (",
+        (e.signals || []).length,
+        ")"
+      ] }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
+        SimpleTable,
+        {
+          head: ["Source", "Provider", "What was observed"],
+          empty: "No CDN or WAF signals were observed.",
+          rows: (e.signals || []).map((sig, i) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("tr", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: sig.source }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("strong", { children: sig.provider }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("code", { children: sig.detail }) })
+          ] }, i))
+        }
+      )
+    ] }),
+    edge && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("section", { className: "card", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("h2", { className: "m-0", children: [
+        "DNS records (",
+        records.length,
+        ")"
+      ] }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
+        SimpleTable,
+        {
+          head: ["Type", "Value", "Belongs to"],
+          empty: "DNS records could not be resolved.",
+          rows: records.map((r, i) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("tr", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "badge", children: r.type }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("code", { children: r.value }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: r.owner || /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "muted", children: "Not a known CDN range" }) })
+          ] }, i))
+        }
+      )
+    ] }),
+    emailDns && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("section", { className: "card", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("h2", { className: "m-0", children: [
+        "Email and certificate policy (",
+        emailDns.domain,
+        ")"
+      ] }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
+        SimpleTable,
+        {
+          head: ["Record", "Name", "Value"],
+          empty: "No policy records were checked.",
+          rows: policyRows.map(([type, name, value], i) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("tr", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "badge", children: type }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("code", { children: name }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: value ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("code", { children: value }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "muted", children: "Not published" }) })
+          ] }, i))
+        }
+      )
+    ] }),
+    edge && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("section", { className: "card", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("h2", { className: "m-0", children: "Edge response" }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
+        SimpleTable,
+        {
+          head: ["Header or cookie", "Value"],
+          empty: "The edge returned no identifying headers or cookies.",
+          rows: [
+            ...headerRows.map(([name, value]) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("tr", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("code", { children: name }) }),
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("code", { children: value }) })
+            ] }, name)),
+            ...(e.cookieNames || []).map((name) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("tr", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("code", { children: [
+                "Set-Cookie: ",
+                name
+              ] }) }),
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { className: "muted", children: "Value not stored" })
+            ] }, `c-${name}`))
+          ]
+        }
+      )
+    ] })
   ] });
 }
 function WebsiteScanView({ websiteId, scanId }) {
@@ -28739,20 +29536,13 @@ function WebsiteScanView({ websiteId, scanId }) {
     }
   }
   async function handleDownloadReport(format) {
+    const ext = format === "markdown" ? "md" : format;
     try {
-      const res = await api.get(api.org(`/websites/${websiteId}/scans/${scanId}/report?format=${format}`));
-      if (res && res.download) {
-        const blob = new Blob([res.download.body], { type: res.download.type });
-        const objUrl = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = objUrl;
-        a.download = `vulnsight-dast-${scanId}.${res.download.ext}`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(objUrl);
-        toast(`Downloaded report in ${format.toUpperCase()} format`);
-      }
+      await api.download(
+        api.org(`/websites/${websiteId}/scans/${scanId}/report?format=${format}`),
+        `vulnsight-dast-${scanId}.${ext}`
+      );
+      toast(`Downloaded report in ${format.toUpperCase()} format`);
     } catch (err) {
       toast(err.message || "Report download failed", "error");
     }
@@ -28774,6 +29564,8 @@ function WebsiteScanView({ websiteId, scanId }) {
   const allFindings = passive.findings || [];
   const tech = passive.technologies || [];
   const tls = passive.tls;
+  const edge = passive.edgeIntel || null;
+  const emailDns = passive.emailDns || null;
   const headersData = passive.headers || {};
   const cookiesList = passive.cookies || [];
   const corsData = passive.cors || {};
@@ -28801,9 +29593,24 @@ function WebsiteScanView({ websiteId, scanId }) {
           " ",
           "\xB7 Profile: ",
           /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("strong", { children: scan.profile }),
-          " \xB7 Status: ",
+          " ",
+          "\xB7 Status: ",
           /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(StatusBadge, { status: scan.status }),
-          " \xB7 Finished: ",
+          " ",
+          "\xB7 Auth: ",
+          (() => {
+            const a = site.authorization || {};
+            if (a.status === "authorized" || a.status === "verified" || a.status === "active") {
+              const src = a.source === "dns_http" ? "DNS/HTTP (no active testing unless stored)" : a.source === "lab" ? "lab allowlist" : a.source === "org_engagement" ? "org engagement" : a.source === "client_grant" ? "site grant" : "authorized";
+              return `${src}${a.allowActiveTesting || scan.authorizeActiveTesting ? ", active testing permitted" : ""}`;
+            }
+            if (a.status === "expired") return "expired";
+            if (a.status === "revoked") return "revoked";
+            if (a.status === "denied") return "outside approved scope";
+            return scan.profile === "passive" ? "not required for passive" : "not configured";
+          })(),
+          " ",
+          "\xB7 Finished: ",
           fmtDate(scan.finishedAt || scan.createdAt)
         ] })
       ] }),
@@ -28863,7 +29670,23 @@ function WebsiteScanView({ websiteId, scanId }) {
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "badge st-running", children: "Live Scanner Active" })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { className: "muted small", style: { margin: 0 }, children: scan.status === "queued" ? "The scan is queued. GET-only crawl will start after passive inspection." : scan.progress ? `Engine ${scan.progress.engine || scan.engine || "crawler"} \xB7 pages ${scan.progress.pages || 0} \xB7 endpoints ${scan.progress.endpoints || 0} \xB7 queue ${scan.progress.queue || 0}` : "Passive inspection and GET-only discovery in progress. Forms are recorded but not submitted." }),
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { className: "muted small", style: { margin: 0 }, children: (() => {
+          if (scan.status === "queued") return "Queued. Waiting for a worker.";
+          if (scan.status === "cancelled") return "Cancelled.";
+          const stage = scan.progress && scan.progress.stage || scan.engine || "";
+          const labels = {
+            initializing: "Initializing",
+            crawling: "Crawling (Playwright)",
+            "zap-spider": "Running ZAP Spider",
+            nuclei: "Running Nuclei",
+            "zap-ascan": "Running ZAP Active Scan",
+            processing: "Processing findings",
+            browser: "Crawling (Playwright)"
+          };
+          const label = labels[stage] || (stage ? `Running ${stage}` : "Initializing");
+          const pages = scan.progress && scan.progress.pages != null ? ` \xB7 pages ${scan.progress.pages}` : "";
+          return `${label}${pages}`;
+        })() }),
         /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "scan-progress-bar-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "scan-progress-bar-indeterminate" }) })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "stats", style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }, children: ["Security Posture", "Critical Severity", "High Severity", "Medium & Low", "Endpoints Inspected"].map((label, idx) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "card skeleton-stat-card", children: [
@@ -28872,12 +29695,68 @@ function WebsiteScanView({ websiteId, scanId }) {
       ] }, idx)) }),
       /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "card", style: { padding: "2rem 1.5rem", textAlign: "center" }, children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { className: "muted", style: { margin: 0 }, children: "Security telemetry and vulnerability findings will populate here once inspection completes." }) })
     ] }) : /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)(import_jsx_runtime13.Fragment, { children: [
+      scan.status === "failed" && scan.error && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "card", style: { marginBottom: "1rem", padding: "12px 16px", borderColor: "var(--color-danger, #b42318)" }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("strong", { children: "Scan failed" }),
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { className: "small", style: { margin: "4px 0 0" }, children: scan.error })
+      ] }),
+      s.partial && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "card", style: { marginBottom: "16px", padding: "12px 16px", borderColor: "var(--color-warning, #b54708)" }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("strong", { children: "Incomplete assessment" }),
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { className: "small", style: { margin: "4px 0 0" }, children: "One or more engines were skipped, blocked, or stopped before finishing. Findings below are only from engines that ran. This is not a clean bill of health. Check engine status for authorization, cancellation, or host-drop reasons." })
+      ] }),
+      (() => {
+        const story = s.story && s.story.stages && s.story.stages.length ? s.story : Array.isArray(s.engines) && s.engines.length ? (0, import_scan_story.buildScanStory)({
+          engines: s.engines,
+          partial: Boolean(s.partial),
+          blockedBy: s.blockedBy,
+          profile: scan.profile,
+          pages: crawlPages.length || s.pages || 0,
+          findings: s.total || allFindings.length || 0
+        }) : null;
+        if (!story) return null;
+        return /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("section", { className: `card scan-story${s.partial ? " is-incomplete" : ""}`, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("h2", { children: story.headline }),
+          /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { className: "scan-story-readout", children: story.readout }),
+          /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "scan-story-stages", children: (story.stages || []).map((stage) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "scan-story-stage", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: `scan-story-tick ${stage.status}`, "aria-hidden": "true" }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "scan-story-label", children: stage.label }),
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: "scan-story-meta", children: [
+                stage.status,
+                stage.findings ? ` \xB7 ${stage.findings} finding${stage.findings === 1 ? "" : "s"}` : ""
+              ] })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { className: "scan-story-why", children: stage.why }),
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("p", { className: "scan-story-does", children: stage.does })
+            ] })
+          ] }, stage.name)) })
+        ] });
+      })(),
+      Array.isArray(s.engines) && s.engines.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("section", { className: "card", style: { marginBottom: "16px" }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("h2", { className: "m-0", children: "Engines" }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("table", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("thead", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("tr", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", children: "Name" }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", children: "Version" }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", children: "Status" }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", children: "Findings" }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", children: "Detail" })
+          ] }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("tbody", { children: s.engines.map((eng) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("tr", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: eng.name }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { className: "small muted", children: eng.version || "-" }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(StatusBadge, { status: eng.status }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { className: "num", children: eng.findings == null ? "-" : eng.findings }),
+            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { className: "small muted", children: eng.error || "-" })
+          ] }, `${eng.name}-${eng.version || "na"}`)) })
+        ] }) })
+      ] }),
       /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "stats", style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }, children: [
         /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
           StatCard,
           {
-            num: scan.postureScore != null ? `${scan.postureScore}/100` : "N/A",
-            label: `Security Posture (Grade ${s.grade || "N/A"})`
+            num: s.partial ? "n/a" : scan.postureScore != null ? `${scan.postureScore}/100` : "N/A",
+            label: s.partial ? "Security posture (incomplete scan)" : `Security Posture (Grade ${s.grade || "N/A"})`
           }
         ),
         /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
@@ -28918,6 +29797,7 @@ function WebsiteScanView({ websiteId, scanId }) {
         ["headers", "Security Headers & CORS"],
         ["cookies", `Cookies (${cookiesList.length})`],
         ["tls", "TLS / SSL Configuration"],
+        ["edge", edge && edge.provider ? `Edge & CDN (${edge.provider})` : "Edge & CDN"],
         ["crawl", `Endpoints & Forms (${crawlEndpoints.length || endpoints.length})`],
         ["pages", `Pages (${crawlPages.length || s.pages || 0})`],
         ["technologies", `Technologies (${tech.length})`]
@@ -28971,6 +29851,7 @@ function WebsiteScanView({ websiteId, scanId }) {
               /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", style: { width: "100px" }, children: "Severity" }),
               /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", children: "Vulnerability" }),
               /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", children: "Affected Location" }),
+              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", children: "Confirmed by" }),
               /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", children: "Recommended Remediation" }),
               /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", style: { width: "80px" }, children: "Details" }),
               /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("th", { scope: "col", style: { width: "120px" }, children: "Description" })
@@ -28985,9 +29866,11 @@ function WebsiteScanView({ websiteId, scanId }) {
                     /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(SevBadge, { severity: f.severity }) }),
                     /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("td", { children: [
                       /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("strong", { children: f.title }),
+                      f.confidence === "potential" && /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "small muted", children: "Version-based match \xB7 not a confirmed exploit" }),
                       f.scanner && /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "small muted", children: f.scanner.name || f.scanner })
                     ] }),
                     /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("code", { className: "small", children: f.location && (f.location.url || f.location.parameter || f.location.path) || site.targetUrl }) }),
+                    /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { className: "small muted", children: (f.confirmedBy && f.confirmedBy.length ? f.confirmedBy : [f.scanner && f.scanner.name].filter(Boolean)).join(", ") || "-" }),
                     /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { className: "small", children: f.remediation && (f.remediation.advice || f.remediation.fixedIn) || "Review configuration" }),
                     /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("button", { type: "button", className: "btn btn-sm btn-subtle", children: expandedFinding === f.id ? "Hide" : "View" }) }),
                     /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
@@ -29003,7 +29886,7 @@ function WebsiteScanView({ websiteId, scanId }) {
                   ]
                 }
               ),
-              expandedFinding === f.id && /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("tr", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { colSpan: 6, style: { background: "var(--color-bg)", padding: "1rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { style: { display: "grid", gap: "0.5rem" }, children: [
+              expandedFinding === f.id && /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("tr", { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("td", { colSpan: 7, style: { background: "var(--color-bg)", padding: "1rem" }, children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { style: { display: "grid", gap: "0.5rem" }, children: [
                 explanations[f.id] && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { children: [
                   /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("strong", { children: "In plain English" }),
                   /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: "small muted", children: [
@@ -29131,6 +30014,7 @@ function WebsiteScanView({ websiteId, scanId }) {
             ] })
           ] })
         ] }),
+        activeTab === "edge" && /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(EdgePanel, { edge, emailDns, hostname: site && site.hostname }),
         activeTab === "crawl" && /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { style: { display: "grid", gap: "1.5rem" }, children: [
           /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("section", { className: "card", children: [
             /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "card-head", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("h2", { className: "m-0", children: [

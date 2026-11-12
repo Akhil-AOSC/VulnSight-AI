@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api, fmtDate, pad, toast } from '../api.js';
 import { PageHead, StatCard, SevBadge, StatusBadge, AiBriefingCard, DataTable, Skeleton, ScanSkeletonLoader } from '../components/Common.jsx';
+import { buildScanStory } from '../../../src/adapters/dast/scan-story.js';
 
 function TabSkeletonLoader({ tabKey }) {
   const titles = {
@@ -8,6 +9,7 @@ function TabSkeletonLoader({ tabKey }) {
     headers: 'HTTP Security Headers Assessment',
     cookies: 'Cookie Security Audit',
     tls: 'TLS / SSL Configuration & Certificate Status',
+    edge: 'Edge, CDN & DNS',
     crawl: 'Endpoints & Forms Inventory',
     pages: 'Discovered Pages',
     technologies: 'Technology Stack & Fingerprints',
@@ -32,6 +34,175 @@ function TabSkeletonLoader({ tabKey }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// Who sits in front of the site (CDN / WAF), the evidence for it, and the domain's email and
+// certificate DNS policy. Everything shown was observed by the scanner: DNS answers, IP ownership
+// and what the edge itself returned. Cookie values are never stored, only their names.
+function EdgeField({ label, children }) {
+  return (
+    <div>
+      <span className="small muted">{label}</span>
+      <div style={{ marginTop: '0.25rem' }}>{children}</div>
+    </div>
+  );
+}
+
+function SimpleTable({ head, rows, empty }) {
+  if (!rows.length) return <div className="empty">{empty}</div>;
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead><tr>{head.map((h) => <th key={h} scope="col">{h}</th>)}</tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>
+  );
+}
+
+export function EdgePanel({ edge, emailDns, hostname }) {
+  if (!edge && !emailDns) {
+    return (
+      <section className="card">
+        <div className="card-head"><h2 className="m-0">Edge &amp; CDN</h2></div>
+        <div className="empty">Edge and DNS details are recorded for scans run after this feature was added. Run a new scan to see them.</div>
+      </section>
+    );
+  }
+  const e = edge || { signals: [], dns: {}, edgeHeaders: {}, cookieNames: [], botProtection: {} };
+  const bot = e.botProtection || {};
+  const ray = e.edgeHeaders && e.edgeHeaders.ray;
+  const records = [
+    ...((e.dns && e.dns.nameservers) || []).map((v) => ({ type: 'NS', value: v, owner: e.dnsHost })),
+    ...((e.dns && e.dns.ipv4) || []).map((r) => ({ type: 'A', value: r.ip, owner: r.owner })),
+    ...((e.dns && e.dns.ipv6) || []).map((r) => ({ type: 'AAAA', value: r.ip, owner: r.owner })),
+  ];
+  const headerRows = [
+    ['server', e.edgeHeaders && e.edgeHeaders.server],
+    ['cf-ray', ray && (ray.code ? `${ray.id}-${ray.code}` : ray.id)],
+    ['cf-cache-status', e.edgeHeaders && e.edgeHeaders.cacheStatus],
+    ['cf-mitigated', e.edgeHeaders && e.edgeHeaders.mitigated],
+    ['via', e.edgeHeaders && e.edgeHeaders.via],
+  ].filter(([, v]) => v);
+  const policyRows = emailDns ? [
+    ['SPF', emailDns.domain, emailDns.spf],
+    ['DMARC', `_dmarc.${emailDns.domain}`, emailDns.dmarc],
+    ...((emailDns.caa && emailDns.caa.length) ? emailDns.caa.map((c) => ['CAA', emailDns.domain, c]) : [['CAA', emailDns.domain, null]]),
+  ] : [];
+
+  return (
+    <div style={{ display: 'grid', gap: '1.5rem' }}>
+      {edge && (
+        <section className="card">
+          <div className="card-head">
+            <h2 className="m-0">Edge &amp; CDN</h2>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.25rem' }}>
+            <EdgeField label="Provider in front of the site">
+              {e.provider ? (
+                <span><strong>{e.provider}</strong> <span className="badge">{e.confidence === 'confirmed' ? 'Confirmed' : 'Likely'}</span></span>
+              ) : <span className="muted">No CDN or WAF detected</span>}
+            </EdgeField>
+            <EdgeField label="Origin server">
+              {e.originHidden
+                ? <span>Hidden behind {e.provider || 'the edge'}</span>
+                : <span>Public addresses are not all in a known CDN range</span>}
+            </EdgeField>
+            <EdgeField label="Bot protection">
+              {bot.challenged ? (
+                <span>
+                  <span className="badge st-blocked">{bot.kind || 'Challenged'}</span>
+                  <span className="small muted"> HTTP {bot.statusCode}{bot.pageTitle ? ` · "${bot.pageTitle}"` : ''}</span>
+                </span>
+              ) : <span>Not challenged{bot.statusCode ? <span className="small muted"> · HTTP {bot.statusCode}</span> : null}</span>}
+            </EdgeField>
+            <EdgeField label="Data centre that answered">
+              {ray && ray.code ? <span><code>{ray.code}</code>{ray.city ? ` ${ray.city}` : ''}</span> : <span className="muted">Not reported</span>}
+            </EdgeField>
+            <EdgeField label="DNS hosted by">
+              {e.dnsHost ? <span>{e.dnsHost}</span> : <span className="muted">Unknown</span>}
+            </EdgeField>
+            <EdgeField label="Edge certificate">
+              {e.tls ? (
+                <span className="small">{e.tls.issuer || 'Unknown issuer'}{e.tls.protocol ? ` · ${e.tls.protocol}` : ''}</span>
+              ) : <span className="muted">Not available</span>}
+            </EdgeField>
+          </div>
+          {bot.challenged && (
+            <p className="small muted" style={{ marginTop: '1.25rem', marginBottom: 0 }}>
+              {bot.by || e.provider || 'The edge'} answered the scanner with a challenge, so checks that read the page were skipped.
+              {' '}To scan {hostname || 'this site'} fully, allow the scanner IP in that firewall.
+            </p>
+          )}
+        </section>
+      )}
+
+      {edge && (
+        <section className="card">
+          <div className="card-head"><h2 className="m-0">Evidence ({(e.signals || []).length})</h2></div>
+          <SimpleTable
+            head={['Source', 'Provider', 'What was observed']}
+            empty="No CDN or WAF signals were observed."
+            rows={(e.signals || []).map((sig, i) => (
+              <tr key={i}><td>{sig.source}</td><td><strong>{sig.provider}</strong></td><td><code>{sig.detail}</code></td></tr>
+            ))}
+          />
+        </section>
+      )}
+
+      {edge && (
+        <section className="card">
+          <div className="card-head"><h2 className="m-0">DNS records ({records.length})</h2></div>
+          <SimpleTable
+            head={['Type', 'Value', 'Belongs to']}
+            empty="DNS records could not be resolved."
+            rows={records.map((r, i) => (
+              <tr key={i}>
+                <td><span className="badge">{r.type}</span></td>
+                <td><code>{r.value}</code></td>
+                <td>{r.owner || <span className="muted">Not a known CDN range</span>}</td>
+              </tr>
+            ))}
+          />
+        </section>
+      )}
+
+      {emailDns && (
+        <section className="card">
+          <div className="card-head"><h2 className="m-0">Email and certificate policy ({emailDns.domain})</h2></div>
+          <SimpleTable
+            head={['Record', 'Name', 'Value']}
+            empty="No policy records were checked."
+            rows={policyRows.map(([type, name, value], i) => (
+              <tr key={i}>
+                <td><span className="badge">{type}</span></td>
+                <td><code>{name}</code></td>
+                <td>{value ? <code>{value}</code> : <span className="muted">Not published</span>}</td>
+              </tr>
+            ))}
+          />
+        </section>
+      )}
+
+      {edge && (
+        <section className="card">
+          <div className="card-head"><h2 className="m-0">Edge response</h2></div>
+          <SimpleTable
+            head={['Header or cookie', 'Value']}
+            empty="The edge returned no identifying headers or cookies."
+            rows={[
+              ...headerRows.map(([name, value]) => (
+                <tr key={name}><td><code>{name}</code></td><td><code>{value}</code></td></tr>
+              )),
+              ...(e.cookieNames || []).map((name) => (
+                <tr key={`c-${name}`}><td><code>Set-Cookie: {name}</code></td><td className="muted">Value not stored</td></tr>
+              )),
+            ]}
+          />
+        </section>
+      )}
     </div>
   );
 }
@@ -127,20 +298,13 @@ export function WebsiteScanView({ websiteId, scanId }) {
   }
 
   async function handleDownloadReport(format) {
+    const ext = format === 'markdown' ? 'md' : format;
     try {
-      const res = await api.get(api.org(`/websites/${websiteId}/scans/${scanId}/report?format=${format}`));
-      if (res && res.download) {
-        const blob = new Blob([res.download.body], { type: res.download.type });
-        const objUrl = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = objUrl;
-        a.download = `vulnsight-dast-${scanId}.${res.download.ext}`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(objUrl);
-        toast(`Downloaded report in ${format.toUpperCase()} format`);
-      }
+      await api.download(
+        api.org(`/websites/${websiteId}/scans/${scanId}/report?format=${format}`),
+        `vulnsight-dast-${scanId}.${ext}`
+      );
+      toast(`Downloaded report in ${format.toUpperCase()} format`);
     } catch (err) {
       toast(err.message || 'Report download failed', 'error');
     }
@@ -173,6 +337,8 @@ export function WebsiteScanView({ websiteId, scanId }) {
   const allFindings = passive.findings || [];
   const tech = passive.technologies || [];
   const tls = passive.tls;
+  const edge = passive.edgeIntel || null;
+  const emailDns = passive.emailDns || null;
   const headersData = passive.headers || {};
   const cookiesList = passive.cookies || [];
   const corsData = passive.cors || {};
@@ -204,7 +370,23 @@ export function WebsiteScanView({ websiteId, scanId }) {
             <a href={site.targetUrl} target="_blank" rel="noopener noreferrer">
               {site.targetUrl}
             </a>
-            {' '}&middot; Profile: <strong>{scan.profile}</strong> &middot; Status: <StatusBadge status={scan.status} /> &middot; Finished: {fmtDate(scan.finishedAt || scan.createdAt)}
+            {' '}&middot; Profile: <strong>{scan.profile}</strong>
+            {' '}&middot; Status: <StatusBadge status={scan.status} />
+            {' '}&middot; Auth: {(() => {
+              const a = site.authorization || {};
+              if (a.status === 'authorized' || a.status === 'verified' || a.status === 'active') {
+                const src = a.source === 'dns_http' ? 'DNS/HTTP (no active testing unless stored)'
+                  : a.source === 'lab' ? 'lab allowlist'
+                    : a.source === 'org_engagement' ? 'org engagement'
+                      : a.source === 'client_grant' ? 'site grant' : 'authorized';
+                return `${src}${a.allowActiveTesting || scan.authorizeActiveTesting ? ', active testing permitted' : ''}`;
+              }
+              if (a.status === 'expired') return 'expired';
+              if (a.status === 'revoked') return 'revoked';
+              if (a.status === 'denied') return 'outside approved scope';
+              return scan.profile === 'passive' ? 'not required for passive' : 'not configured';
+            })()}
+            {' '}&middot; Finished: {fmtDate(scan.finishedAt || scan.createdAt)}
           </div>
         </div>
 
@@ -265,11 +447,23 @@ export function WebsiteScanView({ websiteId, scanId }) {
               <span className="badge st-running">Live Scanner Active</span>
             </div>
             <p className="muted small" style={{ margin: 0 }}>
-              {scan.status === 'queued'
-                ? 'The scan is queued. GET-only crawl will start after passive inspection.'
-                : scan.progress
-                  ? `Engine ${scan.progress.engine || scan.engine || 'crawler'} · pages ${scan.progress.pages || 0} · endpoints ${scan.progress.endpoints || 0} · queue ${scan.progress.queue || 0}`
-                  : 'Passive inspection and GET-only discovery in progress. Forms are recorded but not submitted.'}
+              {(() => {
+                if (scan.status === 'queued') return 'Queued. Waiting for a worker.';
+                if (scan.status === 'cancelled') return 'Cancelled.';
+                const stage = (scan.progress && scan.progress.stage) || scan.engine || '';
+                const labels = {
+                  initializing: 'Initializing',
+                  crawling: 'Crawling (Playwright)',
+                  'zap-spider': 'Running ZAP Spider',
+                  nuclei: 'Running Nuclei',
+                  'zap-ascan': 'Running ZAP Active Scan',
+                  processing: 'Processing findings',
+                  browser: 'Crawling (Playwright)',
+                };
+                const label = labels[stage] || (stage ? `Running ${stage}` : 'Initializing');
+                const pages = scan.progress && scan.progress.pages != null ? ` · pages ${scan.progress.pages}` : '';
+                return `${label}${pages}`;
+              })()}
             </p>
             <div className="scan-progress-bar-wrap">
               <div className="scan-progress-bar-indeterminate" />
@@ -293,10 +487,92 @@ export function WebsiteScanView({ websiteId, scanId }) {
         </div>
       ) : (
         <>
+          {scan.status === 'failed' && scan.error && (
+            <div className="card" style={{ marginBottom: '1rem', padding: '12px 16px', borderColor: 'var(--color-danger, #b42318)' }}>
+              <strong>Scan failed</strong>
+              <p className="small" style={{ margin: '4px 0 0' }}>{scan.error}</p>
+            </div>
+          )}
+          {s.partial && (
+            <div className="card" style={{ marginBottom: '16px', padding: '12px 16px', borderColor: 'var(--color-warning, #b54708)' }}>
+              <strong>Incomplete assessment</strong>
+              <p className="small" style={{ margin: '4px 0 0' }}>
+                One or more engines were skipped, blocked, or stopped before finishing. Findings below are only from engines that ran.
+                This is not a clean bill of health. Check engine status for authorization, cancellation, or host-drop reasons.
+              </p>
+            </div>
+          )}
+          {(() => {
+            const story = s.story && s.story.stages && s.story.stages.length
+              ? s.story
+              : (Array.isArray(s.engines) && s.engines.length
+                ? buildScanStory({
+                  engines: s.engines,
+                  partial: Boolean(s.partial),
+                  blockedBy: s.blockedBy,
+                  profile: scan.profile,
+                  pages: crawlPages.length || s.pages || 0,
+                  findings: s.total || allFindings.length || 0,
+                })
+                : null);
+            if (!story) return null;
+            return (
+              <section className={`card scan-story${s.partial ? ' is-incomplete' : ''}`}>
+                <h2>{story.headline}</h2>
+                <p className="scan-story-readout">{story.readout}</p>
+                <div className="scan-story-stages">
+                  {(story.stages || []).map((stage) => (
+                    <div key={stage.name} className="scan-story-stage">
+                      <span className={`scan-story-tick ${stage.status}`} aria-hidden="true" />
+                      <div>
+                        <span className="scan-story-label">{stage.label}</span>
+                        <span className="scan-story-meta">{stage.status}{stage.findings ? ` · ${stage.findings} finding${stage.findings === 1 ? '' : 's'}` : ''}</span>
+                      </div>
+                      <div>
+                        <p className="scan-story-why">{stage.why}</p>
+                        <p className="scan-story-does">{stage.does}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            );
+          })()}
+          {Array.isArray(s.engines) && s.engines.length > 0 && (
+            <section className="card" style={{ marginBottom: '16px' }}>
+              <div className="card-head">
+                <h2 className="m-0">Engines</h2>
+              </div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">Name</th>
+                      <th scope="col">Version</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Findings</th>
+                      <th scope="col">Detail</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {s.engines.map((eng) => (
+                      <tr key={`${eng.name}-${eng.version || 'na'}`}>
+                        <td>{eng.name}</td>
+                        <td className="small muted">{eng.version || '-'}</td>
+                        <td><StatusBadge status={eng.status} /></td>
+                        <td className="num">{eng.findings == null ? '-' : eng.findings}</td>
+                        <td className="small muted">{eng.error || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
           <div className="stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
             <StatCard
-              num={scan.postureScore != null ? `${scan.postureScore}/100` : 'N/A'}
-              label={`Security Posture (Grade ${s.grade || 'N/A'})`}
+              num={s.partial ? 'n/a' : (scan.postureScore != null ? `${scan.postureScore}/100` : 'N/A')}
+              label={s.partial ? 'Security posture (incomplete scan)' : `Security Posture (Grade ${s.grade || 'N/A'})`}
             />
             <StatCard
               className="stat-critical"
@@ -331,6 +607,7 @@ export function WebsiteScanView({ websiteId, scanId }) {
           ['headers', 'Security Headers & CORS'],
           ['cookies', `Cookies (${cookiesList.length})`],
           ['tls', 'TLS / SSL Configuration'],
+          ['edge', edge && edge.provider ? `Edge & CDN (${edge.provider})` : 'Edge & CDN'],
           ['crawl', `Endpoints & Forms (${crawlEndpoints.length || endpoints.length})`],
           ['pages', `Pages (${crawlPages.length || s.pages || 0})`],
           ['technologies', `Technologies (${tech.length})`],
@@ -395,6 +672,7 @@ export function WebsiteScanView({ websiteId, scanId }) {
                     <th scope="col" style={{ width: '100px' }}>Severity</th>
                     <th scope="col">Vulnerability</th>
                     <th scope="col">Affected Location</th>
+                    <th scope="col">Confirmed by</th>
                     <th scope="col">Recommended Remediation</th>
                     <th scope="col" style={{ width: '80px' }}>Details</th>
                     <th scope="col" style={{ width: '120px' }}>Description</th>
@@ -412,6 +690,9 @@ export function WebsiteScanView({ websiteId, scanId }) {
                         </td>
                         <td>
                           <strong>{f.title}</strong>
+                          {f.confidence === 'potential' && (
+                            <div className="small muted">Version-based match · not a confirmed exploit</div>
+                          )}
                           {f.scanner && (
                             <div className="small muted">{f.scanner.name || f.scanner}</div>
                           )}
@@ -420,6 +701,9 @@ export function WebsiteScanView({ websiteId, scanId }) {
                           <code className="small">
                             {(f.location && (f.location.url || f.location.parameter || f.location.path)) || site.targetUrl}
                           </code>
+                        </td>
+                        <td className="small muted">
+                          {(f.confirmedBy && f.confirmedBy.length ? f.confirmedBy : [f.scanner && f.scanner.name].filter(Boolean)).join(', ') || '-'}
                         </td>
                         <td className="small">
                           {(f.remediation && (f.remediation.advice || f.remediation.fixedIn)) || 'Review configuration'}
@@ -442,7 +726,7 @@ export function WebsiteScanView({ websiteId, scanId }) {
                       </tr>
                       {expandedFinding === f.id && (
                         <tr>
-                          <td colSpan={6} style={{ background: 'var(--color-bg)', padding: '1rem' }}>
+                          <td colSpan={7} style={{ background: 'var(--color-bg)', padding: '1rem' }}>
                             <div style={{ display: 'grid', gap: '0.5rem' }}>
                               {explanations[f.id] && (
                                 <div>
@@ -667,6 +951,10 @@ export function WebsiteScanView({ websiteId, scanId }) {
             </div>
           )}
         </section>
+      )}
+
+      {activeTab === 'edge' && (
+        <EdgePanel edge={edge} emailDns={emailDns} hostname={site && site.hostname} />
       )}
 
       {activeTab === 'crawl' && (

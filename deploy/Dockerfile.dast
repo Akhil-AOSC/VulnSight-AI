@@ -1,13 +1,23 @@
-# DAST worker: OWASP ZAP plus a thin Node runner. Not used until ZAP_API_URL is wired
-# and live Docker + per-scan egress have been verified. Phase 1 crawl is GET-only;
-# do not invoke ZAP ascan from this image.
+# DAST worker: OWASP ZAP, Chromium (Playwright), and pinned Nuclei.
 FROM ghcr.io/zaproxy/zaproxy:stable
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
+ARG NUCLEI_VERSION=3.3.9
+ARG NUCLEI_TEMPLATES_VERSION=v10.1.1
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm wget unzip ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev \
+ && npx --yes playwright-core install --with-deps chromium \
+ && wget -q "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_amd64.zip" -O /tmp/nuclei.zip \
+ && unzip -o /tmp/nuclei.zip -d /usr/local/bin \
+ && chmod +x /usr/local/bin/nuclei \
+ && rm /tmp/nuclei.zip \
+ && mkdir -p /opt/nuclei-templates \
+ && wget -q "https://github.com/projectdiscovery/nuclei-templates/archive/refs/tags/${NUCLEI_TEMPLATES_VERSION}.tar.gz" -O /tmp/templates.tgz \
+ && tar -xzf /tmp/templates.tgz -C /opt/nuclei-templates --strip-components=1 \
+ && rm /tmp/templates.tgz
+ENV NUCLEI_TEMPLATES=/opt/nuclei-templates
 COPY src ./src
 USER zap
 CMD ["node", "/app/src/platform/scan-child.js"]

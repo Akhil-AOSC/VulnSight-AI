@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, session, hasPermission, toast, fmtDate, pad } from '../api.js';
-import { PageHead, DataTable, StatusBadge, ScanSkeletonLoader } from '../components/Common.jsx';
+import { PageHead, DataTable, StatusBadge, ScanSkeletonLoader, IconEye, IconEyeOff, IconCopy } from '../components/Common.jsx';
 
 const SCANNERS = [
   ['sca', 'Dependencies (OSV)'],
@@ -538,7 +538,7 @@ export function RepoDetailView({ repoId }) {
                     title={showSecret ? 'Hide secret' : 'Show secret'}
                     onClick={() => setShowSecret((v) => !v)}
                   >
-                    {showSecret ? '🙈' : '👁️'}
+                    {showSecret ? <IconEyeOff size={14} /> : <IconEye size={14} />}
                   </button>
                   <button
                     type="button"
@@ -550,7 +550,7 @@ export function RepoDetailView({ repoId }) {
                       toast('Secret copied to clipboard');
                     }}
                   >
-                    📋
+                    <IconCopy size={14} />
                   </button>
                 </dd>
               </dl>

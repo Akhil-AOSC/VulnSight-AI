@@ -29,9 +29,20 @@ const { runPassiveScan, validateTargetUrl } = require('../adapters/dast/passive'
 const { runWebsiteCrawl } = require('../adapters/dast/zap-spider');
 const { runZapActiveScan } = require('../adapters/dast/zap-ascan');
 const { plainEnglishForFinding } = require('../adapters/dast/plain-english');
-const { normalizeProfile, normalizeLimits, normalizeScope } = require('../adapters/dast/scope');
-const { setScanEgressHosts, clearScanEgressHosts } = require('./egress-proxy');
-const { generateVerificationToken, checkOwnership } = require('./dast-verifier');
+const { normalizeProfile, normalizeLimits, normalizeScope, profileNeeds } = require('../adapters/dast/scope');
+const { runDastPipeline, isVerificationFresh } = require('../adapters/dast/pipeline');
+const { generateVerificationToken, checkOwnership, isOwnershipProven } = require('./dast-verifier');
+const {
+  grantDocument,
+  validateGrantInput,
+} = require('./dast-authorization');
+const {
+  policyDocument,
+  validatePolicyInput,
+  evaluateScanAuthorization,
+  getWebsiteAuthorization,
+  scopeFromAccess,
+} = require('./authorization-policy');
 const {
   isMongoConfigured,
   getMongoStatus,
@@ -96,6 +107,10 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
   orgSyncStore = null,
   dastCrawl = runWebsiteCrawl,
   dastAscan = runZapActiveScan,
+  dastBrowser,
+  dastNuclei,
+  dastPassive = runPassiveScan,
+  dastProbe = null,
 } = {}) {
   const nowIso = () => new Date(clock()).toISOString();
 
@@ -1524,6 +1539,26 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
 
 
   // ---------- websites (DAST) ------------------------------------------------------------------------
+  function latestGrantFor(orgId, websiteId) {
+    const row = db.prepare('SELECT * FROM dast_authorizations WHERE org_id = ? AND website_id = ? ORDER BY granted_at DESC LIMIT 1').get(orgId, websiteId);
+    return grantDocument(row);
+  }
+
+  function grantById(orgId, websiteId, grantId) {
+    if (!grantId) return latestGrantFor(orgId, websiteId);
+    const row = db.prepare('SELECT * FROM dast_authorizations WHERE org_id = ? AND website_id = ? AND id = ?').get(orgId, websiteId, grantId);
+    return grantDocument(row);
+  }
+
+  function listOrgPolicies(orgId) {
+    return db.prepare('SELECT * FROM dast_org_policies WHERE org_id = ? ORDER BY granted_at DESC').all(orgId).map(policyDocument);
+  }
+
+  function policyById(orgId, policyId) {
+    const row = db.prepare('SELECT * FROM dast_org_policies WHERE org_id = ? AND id = ?').get(orgId, policyId);
+    return policyDocument(row);
+  }
+
   function websiteDocument(row, latestScan = null) {
     return {
       id: row.id,
@@ -1531,7 +1566,8 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       targetUrl: row.target_url,
       hostname: row.hostname,
       name: row.name,
-      isVerified: Boolean(row.is_verified),
+      isVerified: isOwnershipProven(row),
+      verifiedAt: row.verified_at || null,
       verificationToken: row.verification_token,
       verificationMethod: row.verification_method || null,
       config: parse(row.config, {}),
@@ -1539,6 +1575,11 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       limits: normalizeLimits(parse(row.config, {})),
       schedule: row.schedule || null,
       createdAt: row.created_at,
+      authorization: getWebsiteAuthorization({
+        site: row,
+        grant: latestGrantFor(row.org_id, row.id),
+        orgPolicies: listOrgPolicies(row.org_id),
+      }),
       latestScan: latestScan ? {
         id: latestScan.id,
         profile: latestScan.profile,
@@ -1567,6 +1608,8 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       progress: parse(row.progress, null),
       limits: parse(row.limits, null),
       engine: row.engine || null,
+      authorizationId: row.authorization_id || null,
+      authorizeActiveTesting: Boolean(row.authorize_active),
       createdAt: row.created_at,
       startedAt: row.started_at,
       finishedAt: row.finished_at,
@@ -1623,77 +1666,51 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
     db.prepare("UPDATE website_scans SET status = 'running', started_at = ?, error = NULL WHERE id = ?").run(nowIso(), scanId);
 
     try {
-      // 1. Passive DAST inspection
-      const passive = await runPassiveScan(site.target_url);
-      let findings = [...(passive.findings || [])];
-      let crawlResult = null;
-      const profile = (() => {
-        try { return normalizeProfile(scan.profile, { allowAscan: scan.profile === 'ascan' }); } catch { return scan.profile; }
-      })();
-      const siteConfig = parse(site.config, {});
-      const limits = normalizeLimits({ ...siteConfig, ...parse(scan.limits, {}) });
-      const scope = normalizeScope(site.hostname, siteConfig);
-
-      if (profile === 'crawl' || profile === 'crawl_js' || profile === 'ascan' || scan.profile === 'standard' || scan.profile === 'deep') {
-        if (!site.is_verified) {
-          throw new ValidationError('Website crawling requires domain ownership verification');
-        }
-        setScanEgressHosts(scope.allowHosts.concat(scope.extraHosts || []));
-        try {
-          crawlResult = await dastCrawl(site.target_url, {
-            scope,
-            ...limits,
-            clientSpider: profile === 'crawl_js' || scan.profile === 'deep',
-            onProgress: async (progress) => {
-              const latest = db.prepare('SELECT status FROM website_scans WHERE id = ?').get(scanId);
-              if (latest && latest.status === 'cancelled') return;
-              db.prepare('UPDATE website_scans SET progress = ?, engine = ? WHERE id = ?')
-                .run(JSON.stringify(progress), progress.engine || null, scanId);
-            },
-            shouldStop: async () => {
-              const latest = db.prepare('SELECT status FROM website_scans WHERE id = ?').get(scanId);
-              return !latest || latest.status === 'cancelled' || latest.status === 'paused';
-            },
+      const pipeline = await runDastPipeline(site, {
+        profile: scan.profile,
+        limits: parse(scan.limits, {}),
+        siteConfig: parse(site.config, {}),
+        authorizeActiveTesting: Boolean(scan.authorize_active),
+        grant: grantById(scan.org_id, site.id, scan.authorization_id),
+        orgPolicies: listOrgPolicies(scan.org_id),
+      }, {
+        dastBrowser,
+        dastNuclei,
+        dastCrawl,
+        dastAscan,
+        dastPassive,
+        ...(dastProbe ? { probeReachable: dastProbe } : {}),
+        resolveAccess: async () => {
+          const latestSite = db.prepare('SELECT * FROM websites WHERE id = ? AND org_id = ?').get(site.id, scan.org_id);
+          const latestScan = db.prepare('SELECT * FROM website_scans WHERE id = ?').get(scanId);
+          if (!latestScan || latestScan.status === 'cancelled') {
+            const err = new Error('Scan was cancelled');
+            err.code = 'CANCELLED';
+            throw err;
+          }
+          return evaluateScanAuthorization({
+            site: latestSite,
+            profile: latestScan.profile,
+            grant: grantById(scan.org_id, site.id, latestScan.authorization_id),
+            orgPolicies: listOrgPolicies(scan.org_id),
           });
-        } finally {
-          clearScanEgressHosts();
-        }
-        persistCrawlInventory(scan.org_id, site.id, scanId, crawlResult);
-        if (enableMongo && isMongoConfigured()) {
-          await saveCrawlInventoryToMongo({
-            orgId: scan.org_id, websiteId: site.id, scanId, ...crawlResult,
-          });
-        }
-        if (crawlResult && crawlResult.findings) findings = findings.concat(crawlResult.findings);
-      }
-
-      if (profile === 'ascan') {
-        if (!site.is_verified) {
-          throw new ValidationError('Active exploit scanning requires domain ownership verification');
-        }
-        setScanEgressHosts(scope.allowHosts.concat(scope.extraHosts || []));
-        try {
-          const ascan = await dastAscan(site.target_url, {
-            scope,
-            ...limits,
-            onProgress: async (progress) => {
-              db.prepare('UPDATE website_scans SET progress = ?, engine = ? WHERE id = ?')
-                .run(JSON.stringify(progress), progress.engine || 'zap-ascan', scanId);
-            },
-            shouldStop: async () => {
-              const latest = db.prepare('SELECT status FROM website_scans WHERE id = ?').get(scanId);
-              return !latest || latest.status === 'cancelled' || latest.status === 'paused';
-            },
-          });
-          if (ascan && ascan.findings) findings = findings.concat(ascan.findings);
-          db.prepare('UPDATE website_scans SET engine = ? WHERE id = ?').run((ascan && ascan.engine) || 'zap-ascan', scanId);
-        } finally {
-          clearScanEgressHosts();
-        }
-      }
-
+        },
+        onProgress: async (progress) => {
+          const latest = db.prepare('SELECT status FROM website_scans WHERE id = ?').get(scanId);
+          if (latest && latest.status === 'cancelled') return;
+          db.prepare('UPDATE website_scans SET progress = ?, engine = ? WHERE id = ?')
+            .run(JSON.stringify(progress), progress.engine || null, scanId);
+        },
+        shouldStop: async () => {
+          const latest = db.prepare('SELECT status FROM website_scans WHERE id = ?').get(scanId);
+          return !latest || latest.status === 'cancelled' || latest.status === 'paused';
+        },
+      });
+      const findings = pipeline.findings || [];
+      const crawlResult = pipeline.inventory;
+      const passive = pipeline.passive || {};
       const inv = crawlResult || (passive && passive.inventory) || null;
-      if (!crawlResult && inv) {
+      if (inv) {
         persistCrawlInventory(scan.org_id, site.id, scanId, inv);
         if (enableMongo && isMongoConfigured()) {
           await saveCrawlInventoryToMongo({
@@ -1717,6 +1734,11 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         pages: inv && inv.pages ? inv.pages.length : 1,
         forms: forms.length,
         engine: (crawlResult && crawlResult.engine) || (inv && inv.engine) || 'vulnsight-recon',
+        engines: pipeline.engines || [],
+        partial: Boolean(pipeline.partial),
+        blockedBy: pipeline.blockedBy || null,
+        incomplete: Boolean(pipeline.partial),
+        story: pipeline.story || null,
       };
 
       // 4. AI correlation
@@ -1763,6 +1785,8 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         cors: passive.cors,
         tls: passive.tls,
         technologies: passive.technologies,
+        edgeIntel: passive.edgeIntel || null,
+        emailDns: passive.emailDns || null,
         crawledUrls,
         forms: forms.map((f) => ({ action: f.action, method: f.method, fieldNames: f.fieldNames || [], submitted: false })),
         exposedFiles: [],
@@ -1771,7 +1795,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       };
 
       transaction(db, () => {
-        db.prepare(`UPDATE website_scans SET status = 'completed', summary = ?, posture_score = ?, passive_results = ?, ai_analysis = ?, finished_at = ?, error = NULL WHERE id = ?`)
+        db.prepare(`UPDATE website_scans SET status = 'completed', summary = ?, posture_score = ?, passive_results = ?, ai_analysis = ?, finished_at = ? WHERE id = ?`)
           .run(JSON.stringify(summary), posture.score, JSON.stringify(passiveResultsData), JSON.stringify(aiAnalysis), finishedAt, scanId);
 
         if (aiAnalysis && aiAnalysis.executiveSummary) {
@@ -1843,7 +1867,6 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       const storedConfig = {
         ...normalizeScope(hostname, config),
         ...normalizeLimits(config),
-        ...config,
       };
 
       db.prepare(`INSERT INTO websites (id, org_id, target_url, hostname, name, is_verified, verification_token, verification_method, config, created_at)
@@ -1910,6 +1933,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
         db.prepare('DELETE FROM crawl_forms WHERE website_id = ? AND org_id = ?').run(websiteId, ctx.orgId);
         db.prepare('DELETE FROM crawl_endpoints WHERE website_id = ? AND org_id = ?').run(websiteId, ctx.orgId);
         db.prepare('DELETE FROM crawl_pages WHERE website_id = ? AND org_id = ?').run(websiteId, ctx.orgId);
+        db.prepare('DELETE FROM dast_authorizations WHERE website_id = ? AND org_id = ?').run(websiteId, ctx.orgId);
         db.prepare('DELETE FROM website_scans WHERE website_id = ? AND org_id = ?').run(websiteId, ctx.orgId);
         db.prepare('DELETE FROM websites WHERE id = ? AND org_id = ?').run(websiteId, ctx.orgId);
       });
@@ -1928,31 +1952,15 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       }
 
       if (opts && opts.manual) {
-        db.prepare('UPDATE websites SET is_verified = 1, verification_method = ? WHERE id = ? AND org_id = ?')
-          .run('manual_authorization', websiteId, ctx.orgId);
-        if (enableMongo && isMongoConfigured()) {
-          const updated = getWebsite(ctx.orgId, websiteId);
-          await saveWebsiteToMongo({
-            id: updated.id,
-            orgId: updated.orgId,
-            targetUrl: updated.targetUrl,
-            hostname: updated.hostname,
-            name: updated.name,
-            verified: true,
-            verificationToken: updated.verificationToken,
-            verificationMethod: 'manual_authorization',
-            config: updated.config,
-            createdAt: updated.createdAt,
-          });
-        }
-        audit(ctx, 'website.verify', websiteId, { method: 'manual_authorization' });
-        return { verified: true, method: 'manual_authorization' };
+        // Self-attestation is not proof of ownership: it would let anyone run crawls and active
+        // exploit scans against sites they do not control. Only DNS TXT or the HTTP token count.
+        throw new ValidationError('Manual verification is not allowed. Add the DNS TXT record or the /.well-known/vulnsight-verify.txt file, then check again.');
       }
 
       const res = await checkOwnership(site.hostname, site.targetUrl, site.verificationToken);
       if (res && res.verified) {
-        db.prepare('UPDATE websites SET is_verified = 1, verification_method = ? WHERE id = ? AND org_id = ?')
-          .run(res.method, websiteId, ctx.orgId);
+        db.prepare('UPDATE websites SET is_verified = 1, verification_method = ?, verified_at = ? WHERE id = ? AND org_id = ?')
+          .run(res.method, nowIso(), websiteId, ctx.orgId);
         if (enableMongo && isMongoConfigured()) {
           const updated = getWebsite(ctx.orgId, websiteId);
           await saveWebsiteToMongo({
@@ -1989,20 +1997,107 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       return getWebsite(ctx.orgId, websiteId);
     },
 
-    startScan(ctx, websiteId, { profile = 'passive', limits: limitPatch, authorizeActiveTesting = false } = {}) {
+    createAuthorization(ctx, websiteId, body = {}) {
+      authorize(ctx, 'org:settings');
+      const site = getWebsite(ctx.orgId, websiteId);
+      const error = validateGrantInput({
+        allowedProfiles: body.allowedProfiles,
+        allowActiveTesting: Boolean(body.allowActiveTesting),
+        expiresAt: body.expiresAt,
+        evidenceKind: body.evidenceKind,
+        evidenceRef: body.evidenceRef,
+        allowHosts: body.allowHosts,
+        siteHostname: site.hostname,
+      });
+      if (error) throw new ValidationError(error);
+      const id = uuid();
+      const nowStr = nowIso();
+      db.prepare(`INSERT INTO dast_authorizations (
+        id, org_id, website_id, granted_by, granted_at, expires_at, allowed_profiles,
+        allow_active_testing, allow_hosts, allow_paths, deny_paths, ports, evidence_kind, evidence_ref, note
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(
+          id,
+          ctx.orgId,
+          websiteId,
+          ctx.userId,
+          nowStr,
+          new Date(body.expiresAt).toISOString(),
+          JSON.stringify(body.allowedProfiles),
+          body.allowActiveTesting ? 1 : 0,
+          JSON.stringify(body.allowHosts || [site.hostname]),
+          JSON.stringify(body.allowPaths || ['/']),
+          JSON.stringify(body.denyPaths || []),
+          JSON.stringify(body.ports || [80, 443]),
+          body.evidenceKind,
+          String(body.evidenceRef).trim(),
+          body.note ? String(body.note).slice(0, 500) : null,
+        );
+      audit(ctx, 'website.authorize', id, { websiteId, evidenceKind: body.evidenceKind });
+      return grantById(ctx.orgId, websiteId, id);
+    },
+
+    listAuthorizations(ctx, websiteId) {
+      authorize(ctx, 'scans:read');
+      getWebsite(ctx.orgId, websiteId);
+      return db.prepare('SELECT * FROM dast_authorizations WHERE org_id = ? AND website_id = ? ORDER BY granted_at DESC')
+        .all(ctx.orgId, websiteId)
+        .map(grantDocument);
+    },
+
+    revokeAuthorization(ctx, websiteId, authorizationId, { reason } = {}) {
+      authorize(ctx, 'org:settings');
+      getWebsite(ctx.orgId, websiteId);
+      const row = db.prepare('SELECT * FROM dast_authorizations WHERE org_id = ? AND website_id = ? AND id = ?')
+        .get(ctx.orgId, websiteId, authorizationId);
+      if (!row) throw new NotFoundError('Authorization not found');
+      if (row.revoked_at) return grantDocument(row);
+      db.prepare('UPDATE dast_authorizations SET revoked_at = ?, revoked_by = ?, revoke_reason = ? WHERE id = ?')
+        .run(nowIso(), ctx.userId, reason ? String(reason).slice(0, 300) : 'revoked', authorizationId);
+      audit(ctx, 'website.authorize.revoke', authorizationId, { websiteId });
+      return grantById(ctx.orgId, websiteId, authorizationId);
+    },
+
+    startScan(ctx, websiteId, {
+      profile = 'passive',
+      limits: limitPatch,
+      authorizationId,
+      attestAuthorization,
+      manual,
+      manualAuthorization,
+    } = {}) {
       authorize(ctx, 'scans:run');
+      if (attestAuthorization || manual || manualAuthorization) {
+        throw new ValidationError(
+          'Self-attestation cannot authorize a scan. Record an engagement policy, lab allowlist, or site grant, or complete DNS/HTTP verification.',
+        );
+      }
       const site = getWebsite(ctx.orgId, websiteId);
       let normalized;
       try {
-        normalized = normalizeProfile(profile, { allowAscan: Boolean(authorizeActiveTesting) });
+        normalized = normalizeProfile(profile, { allowAscan: true });
       } catch (err) {
         throw new ValidationError(err.message);
       }
-      if (normalized === 'ascan' && !authorizeActiveTesting) {
-        throw new ValidationError('Active exploit scanning requires authorizeActiveTesting: true');
+      const crawl = Boolean(profileNeeds(normalized).crawl);
+      const grant = crawl ? grantById(ctx.orgId, websiteId, authorizationId) : null;
+      const raw = db.prepare('SELECT * FROM websites WHERE id = ? AND org_id = ?').get(websiteId, ctx.orgId);
+      let access;
+      try {
+        access = evaluateScanAuthorization({
+          site: raw,
+          profile: normalized,
+          grant,
+          orgPolicies: listOrgPolicies(ctx.orgId),
+        });
+      } catch (err) {
+        throw new ValidationError(err.message);
       }
-      if (normalized !== 'passive' && !site.isVerified) {
-        throw new ValidationError('Website crawling requires domain ownership verification. Please verify ownership first.');
+      if (normalized === 'deep' && !access.allowActive) {
+        throw new ValidationError('Deep assessment requires stored allowActiveTesting on an engagement policy, lab allowlist, or site grant');
+      }
+      if (access.assessmentKind === 'public_assessment' && (access.allowActive || access.nucleiMode)) {
+        access = { ...access, allowActive: false, nucleiMode: null };
       }
       const active = db.prepare("SELECT COUNT(*) AS n FROM website_scans WHERE org_id = ? AND status IN ('queued', 'running')").get(ctx.orgId).n;
       if (active >= 5) {
@@ -2011,12 +2106,23 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
       const limits = normalizeLimits({ ...site.limits, ...limitPatch });
       const scanId = uuid();
       const nowStr = nowIso();
-      db.prepare(`INSERT INTO website_scans (id, org_id, website_id, profile, status, requested_by, created_at, limits)
-                  VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)`)
-        .run(scanId, ctx.orgId, websiteId, normalized, ctx.userId || null, nowStr, JSON.stringify(limits));
+      const storedActive = access.assessmentKind === 'public_assessment' ? false : Boolean(access.allowActive);
+      db.prepare(`INSERT INTO website_scans (id, org_id, website_id, profile, status, requested_by, created_at, limits, authorization_id, authorize_active)
+                  VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`)
+        .run(
+          scanId,
+          ctx.orgId,
+          websiteId,
+          normalized,
+          ctx.userId || null,
+          nowStr,
+          JSON.stringify(limits),
+          crawl && grant && grant.status === 'active' ? grant.id : null,
+          storedActive ? 1 : 0,
+        );
 
       queue.enqueue('website_scan', { scanId }, { orgId: ctx.orgId });
-      audit(ctx, 'website_scan.start', scanId, { websiteId, profile: normalized, limits, authorizeActiveTesting: Boolean(authorizeActiveTesting) });
+      audit(ctx, 'website_scan.start', scanId, { websiteId, profile: normalized, limits, authorizeActiveTesting: storedActive, source: access.source });
       return websiteScanDocument(db.prepare('SELECT * FROM website_scans WHERE id = ?').get(scanId));
     },
 
@@ -2198,6 +2304,57 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
     },
   };
 
+  const dastPolicies = {
+    list(ctx) {
+      authorize(ctx, 'scans:read');
+      return listOrgPolicies(ctx.orgId);
+    },
+    create(ctx, body = {}) {
+      authorize(ctx, 'org:settings');
+      const error = validatePolicyInput(body);
+      if (error) throw new ValidationError(error);
+      const id = uuid();
+      const nowStr = nowIso();
+      const startsAt = body.startsAt ? new Date(body.startsAt).toISOString() : nowStr;
+      db.prepare(`INSERT INTO dast_org_policies (
+        id, org_id, kind, granted_by, granted_at, starts_at, expires_at, allowed_profiles,
+        allow_active_testing, allow_hosts, deny_hosts, allow_paths, deny_paths, ports,
+        evidence_kind, evidence_ref, note
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(
+          id,
+          ctx.orgId,
+          body.kind,
+          ctx.userId,
+          nowStr,
+          startsAt,
+          new Date(body.expiresAt).toISOString(),
+          JSON.stringify(body.allowedProfiles),
+          body.allowActiveTesting ? 1 : 0,
+          JSON.stringify(body.allowHosts),
+          JSON.stringify(body.denyHosts || []),
+          JSON.stringify(body.allowPaths || ['/']),
+          JSON.stringify(body.denyPaths || []),
+          JSON.stringify(body.ports || [80, 443]),
+          body.evidenceKind,
+          String(body.evidenceRef).trim(),
+          body.note ? String(body.note).slice(0, 500) : null,
+        );
+      audit(ctx, 'dast.policy.create', id, { kind: body.kind, allowHosts: body.allowHosts });
+      return policyById(ctx.orgId, id);
+    },
+    revoke(ctx, policyId, { reason } = {}) {
+      authorize(ctx, 'org:settings');
+      const row = db.prepare('SELECT * FROM dast_org_policies WHERE org_id = ? AND id = ?').get(ctx.orgId, policyId);
+      if (!row) throw new NotFoundError('Authorization policy not found');
+      if (row.revoked_at) return policyDocument(row);
+      db.prepare('UPDATE dast_org_policies SET revoked_at = ?, revoked_by = ?, revoke_reason = ? WHERE id = ?')
+        .run(nowIso(), ctx.userId, reason ? String(reason).slice(0, 300) : 'revoked', policyId);
+      audit(ctx, 'dast.policy.revoke', policyId, { reason });
+      return policyById(ctx.orgId, policyId);
+    },
+  };
+
   // ---------- dashboard ------------------------------------------------------------------------------
   let mongoSyncedOrgs = new Set();
   const dashboard = {
@@ -2213,7 +2370,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
           id: site.id,
           name: site.name,
           targetUrl: site.target_url,
-          isVerified: Boolean(site.is_verified),
+          isVerified: isOwnershipProven(site),
           postureScore: lastScan ? lastScan.posture_score : null,
           lastStatus: lastScan ? lastScan.status : null,
           lastScanAt: lastScan ? lastScan.finished_at : null,
@@ -2646,7 +2803,7 @@ const parse = (s, fallback = null) => { try { return JSON.parse(s); } catch { re
   };
 
   return {
-    auth, orgs, teams, connections, repos, scans, findings: findingsApi, websites, dashboard, ai: aiApi,
+    auth, orgs, teams, connections, repos, scans, findings: findingsApi, websites, dastPolicies, dashboard, ai: aiApi,
     audit: auditApi, notifications, automation, grants, handlers: { scan: handleScanJob, website_scan: handleWebsiteScanJob }, authorize, can,
   };
 }

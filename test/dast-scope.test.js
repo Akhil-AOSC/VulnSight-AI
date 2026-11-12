@@ -23,10 +23,12 @@ test('urlInScope rejects other hosts, credentials and odd ports', () => {
 });
 
 test('normalizeProfile maps aliases and gates ascan', () => {
-  assert.equal(normalizeProfile('standard'), 'crawl');
-  assert.equal(normalizeProfile('deep'), 'crawl_js');
-  assert.throws(() => normalizeProfile('ascan'), /authorizeActiveTesting/);
-  assert.equal(normalizeProfile('ascan', { allowAscan: true }), 'ascan');
+  assert.equal(normalizeProfile('standard'), 'standard');
+  assert.equal(normalizeProfile('crawl'), 'discovery');
+  assert.equal(normalizeProfile('public_assessment'), 'public');
+  assert.equal(normalizeProfile('PUBLIC_ASSESSMENT'), 'public');
+  assert.throws(() => normalizeProfile('deep'), /authorizeActiveTesting/);
+  assert.equal(normalizeProfile('ascan', { allowAscan: true }), 'deep');
 });
 
 test('limits are clamped', () => {
@@ -39,6 +41,15 @@ test('limits are clamped', () => {
 test('state-changing methods are detected', () => {
   assert.equal(isStateChangingMethod('POST'), true);
   assert.equal(isStateChangingMethod('GET'), false);
+});
+
+test('normalizeScope drops extra hosts that are not verified subdomains', () => {
+  const scope = normalizeScope('app.example.com', {
+    allowHosts: ['app.example.com', 'victim.org'],
+    extraHosts: ['cdn.app.example.com', 'evil.com'],
+  });
+  assert.deepEqual(scope.allowHosts.sort(), ['app.example.com']);
+  assert.deepEqual(scope.extraHosts, ['cdn.app.example.com']);
 });
 
 test('headers and evidence redact secrets', () => {

@@ -25,7 +25,10 @@
     "probe:xss": "node scripts/xss-probe.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.5"
+  },
+  "optionalDependencies": {
+    "playwright-core": "^1.65.0"
   },
   "keywords": [
     "security",

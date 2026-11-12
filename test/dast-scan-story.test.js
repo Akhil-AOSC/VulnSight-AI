@@ -1,0 +1,46 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { buildScanStory, explainEngine } = require('../src/adapters/dast/scan-story');
+
+test('scan story explains an incomplete ascan run in plain language', () => {
+  const story = buildScanStory({
+    profile: 'ascan',
+    partial: true,
+    pages: 3,
+    findings: 0,
+    engines: [
+      { name: 'vulnsight-passive', status: 'error', error: 'connect ETIMEDOUT 192.250.232.1:443', findings: 0 },
+      { name: 'vulnsight-browser', status: 'ok', findings: 0 },
+      { name: 'owasp-zap-spider', status: 'ok', findings: 0 },
+      { name: 'nuclei', status: 'ok', findings: 0 },
+      { name: 'owasp-zap-ascan', status: 'error', error: 'ZAP sites tree still empty after spider', findings: 0 },
+    ],
+  });
+  assert.equal(story.headline, 'Incomplete inspection');
+  assert.match(story.readout, /not a clean bill of health/);
+  const passive = explainEngine({ name: 'vulnsight-passive', status: 'error', error: 'connect ETIMEDOUT 1.2.3.4:443' });
+  assert.match(passive.why, /timed out/);
+  assert.doesNotMatch(passive.why, /different client/);
+  const ascan = story.stages.find((s) => s.name === 'owasp-zap-ascan');
+  assert.match(ascan.why, /no attack payloads were sent/i);
+});
+
+test('scan story explains a firewall IP ban instead of reporting empty results as ok', () => {
+  const story = buildScanStory({
+    profile: 'ascan',
+    partial: true,
+    blockedBy: 'host firewall',
+    engines: [
+      { name: 'vulnsight-passive', status: 'blocked', blockReason: 'connection_dropped', error: 'The host stopped answering this machine (ETIMEDOUT).' },
+      { name: 'nuclei', status: 'skipped', error: 'Not run: the host was dropping connections from this machine.' },
+    ],
+  });
+  assert.match(story.readout, /dropping connections/);
+  assert.match(story.readout, /Allowlist the scanner IP/);
+  const passive = story.stages.find((s) => s.name === 'vulnsight-passive');
+  assert.match(passive.why, /banned the scanner IP/);
+  const nuclei = story.stages.find((s) => s.name === 'nuclei');
+  assert.match(nuclei.why, /Not run/);
+});

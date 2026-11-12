@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api, session, hasPermission, toast, fmtDate, pad } from '../api.js';
 import { PageHead, DataTable, StatusBadge, SevBadge, SeverityBar, ScanSkeletonLoader } from '../components/Common.jsx';
+import { scanStartDecision, authorizationPresentation, isPublicAssessmentProfile } from '../../../src/platform/website-auth-ui.js';
 
 export function WebsitesView({ onSelectScan }) {
   const [websites, setWebsites] = useState([]);
@@ -11,9 +12,27 @@ export function WebsitesView({ onSelectScan }) {
   const [verifyingSite, setVerifyingSite] = useState(null);
   const [verifyLoading, setVerifyLoading] = useState(false);
   const [scanningSiteId, setScanningSiteId] = useState(null);
+  const [scanProfile, setScanProfile] = useState('public');
+  const [grantSite, setGrantSite] = useState(null);
+  const [grantBusy, setGrantBusy] = useState(false);
+  const [grantForm, setGrantForm] = useState({
+    evidenceKind: 'engagement_id',
+    evidenceRef: '',
+    expiresAt: '',
+    allowedProfiles: ['discovery', 'standard'],
+    allowActiveTesting: false,
+  });
 
   const canWrite = hasPermission(session.me, session.orgId, 'repos:write');
   const canScan = hasPermission(session.me, session.orgId, 'scans:run');
+  const canAuthorize = hasPermission(session.me, session.orgId, 'org:settings');
+
+  const PROFILES = [
+    { id: 'public', label: 'Public Website Assessment' },
+    { id: 'discovery', label: 'Discovery Assessment' },
+    { id: 'standard', label: 'Standard Vulnerability Assessment' },
+    { id: 'deep', label: 'Deep Security Assessment' },
+  ];
 
   async function loadWebsites() {
     try {
@@ -64,19 +83,25 @@ export function WebsitesView({ onSelectScan }) {
     }
   }
 
-  async function handleStartScan(site, profile) {
-    const body = { profile };
-    if (profile === 'ascan') {
-      const ok = window.confirm(
-        `Active exploit scanning sends attack payloads to ${site.hostname}. Use it only on a site you own or are contracted to test. Continue?`
-      );
-      if (!ok) return;
-      body.authorizeActiveTesting = true;
+  function authStatus(site) {
+    const view = authorizationPresentation(site, scanProfile);
+    if (view.status === 'authorized' && view.expiresAt) {
+      return { label: `${view.label} until ${fmtDate(view.expiresAt)}`, cls: view.tone, reason: view.reason };
+    }
+    return { label: view.label, cls: view.tone, reason: view.reason };
+  }
+
+  async function handleStartScan(site) {
+    const profile = scanProfile;
+    const decision = scanStartDecision(site, profile);
+    if (!decision.allow) {
+      toast(decision.reason || 'This assessment is not authorized for this host.', 'error');
+      return;
     }
     try {
       setScanningSiteId(site.id);
-      const scan = await api.post(api.org(`/websites/${site.id}/scans`), body);
-      toast(`${profile.toUpperCase()} scan queued`);
+      const scan = await api.post(api.org(`/websites/${site.id}/scans`), { profile });
+      toast(`${profile} scan queued`);
       await loadWebsites();
       if (onSelectScan) {
         onSelectScan(site.id, scan.id);
@@ -90,10 +115,10 @@ export function WebsitesView({ onSelectScan }) {
     }
   }
 
-  async function handleVerify(site, isManual = false) {
+  async function handleVerify(site) {
     try {
       setVerifyLoading(true);
-      const res = await api.post(api.org(`/websites/${site.id}/verify`), { manual: isManual });
+      const res = await api.post(api.org(`/websites/${site.id}/verify`), {});
       if (res.verified) {
         toast(`Domain verified successfully via ${res.method}!`);
         setVerifyingSite(null);
@@ -108,9 +133,29 @@ export function WebsitesView({ onSelectScan }) {
     }
   }
 
+  async function handleCreateGrant(e) {
+    e.preventDefault();
+    if (!grantSite) return;
+    try {
+      setGrantBusy(true);
+      await api.post(api.org(`/websites/${grantSite.id}/authorizations`), {
+        ...grantForm,
+        expiresAt: new Date(grantForm.expiresAt).toISOString(),
+        allowActiveTesting: Boolean(grantForm.allowActiveTesting) && grantForm.allowedProfiles.includes('deep'),
+      });
+      toast('Client authorization grant recorded');
+      setGrantSite(null);
+      await loadWebsites();
+    } catch (err) {
+      toast(err.message || 'Could not record authorization', 'error');
+    } finally {
+      setGrantBusy(false);
+    }
+  }
+
   const headers = [
     'Website target',
-    'Verification',
+    isPublicAssessmentProfile(scanProfile) ? 'Public assessment' : 'Authorized DAST',
     'Security posture',
     'Latest scan',
     { label: 'Actions', num: true },
@@ -119,6 +164,8 @@ export function WebsitesView({ onSelectScan }) {
   const rows = websites.map((site) => {
     const latest = site.latestScan;
     const summary = latest && latest.summary;
+    const authView = authStatus(site);
+    const startDecision = scanStartDecision(site, scanProfile);
     const counts = summary ? {
       critical: summary.critical || 0,
       high: summary.high || 0,
@@ -141,24 +188,32 @@ export function WebsitesView({ onSelectScan }) {
         </div>,
 
         <div key="verify">
-          {site.isVerified ? (
-            <span className="badge sev-low" title={`Verified by ${site.verificationMethod || 'DNS/HTTP'}`}>
-              Verified ({site.verificationMethod === 'dns_txt' ? 'DNS' : 'HTTP'})
-            </span>
-          ) : (
-            <div className="row" style={{ gap: '0.4rem', alignItems: 'center' }}>
-              <span className="badge sev-medium">Unverified</span>
-              {canWrite && (
-                <button
-                  type="button"
-                  className="btn btn-sm btn-subtle"
-                  onClick={() => setVerifyingSite(site)}
-                >
-                  Verify
-                </button>
-              )}
-            </div>
-          )}
+          <span className={`badge ${authView.cls}`}>{authView.label}</span>
+          <div className="small muted" style={{ marginTop: '0.25rem', maxWidth: '220px' }}>
+            {startDecision.allow ? authView.reason : startDecision.reason}
+          </div>
+          <div className="row" style={{ gap: '0.4rem', marginTop: '0.3rem', flexWrap: 'wrap' }}>
+            {canWrite && !site.isVerified && (
+              <button type="button" className="btn btn-sm btn-subtle" onClick={() => setVerifyingSite(site)}>
+                Optional DNS/HTTP
+              </button>
+            )}
+            {canAuthorize && !isPublicAssessmentProfile(scanProfile) && (
+              <button
+                type="button"
+                className="btn btn-sm btn-subtle"
+                onClick={() => {
+                  setGrantSite(site);
+                  setGrantForm((f) => ({
+                    ...f,
+                    expiresAt: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 16),
+                  }));
+                }}
+              >
+                Record grant
+              </button>
+            )}
+          </div>
         </div>,
 
         <div key="posture">
@@ -202,39 +257,17 @@ export function WebsitesView({ onSelectScan }) {
             </a>
           )}
           {canScan && (
-            <div className="website-scan-group" role="group" aria-label="Trigger scan options">
-              <button
-                type="button"
-                className="website-scan-btn btn-active-primary"
-                disabled={scanningSiteId === site.id}
-                onClick={() => handleStartScan(site, 'passive')}
-                title="Runs Comprehensive Full Scan: TLS, security headers, technology stack, discovered pages, forms and sensitive files"
-              >
-                {scanningSiteId === site.id ? 'Scanning...' : 'Full Scan'}
-              </button>
-              {site.isVerified ? (
-                <>
-                  <button
-                    type="button"
-                    className="website-scan-btn"
-                    disabled={scanningSiteId === site.id}
-                    onClick={() => handleStartScan(site, 'crawl')}
-                    title="GET-only Traditional crawl. Does not submit forms or run active attacks."
-                  >
-                    Crawl site
-                  </button>
-                  <button
-                    type="button"
-                    className="website-scan-btn"
-                    disabled={scanningSiteId === site.id}
-                    onClick={() => handleStartScan(site, 'ascan')}
-                    title="OWASP ZAP active scan. Requires ZAP_API_URL and confirmation. Authorized sites only."
-                  >
-                    Exploit scan
-                  </button>
-                </>
-              ) : null}
-            </div>
+            <button
+              type="button"
+              className="website-scan-btn btn-active-primary"
+              disabled={scanningSiteId === site.id}
+              onClick={() => handleStartScan(site)}
+              title={isPublicAssessmentProfile(scanProfile)
+                ? 'Run Public Website Assessment without an engagement ID'
+                : 'Run the selected assessment against this authorized target'}
+            >
+              {scanningSiteId === site.id ? 'Scanning...' : 'Scan website'}
+            </button>
           )}
           {canWrite && (
             <button
@@ -255,7 +288,7 @@ export function WebsitesView({ onSelectScan }) {
     <div className="view">
       <PageHead
         title="Website Security Scanner"
-        subtitle="DAST vulnerability scanning, TLS/SSL configuration, HTTP headers, CORS policies, and AI risk analysis"
+        subtitle="Public Website Assessment needs no engagement ID and no DNS proof. Discovery, Standard and Deep use an org policy or site grant. Deep also needs stored active-testing permission."
       />
 
       {canWrite && (
@@ -304,14 +337,27 @@ export function WebsitesView({ onSelectScan }) {
         <div className="card-head">
           <div className="row" style={{ justifyContent: 'space-between', width: '100%' }}>
             <h2 className="m-0">Monitored Websites ({websites.length})</h2>
-            <button
-              type="button"
-              className="btn btn-sm btn-subtle"
-              onClick={loadWebsites}
-              disabled={loading}
-            >
-              {loading ? 'Refreshing...' : 'Refresh'}
-            </button>
+            <div className="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
+              <label className="small muted" htmlFor="scan-profile">Profile</label>
+              <select
+                id="scan-profile"
+                value={scanProfile}
+                onChange={(e) => setScanProfile(e.target.value)}
+                style={{ height: '32px', borderRadius: '6px' }}
+              >
+                {PROFILES.map((p) => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="btn btn-sm btn-subtle"
+                onClick={loadWebsites}
+                disabled={loading}
+              >
+                {loading ? 'Refreshing...' : 'Refresh'}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -343,8 +389,8 @@ export function WebsitesView({ onSelectScan }) {
             </div>
 
             <p className="small muted">
-              Active crawling and vulnerability probing require domain authorization to prevent unauthorized testing.
-              Please complete one of the verification options below for <strong>{verifyingSite.hostname}</strong>:
+              Optional domain-control check for <strong>{verifyingSite.hostname}</strong>.
+              DNS TXT or the HTTP token prove you control the name. They do not by themselves permit ZAP active scan.
             </p>
 
             <div style={{ margin: '1rem 0' }}>
@@ -365,23 +411,7 @@ export function WebsitesView({ onSelectScan }) {
               </div>
             </div>
 
-            <div style={{ margin: '1rem 0' }}>
-              <h4>Option C: Authorized Security Assessment (Self-Certified)</h4>
-              <p className="small muted">
-                If you are an authorised tester or domain administrator and cannot configure public DNS records or file uploads right now, you may confirm your testing authorization directly.
-              </p>
-            </div>
-
-            <div className="row" style={{ justifyContent: 'space-between', gap: '0.5rem', marginTop: '1.25rem', flexWrap: 'wrap' }}>
-              <button
-                type="button"
-                className="btn btn-subtle"
-                disabled={verifyLoading}
-                onClick={() => handleVerify(verifyingSite, true)}
-                title="Self-certify authorization for this domain"
-              >
-                Self-Certify Authorization
-              </button>
+            <div className="row" style={{ justifyContent: 'flex-end', gap: '0.5rem', marginTop: '1.25rem', flexWrap: 'wrap' }}>
               <div className="row" style={{ gap: '0.5rem' }}>
                 <button
                   type="button"
@@ -394,12 +424,103 @@ export function WebsitesView({ onSelectScan }) {
                   type="button"
                   className="btn btn-primary"
                   disabled={verifyLoading}
-                  onClick={() => handleVerify(verifyingSite, false)}
+                  onClick={() => handleVerify(verifyingSite)}
                 >
                   {verifyLoading ? 'Checking...' : 'Check DNS / HTTP'}
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {grantSite && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="card modal-card" style={{ maxWidth: '640px', width: '90%' }}>
+            <div className="card-head">
+              <h2 className="m-0">Record client authorization</h2>
+              <button type="button" className="btn btn-sm btn-subtle" onClick={() => setGrantSite(null)}>Close</button>
+            </div>
+            <p className="small muted">
+              Use this only when an independent engagement, signed document, or change ticket already authorizes testing of <strong>{grantSite.hostname}</strong>.
+              A URL, email, or “I own this” click is not enough.
+            </p>
+            <form onSubmit={handleCreateGrant} style={{ display: 'grid', gap: '12px' }}>
+              <div>
+                <label className="small muted" htmlFor="ev-kind">Evidence type</label>
+                <select
+                  id="ev-kind"
+                  value={grantForm.evidenceKind}
+                  onChange={(e) => setGrantForm({ ...grantForm, evidenceKind: e.target.value })}
+                  style={{ width: '100%', height: '32px' }}
+                >
+                  <option value="engagement_id">Engagement ID</option>
+                  <option value="change_ticket">Change ticket</option>
+                  <option value="signed_document_sha256">SHA-256 of signed document</option>
+                </select>
+              </div>
+              <div>
+                <label className="small muted" htmlFor="ev-ref">Evidence reference</label>
+                <input
+                  id="ev-ref"
+                  required
+                  minLength={8}
+                  value={grantForm.evidenceRef}
+                  onChange={(e) => setGrantForm({ ...grantForm, evidenceRef: e.target.value })}
+                  placeholder="ENG-104821 or 64-char hex digest"
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div>
+                <label className="small muted" htmlFor="ev-exp">Expires</label>
+                <input
+                  id="ev-exp"
+                  type="datetime-local"
+                  required
+                  value={grantForm.expiresAt}
+                  onChange={(e) => setGrantForm({ ...grantForm, expiresAt: e.target.value })}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <fieldset style={{ border: '1px solid var(--border)', borderRadius: '6px', padding: '8px 12px' }}>
+                <legend className="small muted">Allowed profiles</legend>
+                {PROFILES.filter((p) => p.id !== 'public').map((p) => (
+                  <label key={p.id} className="small" style={{ display: 'block', marginBottom: '4px' }}>
+                    <input
+                      type="checkbox"
+                      checked={grantForm.allowedProfiles.includes(p.id)}
+                      onChange={(e) => {
+                        const next = e.target.checked
+                          ? [...grantForm.allowedProfiles, p.id]
+                          : grantForm.allowedProfiles.filter((id) => id !== p.id);
+                        setGrantForm({ ...grantForm, allowedProfiles: next });
+                      }}
+                    />{' '}
+                    {p.label}
+                  </label>
+                ))}
+                <label className="small" style={{ display: 'block', marginTop: '8px' }}>
+                  <input
+                    type="checkbox"
+                    checked={grantForm.allowActiveTesting}
+                    onChange={(e) => setGrantForm({
+                      ...grantForm,
+                      allowActiveTesting: e.target.checked,
+                      allowedProfiles: e.target.checked
+                        ? [...new Set([...grantForm.allowedProfiles, 'deep'])]
+                        : grantForm.allowedProfiles,
+                    })}
+                  />{' '}
+                  Allow ZAP active scan and intrusive Nuclei (deep only)
+                </label>
+              </fieldset>
+              <div className="row" style={{ justifyContent: 'flex-end', gap: '8px' }}>
+                <button type="button" className="btn btn-subtle" onClick={() => setGrantSite(null)}>Cancel</button>
+                <button type="submit" className="btn btn-primary" disabled={grantBusy}>
+                  {grantBusy ? 'Saving...' : 'Record grant'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

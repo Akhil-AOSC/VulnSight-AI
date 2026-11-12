@@ -7,6 +7,14 @@ const { which, defaultToolsDir } = require('./which');
 
 const GITLEAKS_VERSION = '8.24.2';
 const OPENGREP_VERSION = '1.33.1';
+const NUCLEI_VERSION = '3.3.9';
+const NUCLEI_SHA256 = {
+  'nuclei_3.3.9_linux_amd64.zip': 'skip',
+  'nuclei_3.3.9_windows_amd64.zip': 'skip',
+  'nuclei_3.3.9_macOS_amd64.zip': 'skip',
+  'nuclei_3.3.9_macOS_arm64.zip': 'skip',
+  'nuclei_3.3.9_linux_arm64.zip': 'skip',
+};
 
 function gitleaksAsset() {
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
@@ -126,7 +134,41 @@ function resolveSastEngine({ lookup, cwd } = {}) {
   return { kind: 'builtin', bin: null };
 }
 
+function nucleiAsset() {
+  const arch = process.arch === 'arm64' ? 'arm64' : 'amd64';
+  if (process.platform === 'win32') return { file: `nuclei_${NUCLEI_VERSION}_windows_${arch}.zip`, binary: 'nuclei.exe' };
+  if (process.platform === 'darwin') return { file: `nuclei_${NUCLEI_VERSION}_macOS_${arch}.zip`, binary: 'nuclei' };
+  return { file: `nuclei_${NUCLEI_VERSION}_linux_${arch}.zip`, binary: 'nuclei' };
+}
+
+async function ensureNuclei(preferred = 'nuclei') {
+  const existing = which(preferred) || which('nuclei') || which('nuclei.exe');
+  if (existing) return existing;
+  const dir = defaultToolsDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const { file, binary } = nucleiAsset();
+  const dest = path.join(dir, binary);
+  if (fs.existsSync(dest)) return dest;
+  const url = `https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/${file}`;
+  const archive = path.join(dir, file);
+  await download(url, archive);
+  const expected = NUCLEI_SHA256[file];
+  if (expected && expected !== 'skip') {
+    const crypto = require('crypto');
+    const actual = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
+    if (actual !== expected) {
+      try { fs.unlinkSync(archive); } catch { /* ignore */ }
+      throw new Error(`Nuclei checksum mismatch for ${file}`);
+    }
+  }
+  await extractArchive(archive, dir);
+  try { fs.unlinkSync(archive); } catch { /* ignore */ }
+  if (!fs.existsSync(dest)) throw new Error(`nuclei download succeeded but ${binary} was not found`);
+  try { fs.chmodSync(dest, 0o755); } catch { /* windows */ }
+  return dest;
+}
+
 module.exports = {
-  ensureGitleaks, ensureOpengrep, resolveSemgrep, resolveOpengrep, resolveEslint, resolveSastEngine,
-  GITLEAKS_VERSION, OPENGREP_VERSION,
+  ensureGitleaks, ensureOpengrep, ensureNuclei, resolveSemgrep, resolveOpengrep, resolveEslint, resolveSastEngine,
+  GITLEAKS_VERSION, OPENGREP_VERSION, NUCLEI_VERSION,
 };

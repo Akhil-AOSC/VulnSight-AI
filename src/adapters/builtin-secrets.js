@@ -109,4 +109,4 @@ function scanBuiltinSecrets(root, { version = 'builtin-rules' } = {}) {
   return findings;
 }
 
-module.exports = { scanBuiltinSecrets };
+module.exports = { scanBuiltinSecrets, RULES, mask };

@@ -7,6 +7,7 @@ import {
   DataTable,
   StatusBadge,
   ScanSkeletonLoader,
+  IconEmptyState,
 } from '../components/Common.jsx';
 
 function RepoBarChartSvg({ repos, sevFilter, maxVal }) {
@@ -219,7 +220,9 @@ function RepoSeverityBreakdown({ repositories }) {
 
       {!scannedRepos.length ? (
         <div className="overview-chart-empty">
-          <div className="empty-icon">📊</div>
+          <div className="empty-icon">
+            <IconEmptyState size={36} />
+          </div>
           <h3>No scan data yet</h3>
           <p className="muted small">
             Run a scan on any repository to view vulnerability bar charts and severity distributions.

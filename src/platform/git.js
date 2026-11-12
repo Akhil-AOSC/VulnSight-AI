@@ -7,6 +7,7 @@ const dns = require('dns').promises;
 const net = require('net');
 const { execTool } = require('../adapters/runner');
 const { ValidationError } = require('./rbac');
+const { isPublicAddress } = require('../adapters/dast/net-guard');
 
 // ---- SSRF protection ---------------------------------------------------------------------
 // A user-supplied repository URL makes our server open network connections. Without checks it
@@ -15,24 +16,10 @@ const { ValidationError } = require('./rbac');
 // DNS answer is a public address. The validated address is then pinned for the clone so DNS
 // can't change between the check and the connection (DNS rebinding).
 
-function isPrivateIPv4(ip) {
-  const [a, b] = ip.split('.').map(Number);
-  return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254)
-    || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 0) || (a === 192 && b === 168)
-    || (a === 198 && (b === 18 || b === 19)) || a >= 224;
-}
-
+// Address classification lives in one place so the repository cloner, the egress proxy and the
+// website scanner agree (it also covers IPv4-mapped hex forms, 6to4, Teredo and NAT64).
 function isPrivateIp(ip) {
-  const v = net.isIP(ip);
-  if (v === 4) return isPrivateIPv4(ip);
-  if (v === 6) {
-    const lower = ip.toLowerCase();
-    const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (mapped) return isPrivateIPv4(mapped[1]);
-    if (lower === '::' || lower === '::1') return true;
-    return /^f[cd]/.test(lower) || /^fe[89ab]/.test(lower) || /^ff/.test(lower) || lower.startsWith('64:ff9b:') || lower.startsWith('2001:db8');
-  }
-  return true; // not an IP at all: refuse
+  return !isPublicAddress(ip); // non-IPs are refused too
 }
 
 const SEGMENT = /^[A-Za-z0-9._~-]+$/;

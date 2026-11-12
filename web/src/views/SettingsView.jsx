@@ -185,6 +185,8 @@ function OrganisationTab({ onMeUpdated }) {
         </form>
       </section>
 
+      <DastPoliciesPanel readOnly={ro} />
+
       {org && org.role === 'owner' && (
         <section className="card card-compact danger-zone-card">
           <h2>Danger zone</h2>
@@ -193,6 +195,176 @@ function OrganisationTab({ onMeUpdated }) {
           </button>
         </section>
       )}
+    </>
+  );
+}
+
+function DastPoliciesPanel({ readOnly }) {
+  const [policies, setPolicies] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState({
+    kind: 'engagement',
+    allowHosts: '',
+    denyHosts: '',
+    allowedProfiles: ['discovery', 'standard'],
+    allowActiveTesting: false,
+    evidenceKind: 'engagement_id',
+    evidenceRef: '',
+    expiresAt: '',
+  });
+
+  async function load() {
+    try {
+      setPolicies(await api.get(api.org('/dast-policies')));
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, [session.orgId]);
+
+  async function handleCreate(e) {
+    e.preventDefault();
+    try {
+      setBusy(true);
+      await api.post(api.org('/dast-policies'), {
+        kind: form.kind,
+        allowHosts: form.allowHosts.split(',').map((s) => s.trim()).filter(Boolean),
+        denyHosts: form.denyHosts.split(',').map((s) => s.trim()).filter(Boolean),
+        allowedProfiles: form.allowActiveTesting
+          ? [...new Set([...form.allowedProfiles, 'deep'])]
+          : form.allowedProfiles,
+        allowActiveTesting: form.allowActiveTesting,
+        evidenceKind: form.evidenceKind,
+        evidenceRef: form.evidenceRef,
+        expiresAt: new Date(form.expiresAt).toISOString(),
+      });
+      toast('Authorization policy recorded');
+      setForm({ ...form, evidenceRef: '', allowHosts: '' });
+      await load();
+    } catch (err) {
+      toast(err.message || 'Could not save policy', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRevoke(id) {
+    try {
+      await api.post(api.org(`/dast-policies/${id}/revoke`), { reason: 'revoked from settings' });
+      await load();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  return (
+    <>
+      <section className="card card-compact">
+        <h2>Public website assessment</h2>
+        <p className="small muted">
+          Public Website Assessment does not use an engagement ID, DNS TXT record, or HTTP token.
+          Register a public URL on the Websites page and run that profile. It never enables ZAP Active Scan
+          or intrusive Nuclei templates.
+        </p>
+      </section>
+      <section className="card card-compact">
+        <h2>Authorized active DAST</h2>
+        <p className="small muted">
+          Discovery, Standard, and Deep require a stored engagement, lab allowlist, or site grant.
+          Evidence is required here only. Active testing stays off unless you explicitly enable it.
+          DNS/HTTP verification is optional domain-control proof and does not grant ZAP active scan.
+        </p>
+        {policies.length ? (
+          <ul className="stack" style={{ margin: '12px 0', paddingLeft: '1.1rem' }}>
+            {policies.map((p) => (
+              <li key={p.id}>
+                <strong>{p.kind}</strong>
+                {' '}
+                <span className="small muted">{p.status}</span>
+                {' · '}
+                {(p.allowHosts || []).join(', ')}
+                {' · '}
+                {(p.allowedProfiles || []).join(', ')}
+                {p.allowActiveTesting ? ' · active testing' : ''}
+                {!readOnly && p.status === 'active' && (
+                  <>
+                    {' '}
+                    <button type="button" className="btn btn-sm btn-subtle" onClick={() => handleRevoke(p.id)}>Revoke</button>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="small muted">No authorized DAST policies yet. Public assessment still works without one.</p>
+        )}
+        {!readOnly && (
+          <form className="stack" onSubmit={handleCreate}>
+            <label>
+              Kind
+              <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })}>
+                <option value="engagement">Engagement</option>
+                <option value="lab">Lab allowlist</option>
+              </select>
+            </label>
+            <label>
+              Allow hosts (comma-separated)
+              <input
+                required
+                value={form.allowHosts}
+                onChange={(e) => setForm({ ...form, allowHosts: e.target.value })}
+                placeholder={form.kind === 'lab' ? 'staging.example.com' : 'example.com'}
+              />
+            </label>
+            <label>
+              Deny hosts (optional)
+              <input
+                value={form.denyHosts}
+                onChange={(e) => setForm({ ...form, denyHosts: e.target.value })}
+              />
+            </label>
+            <label>
+              Evidence type
+              <select value={form.evidenceKind} onChange={(e) => setForm({ ...form, evidenceKind: e.target.value })}>
+                <option value="engagement_id">Engagement ID</option>
+                <option value="change_ticket">Change ticket</option>
+                <option value="signed_document_sha256">SHA-256 of signed document</option>
+              </select>
+            </label>
+            <label>
+              Evidence reference (required for authorized DAST only)
+              <input
+                required
+                minLength={8}
+                value={form.evidenceRef}
+                onChange={(e) => setForm({ ...form, evidenceRef: e.target.value })}
+                placeholder="ENG-104821"
+              />
+            </label>
+            <label>
+              Expires
+              <input
+                type="datetime-local"
+                required
+                value={form.expiresAt}
+                onChange={(e) => setForm({ ...form, expiresAt: e.target.value })}
+              />
+            </label>
+            <label className="inline">
+              <input
+                type="checkbox"
+                checked={form.allowActiveTesting}
+                onChange={(e) => setForm({ ...form, allowActiveTesting: e.target.checked })}
+              />
+              Allow deep active testing (ZAP ascan and intrusive Nuclei)
+            </label>
+            <button className="primary" type="submit" disabled={busy}>{busy ? 'Saving...' : 'Add authorized DAST policy'}</button>
+          </form>
+        )}
+      </section>
     </>
   );
 }

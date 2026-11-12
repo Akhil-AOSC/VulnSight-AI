@@ -9,6 +9,10 @@ import {
   DataTable,
   Skeleton,
   ScanSkeletonLoader,
+  IconSearch,
+  IconClose,
+  IconCopy,
+  IconCheck,
 } from '../components/Common.jsx';
 import { ExportPreviewModal } from '../components/ExportPreviewModal.jsx';
 
@@ -332,16 +336,16 @@ function generateRemediationPrompt({ repo, scan, findings, severityFilter = 'all
   let prompt = '';
 
   if (severityFilter === 'all') {
-    prompt += `# 🛡️ Complete Security Remediation Plan for ${repo.fullName}\n`;
+    prompt += `# Security Remediation Plan for ${repo.fullName}\n`;
     prompt += `**Repository**: ${repo.fullName} (branch: \`${scan.branch}\`)\n`;
     prompt += `**Total Vulnerabilities Identified**: ${findings.length}\n`;
     prompt += `**Severity Breakdown**: ${bySeverity.critical.length} Critical | ${bySeverity.high.length} High | ${bySeverity.medium.length} Medium | ${bySeverity.low.length} Low\n\n`;
 
-    prompt += `## 🎯 Objective:\n`;
+    prompt += `## Objective\n`;
     prompt += `Act as an expert DevSecOps and Application Security Engineer. You are tasked with resolving all ${findings.length} security vulnerabilities listed below in a single, safe, and backwards-compatible remediation pass.\n\n`;
 
     if (planSteps.length > 0) {
-      prompt += `## 📦 Step 1: Package Upgrades (${pkgManager})\n`;
+      prompt += `## Step 1: Package Upgrades (${pkgManager})\n`;
       prompt += `Execute the following package upgrades in terminal to resolve dependency advisories:\n\n\`\`\`bash\n`;
       if (pkgManager === 'npm') {
         const upgradeArgs = planSteps
@@ -368,7 +372,7 @@ function generateRemediationPrompt({ repo, scan, findings, severityFilter = 'all
     }
 
     if (bySeverity.critical.length > 0) {
-      prompt += `## 🚨 Step 2: Critical Severity Remediation (${bySeverity.critical.length} issues - Urgent P0)\n`;
+      prompt += `## Step 2: Critical Severity Remediation (${bySeverity.critical.length} issues - Urgent P0)\n`;
       bySeverity.critical.forEach((f, idx) => {
         const id = f.identifiers?.primary || f.id;
         const loc = f.location?.package ? `${f.location.package}@${f.location.version || ''}` : `${f.location?.file || ''}:${f.location?.line || ''}`;
@@ -381,7 +385,7 @@ function generateRemediationPrompt({ repo, scan, findings, severityFilter = 'all
     }
 
     if (bySeverity.high.length > 0) {
-      prompt += `## ⚠️ Step 3: High Severity Remediation (${bySeverity.high.length} issues - P1)\n`;
+      prompt += `## Step 3: High Severity Remediation (${bySeverity.high.length} issues - P1)\n`;
       bySeverity.high.forEach((f, idx) => {
         const id = f.identifiers?.primary || f.id;
         const loc = f.location?.package ? `${f.location.package}@${f.location.version || ''}` : `${f.location?.file || ''}:${f.location?.line || ''}`;
@@ -393,7 +397,7 @@ function generateRemediationPrompt({ repo, scan, findings, severityFilter = 'all
     }
 
     if (bySeverity.medium.length > 0) {
-      prompt += `## 🟡 Step 4: Medium Severity Remediation (${bySeverity.medium.length} issues - P2)\n`;
+      prompt += `## Step 4: Medium Severity Remediation (${bySeverity.medium.length} issues - P2)\n`;
       bySeverity.medium.forEach((f, idx) => {
         const id = f.identifiers?.primary || f.id;
         const loc = f.location?.package ? `${f.location.package}@${f.location.version || ''}` : `${f.location?.file || ''}:${f.location?.line || ''}`;
@@ -404,7 +408,7 @@ function generateRemediationPrompt({ repo, scan, findings, severityFilter = 'all
     }
 
     if (bySeverity.low.length > 0) {
-      prompt += `## ℹ️ Step 5: Low Severity Issues (${bySeverity.low.length} issues - P3)\n`;
+      prompt += `## Step 5: Low Severity Issues (${bySeverity.low.length} issues - P3)\n`;
       bySeverity.low.forEach((f, idx) => {
         const id = f.identifiers?.primary || f.id;
         const loc = f.location?.package ? `${f.location.package}@${f.location.version || ''}` : `${f.location?.file || ''}:${f.location?.line || ''}`;
@@ -413,14 +417,14 @@ function generateRemediationPrompt({ repo, scan, findings, severityFilter = 'all
       prompt += `\n`;
     }
 
-    prompt += `## 🔍 Step 6: Verification & Validation\n`;
+    prompt += `## Step 6: Verification & Validation\n`;
     prompt += `1. Verify that all dependencies compile cleanly and all lockfiles are in sync.\n`;
     prompt += `2. Run unit and integration tests to ensure no regressions were introduced by upgraded APIs.\n`;
     prompt += `3. Confirm that the security posture score is restored to 100/100.\n`;
   } else {
     const sevList = bySeverity[severityFilter] || [];
     const sevUpper = severityFilter.toUpperCase();
-    prompt += `# 🛡️ ${sevUpper} Severity Security Remediation for ${repo.fullName}\n`;
+    prompt += `# ${sevUpper} Severity Security Remediation for ${repo.fullName}\n`;
     prompt += `**Target**: ${repo.fullName} | **Severity**: ${sevUpper} (${sevList.length} issues)\n\n`;
     prompt += `Please provide exact terminal commands and code patches to eliminate these ${severityFilter} vulnerabilities:\n\n`;
 
@@ -532,7 +536,7 @@ function AiPromptModal({ scan, repo, initialFindings = [], onClose }) {
       <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <div className="modal-title-group">
-            <h2>⚡ AI Remediation Master Prompt</h2>
+            <h2>Remediation Master Prompt</h2>
             <div className="modal-subtitle">
               Universal prompt to fix all {findings.length} detected vulnerabilities in {repo.fullName} in 1 or 2 passes.
             </div>
@@ -544,7 +548,7 @@ function AiPromptModal({ scan, repo, initialFindings = [], onClose }) {
             aria-label="Close dialog"
             title="Close (Esc)"
           >
-            ✕
+            <IconClose size={16} />
           </button>
         </div>
 
@@ -562,28 +566,32 @@ function AiPromptModal({ scan, repo, initialFindings = [], onClose }) {
               className={`modal-tab-btn ${severityFilter === 'critical' ? 'active' : ''}`}
               onClick={() => setSeverityFilter('critical')}
             >
-              🔴 Critical ({counts.critical})
+              <span className="sev-dot sev-dot-critical" style={{ marginRight: '6px', display: 'inline-block' }} />
+              Critical ({counts.critical})
             </button>
             <button
               type="button"
               className={`modal-tab-btn ${severityFilter === 'high' ? 'active' : ''}`}
               onClick={() => setSeverityFilter('high')}
             >
-              🟠 High ({counts.high})
+              <span className="sev-dot sev-dot-high" style={{ marginRight: '6px', display: 'inline-block' }} />
+              High ({counts.high})
             </button>
             <button
               type="button"
               className={`modal-tab-btn ${severityFilter === 'medium' ? 'active' : ''}`}
               onClick={() => setSeverityFilter('medium')}
             >
-              🟡 Medium ({counts.medium})
+              <span className="sev-dot sev-dot-medium" style={{ marginRight: '6px', display: 'inline-block' }} />
+              Medium ({counts.medium})
             </button>
             <button
               type="button"
               className={`modal-tab-btn ${severityFilter === 'low' ? 'active' : ''}`}
               onClick={() => setSeverityFilter('low')}
             >
-              🔵 Low ({counts.low})
+              <span className="sev-dot sev-dot-low" style={{ marginRight: '6px', display: 'inline-block' }} />
+              Low ({counts.low})
             </button>
           </div>
 
@@ -612,7 +620,9 @@ function AiPromptModal({ scan, repo, initialFindings = [], onClose }) {
               onClick={handleCopy}
               title="Copy prompt to clipboard"
             >
-              {copied ? '✓ Copied to Clipboard!' : '📋 Copy Fix Prompt'}
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                {copied ? <><IconCheck size={14} /> Copied</> : <><IconCopy size={14} /> Copy fix prompt</>}
+              </span>
             </button>
           </div>
         </div>
@@ -965,7 +975,7 @@ export function ScanView({ scanId }) {
                   onClick={() => setShowPromptModal(true)}
                   title="Generate a master prompt to fix all vulnerabilities in one go"
                 >
-                  ⚡ Generate AI Fix Prompt
+                  Generate Fix Prompt
                 </button>
                 <div className="findings-export-group" role="group" aria-label="Export findings">
                   {[
@@ -990,7 +1000,7 @@ export function ScanView({ scanId }) {
 
             <div className="findings-filter-bar">
               <div className="findings-search-wrapper">
-                <span className="findings-search-icon" aria-hidden="true">🔍</span>
+                <span className="findings-search-icon" aria-hidden="true"><IconSearch size={14} /></span>
                 <input
                   type="search"
                   className="findings-search-input"
@@ -1006,7 +1016,7 @@ export function ScanView({ scanId }) {
                     onClick={() => setQ('')}
                     title="Clear search"
                   >
-                    ✕
+                    <IconClose size={12} />
                   </button>
                 )}
               </div>
@@ -1020,10 +1030,10 @@ export function ScanView({ scanId }) {
                   }}
                 >
                   <option value="">All severities</option>
-                  <option value="critical">🚨 Critical</option>
-                  <option value="high">⚠️ High</option>
-                  <option value="medium">🟡 Medium</option>
-                  <option value="low">🔵 Low</option>
+                  <option value="critical">Critical</option>
+                  <option value="high">High</option>
+                  <option value="medium">Medium</option>
+                  <option value="low">Low</option>
                 </select>
                 <select
                   aria-label="Category"

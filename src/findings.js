@@ -42,6 +42,7 @@ function createFinding(input) {
     },
     remediation: { fixedIn: null, advice: null, ...input.remediation },
     evidence: input.evidence == null ? null : input.evidence,
+    confidence: input.confidence || null,
     url: input.url || null,
     status: input.status || 'open',
     aiAnalysis: null,

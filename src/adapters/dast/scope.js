@@ -25,16 +25,24 @@ function clampInt(value, min, max, fallback) {
   return Math.min(max, Math.max(min, n));
 }
 
+function isVerifiedScopeHost(siteHostname, candidate) {
+  const site = String(siteHostname || '').toLowerCase().replace(/\.$/, '');
+  const host = String(candidate || '').toLowerCase().replace(/\.$/, '');
+  if (!site || !host) return false;
+  return host === site || host.endsWith(`.${site}`);
+}
+
 function normalizeScope(hostname, input = {}) {
   const hosts = uniqueLower([
     hostname,
     ...asList(input.allowHosts),
-  ]).filter(Boolean);
+  ]).filter((h) => isVerifiedScopeHost(hostname, h));
+  const extras = uniqueLower(asList(input.extraHosts)).filter((h) => isVerifiedScopeHost(hostname, h));
   return {
-    allowHosts: hosts,
+    allowHosts: hosts.length ? hosts : [String(hostname || '').toLowerCase()].filter(Boolean),
     allowPaths: asList(input.allowPaths).length ? asList(input.allowPaths) : ['/'],
     denyPaths: asList(input.denyPaths),
-    extraHosts: uniqueLower(asList(input.extraHosts)),
+    extraHosts: extras,
   };
 }
 
@@ -82,8 +90,11 @@ function pathAllowed(pathname, scope) {
 function urlInScope(parsed, scope) {
   if (!['http:', 'https:'].includes(parsed.protocol)) return false;
   if (parsed.username || parsed.password) return false;
-  const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
-  if (port !== '80' && port !== '443') return false;
+  const port = Number(parsed.port || (parsed.protocol === 'https:' ? '443' : '80'));
+  const allowedPorts = (scope.ports && scope.ports.length)
+    ? scope.ports.map(Number)
+    : [80, 443];
+  if (!allowedPorts.includes(port)) return false;
   return hostInScope(parsed.hostname, scope) && pathAllowed(parsed.pathname, scope);
 }
 
@@ -91,33 +102,66 @@ function isStateChangingMethod(method) {
   return STATE_METHODS.has(String(method || '').toUpperCase());
 }
 
+const PUBLIC_DISCOVERY_LIMITS = {
+  maxDepth: 2,
+  maxPages: 12,
+  maxDurationSec: 90,
+  maxRps: 1,
+};
+
+const PRODUCT_PROFILES = {
+  public: {
+    crawl: false, publicDiscovery: true, browser: true, nuclei: null, ascan: false,
+    label: 'Public Website Assessment',
+  },
+  passive: { crawl: false, publicDiscovery: false, browser: false, nuclei: null, ascan: false, label: 'Passive Assessment' },
+  discovery: { crawl: true, publicDiscovery: false, browser: true, nuclei: null, ascan: false, label: 'Discovery Assessment' },
+  standard: { crawl: true, publicDiscovery: false, browser: true, nuclei: 'safe', ascan: false, label: 'Standard Vulnerability Assessment' },
+  deep: { crawl: true, publicDiscovery: false, browser: true, nuclei: 'full', ascan: true, label: 'Deep Security Assessment' },
+};
+
 function crawlProfiles() {
   return {
+    public: { crawl: false, clientSpider: false, ascan: false },
+    public_assessment: { crawl: false, clientSpider: false, ascan: false },
     passive: { crawl: false, clientSpider: false, ascan: false },
+    discovery: { crawl: true, clientSpider: false, ascan: false },
     crawl: { crawl: true, clientSpider: false, ascan: false },
+    standard: { crawl: true, clientSpider: true, ascan: false },
     crawl_js: { crawl: true, clientSpider: true, ascan: false },
-    standard: { crawl: true, clientSpider: false, ascan: false },
-    deep: { crawl: true, clientSpider: true, ascan: false },
-    ascan: { crawl: true, clientSpider: false, ascan: true },
-    exploit: { crawl: true, clientSpider: false, ascan: true },
+    deep: { crawl: true, clientSpider: true, ascan: true },
+    ascan: { crawl: true, clientSpider: true, ascan: true },
+    exploit: { crawl: true, clientSpider: true, ascan: true },
   };
+}
+
+function profileNeeds(profile) {
+  const key = String(profile || 'passive');
+  return PRODUCT_PROFILES[key] || PRODUCT_PROFILES.passive;
 }
 
 function normalizeProfile(profile, { allowAscan = false } = {}) {
   const key = String(profile || 'passive');
-  if (['ascan', 'active', 'attack', 'zap-ascan', 'exploit'].includes(key)) {
+  if (['ascan', 'active', 'attack', 'zap-ascan', 'exploit', 'deep'].includes(key)) {
     if (!allowAscan) {
-      throw new Error('Active vulnerability testing requires an explicit authorizeActiveTesting confirmation on a verified site you are allowed to test');
+      throw new Error('Active vulnerability testing requires an explicit authorizeActiveTesting confirmation on a site you are allowed to test');
     }
-    return 'ascan';
+    return 'deep';
   }
-  const map = crawlProfiles();
-  if (!map[key]) throw new Error('Profile must be one of: passive, crawl, crawl_js, ascan');
-  return key === 'standard' ? 'crawl' : key === 'deep' ? 'crawl_js' : key;
+  if (key === 'crawl') return 'discovery';
+  if (key === 'crawl_js') return 'standard';
+  if (key === 'public_assessment' || key === 'PUBLIC_ASSESSMENT') return 'public';
+  if (!PRODUCT_PROFILES[key] && !crawlProfiles()[key]) {
+    throw new Error('Profile must be one of: public, passive, discovery, standard, deep');
+  }
+  if (PRODUCT_PROFILES[key]) return key;
+  throw new Error('Profile must be one of: public, passive, discovery, standard, deep');
 }
 
 module.exports = {
   DEFAULT_LIMITS,
+  PUBLIC_DISCOVERY_LIMITS,
+  PRODUCT_PROFILES,
   normalizeLimits,
   normalizeScope,
   normalizeUrl,
@@ -128,4 +172,6 @@ module.exports = {
   isStateChangingMethod,
   normalizeProfile,
   crawlProfiles,
+  profileNeeds,
+  isVerifiedScopeHost,
 };

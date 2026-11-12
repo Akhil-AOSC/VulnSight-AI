@@ -6,7 +6,9 @@ node_modules/
 
 # Environment & Sensitive Credentials
 .env*
+!.env.example
 *.env
 *.download
 *.pem
 *.key
+dev-master.key

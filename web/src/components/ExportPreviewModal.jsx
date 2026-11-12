@@ -1,35 +1,38 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { api, toast } from '../api.js';
 import { Markdown } from './Markdown.jsx';
-import { SevBadge, Skeleton } from './Common.jsx';
+import { SevBadge, Skeleton, IconCopy, IconCheck, IconDownload, IconClose, IconTable, IconFileText, IconPackage } from './Common.jsx';
+
+function FormatIcon({ format, size = 16 }) {
+  if (format === 'csv') return <IconTable size={size} />;
+  if (format === 'markdown') return <IconFileText size={size} />;
+  if (format === 'cyclonedx') return <IconPackage size={size} />;
+  return <span style={{ fontFamily: 'var(--font-mono)', fontSize: `${size * 0.75}px`, fontWeight: 600 }}>{'{ }'}</span>;
+}
 
 const EXPORT_FORMAT_META = {
   csv: {
     label: 'CSV',
     title: 'CSV Report Preview',
     ext: 'csv',
-    icon: '📊',
     desc: 'Spreadsheet-ready tabular vulnerability report containing severity, CVE IDs, package versions, code locations, and triage states.',
   },
   markdown: {
     label: 'Markdown',
     title: 'Markdown Report Preview',
     ext: 'md',
-    icon: '📝',
     desc: 'Executive summary report with vulnerability distributions, risk posture, and actionable remediation steps formatted for documentation.',
   },
   cyclonedx: {
     label: 'SBOM (CycloneDX)',
     title: 'CycloneDX SBOM Preview (v1.5)',
     ext: 'cdx.json',
-    icon: '📦',
     desc: 'Industry-standard Software Bill of Materials in CycloneDX JSON format listing all detected dependencies, metadata, and advisory links.',
   },
   json: {
     label: 'JSON',
     title: 'JSON Report Preview',
     ext: 'json',
-    icon: '{ }',
     desc: 'Complete structured JSON report payload containing scan metadata, tool execution results, findings, and remediation telemetry.',
   },
 };
@@ -188,7 +191,7 @@ export function ExportPreviewModal({ isOpen, onClose, initialFormat = 'csv', sca
         <div className="modal-header">
           <div className="modal-title-group">
             <h2 id="export-modal-title">
-              <span className="export-format-icon" aria-hidden="true">{meta.icon}</span>
+              <span className="export-format-icon" aria-hidden="true"><FormatIcon format={format} size={18} /></span>
               {meta.title}
             </h2>
             <div className="modal-subtitle">
@@ -200,7 +203,7 @@ export function ExportPreviewModal({ isOpen, onClose, initialFormat = 'csv', sca
             </div>
           </div>
           <button type="button" className="btn-modal-close" onClick={onClose} title="Close dialog" aria-label="Close dialog">
-            &times;
+            <IconClose size={16} />
           </button>
         </div>
 
@@ -216,7 +219,9 @@ export function ExportPreviewModal({ isOpen, onClose, initialFormat = 'csv', sca
                   className={`modal-tab-btn ${format === fmtKey ? 'active' : ''}`}
                   onClick={() => setFormat(fmtKey)}
                 >
-                  <span style={{ marginRight: '0.35rem' }}>{fmtMeta.icon}</span>
+                  <span style={{ marginRight: '0.4rem', display: 'inline-flex', verticalAlign: 'middle' }}>
+                    <FormatIcon format={fmtKey} size={14} />
+                  </span>
                   {fmtMeta.label}
                 </button>
               ))}
@@ -409,7 +414,9 @@ export function ExportPreviewModal({ isOpen, onClose, initialFormat = 'csv', sca
               disabled={loading || !content}
               title="Copy preview text to clipboard"
             >
-              {copied ? '✓ Copied!' : '📋 Copy'}
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                {copied ? <><IconCheck size={14} /> Copied</> : <><IconCopy size={14} /> Copy</>}
+              </span>
             </button>
           </div>
 
@@ -424,7 +431,9 @@ export function ExportPreviewModal({ isOpen, onClose, initialFormat = 'csv', sca
               disabled={loading || downloading}
               title={`Generate and download ${meta.label} file`}
             >
-              {downloading ? 'Generating...' : `⚡ Generate & Download ${meta.label}`}
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                {downloading ? 'Generating...' : <><IconDownload size={14} /> Download {meta.label}</>}
+              </span>
             </button>
           </div>
         </div>

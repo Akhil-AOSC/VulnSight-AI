@@ -6,6 +6,8 @@ const http = require('node:http');
 const {
   validateTargetUrl,
   detectTechnologies,
+  detectEdgeProtection,
+  analyzeEdgeProtection,
   analyzeCookies,
   runPassiveScan,
 } = require('../src/adapters/dast/passive');
@@ -48,6 +50,37 @@ test('detectTechnologies identifies server, frameworks, and CMS patterns', () =>
 
   const nginx = techs.find((t) => t.name === 'Nginx');
   assert.equal(nginx.version, '1.24.0');
+});
+
+test('detectEdgeProtection fingerprints Cloudflare from cf-ray even when Server is nginx', () => {
+  const edge = detectEdgeProtection({ server: 'nginx/1.24.0', 'cf-ray': '8a1b2c3d4e5f-SYD', 'cf-cache-status': 'HIT' });
+  assert.deepEqual(edge.providers, ['Cloudflare']);
+  const techs = detectTechnologies({ server: 'nginx/1.24.0', 'cf-ray': '8a1b2c3d4e5f-SYD' }, '');
+  assert.ok(techs.some((t) => t.name === 'Cloudflare'));
+  assert.ok(techs.some((t) => t.name === 'Nginx'));
+});
+
+test('analyzeEdgeProtection flags missing CDN/WAF and rate-limit headers without treating it as a confirmed DoS', () => {
+  const urlObj = new URL('https://example.com/');
+  const { findings } = analyzeEdgeProtection({ server: 'Apache/2.4.41' }, urlObj);
+  const waf = findings.find((f) => f.scanner.ruleId === 'missing-edge-waf');
+  const rl = findings.find((f) => f.scanner.ruleId === 'missing-ratelimit-headers');
+  assert.ok(waf);
+  assert.ok(rl);
+  assert.ok(findings.every((f) => f.severity === 'low'));
+  assert.match(waf.description, /does not flood/i);
+  assert.match(rl.description, /does not send a request flood/i);
+});
+
+test('analyzeEdgeProtection stays quiet when Cloudflare headers are present', () => {
+  const urlObj = new URL('https://example.com/');
+  const { findings, edge } = analyzeEdgeProtection({
+    server: 'cloudflare',
+    'cf-ray': 'abc123-LAX',
+    'ratelimit-limit': '120',
+  }, urlObj);
+  assert.deepEqual(edge.providers, ['Cloudflare']);
+  assert.equal(findings.length, 0);
 });
 
 test('analyzeCookies detects missing Secure, HttpOnly, and SameSite flags', () => {

@@ -3,7 +3,7 @@
 const http = require('http');
 const net = require('net');
 const dns = require('dns').promises;
-const { isPrivateIp } = require('./git');
+const { isPublicAddress } = require('../adapters/dast/net-guard');
 
 // Egress allowlist proxy for scan workers.
 //
@@ -35,25 +35,12 @@ function hostAllowed(host, allow) {
   return allow.some((rule) => (rule.startsWith('*.') ? host.endsWith(rule.slice(1)) && host.length > rule.length - 1 : host === rule));
 }
 
-const scanAllowHosts = new Set();
-
-function setScanEgressHosts(hosts = []) {
-  scanAllowHosts.clear();
-  for (const host of hosts) {
-    const clean = String(host || '').toLowerCase().replace(/\.$/, '');
-    if (clean) scanAllowHosts.add(clean);
-  }
-}
-
-function clearScanEgressHosts() {
-  scanAllowHosts.clear();
-}
-
 function createEgressProxy({
   allow = DEFAULT_ALLOW, ports = [443], lookup = (h) => dns.lookup(h, { all: true }),
   dial = (address, port) => net.connect({ host: address, port }), log = () => {},
   maxTunnels = 200, idleTimeoutMs = 60000, maxUploadBytes = 100 * 1024 * 1024,
-  extraAllow = () => [...scanAllowHosts],
+  extraAllow = () => [],
+  allowPlainGet = false,
 } = {}) {
   const rules = allow.map((r) => r.toLowerCase());
   let open = 0;
@@ -64,10 +51,16 @@ function createEgressProxy({
   };
 
   const server = http.createServer((req, res) => {
-    // Plain (non-CONNECT) proxy requests are never allowed.
-    log({ event: 'egress.denied', host: String(req.headers.host || ''), reason: 'plain HTTP is not allowed' });
-    res.writeHead(403, { 'content-type': 'text/plain' });
-    res.end('Blocked by egress policy: only HTTPS tunnels are allowed\n');
+    if (!allowPlainGet || !['GET', 'HEAD'].includes(String(req.method || '').toUpperCase())) {
+      log({ event: 'egress.denied', host: String(req.headers.host || ''), reason: 'plain HTTP is not allowed' });
+      res.writeHead(403, { 'content-type': 'text/plain' });
+      res.end('Blocked by egress policy: only HTTPS tunnels (and GET/HEAD when allowPlainGet) are allowed\n');
+      return;
+    }
+    handlePlainGet(req, res).catch(() => {
+      if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain' });
+      res.end('Blocked by egress policy: upstream failed\n');
+    });
   });
   server.headersTimeout = 10000;
   server.requestTimeout = 10000;
@@ -91,7 +84,7 @@ function createEgressProxy({
       const answers = (await lookup(host)).map((a) => (typeof a === 'string' ? a : a.address));
       if (!answers.length) return deny(client, host, 'host did not resolve', 502);
       // Every answer must be public: a single internal address is enough to refuse.
-      if (answers.some(isPrivateIp)) return deny(client, host, 'host resolves to a non-public address');
+      if (answers.some((ip) => !isPublicAddress(ip))) return deny(client, host, 'host resolves to a non-public address');
       [address] = answers;
     } catch {
       return deny(client, host, 'host did not resolve', 502);
@@ -134,6 +127,56 @@ function createEgressProxy({
     });
   });
 
+  async function handlePlainGet(req, res) {
+    let target;
+    try {
+      target = new URL(req.url.startsWith('http') ? req.url : `http://${req.headers.host}${req.url}`);
+    } catch {
+      res.writeHead(400, { 'content-type': 'text/plain' });
+      res.end('Blocked by egress policy: malformed target\n');
+      return;
+    }
+    const host = target.hostname.toLowerCase().replace(/\.$/, '');
+    const port = Number(target.port || (target.protocol === 'https:' ? 443 : 80));
+    if (net.isIP(host)) {
+      res.writeHead(403, { 'content-type': 'text/plain' });
+      res.end('Blocked by egress policy: IP addresses are not allowed\n');
+      return;
+    }
+    if (!HOST.test(host) || !ports.includes(port)) {
+      res.writeHead(403, { 'content-type': 'text/plain' });
+      res.end('Blocked by egress policy: host or port is not allowed\n');
+      return;
+    }
+    const effective = [...rules, ...extraAllow().map((h) => String(h).toLowerCase())];
+    if (!hostAllowed(host, effective)) {
+      res.writeHead(403, { 'content-type': 'text/plain' });
+      res.end('Blocked by egress policy: host is not on the allowlist\n');
+      return;
+    }
+    const answers = (await lookup(host)).map((a) => (typeof a === 'string' ? a : a.address));
+    if (!answers.length || answers.some((ip) => !isPublicAddress(ip))) {
+      res.writeHead(403, { 'content-type': 'text/plain' });
+      res.end('Blocked by egress policy: host resolves to a non-public address\n');
+      return;
+    }
+    const upstream = http.request({
+      host: answers[0],
+      port,
+      path: `${target.pathname}${target.search}`,
+      method: req.method,
+      headers: { ...req.headers, host },
+    }, (up) => {
+      res.writeHead(up.statusCode || 502, up.headers);
+      up.pipe(res);
+    });
+    upstream.on('error', () => {
+      if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain' });
+      res.end('Blocked by egress policy: connection failed\n');
+    });
+    req.pipe(upstream);
+  }
+
   server.stats = () => ({ open });
   return server;
 }
@@ -153,5 +196,4 @@ if (require.main === module) {
 
 module.exports = {
   createEgressProxy, allowFromEnv, hostAllowed, DEFAULT_ALLOW,
-  setScanEgressHosts, clearScanEgressHosts,
 };
